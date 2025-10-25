@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>API Test</title>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <div id="result">Testing...</div>
+
+    <script>
+        const API_BASE_URL = window.location.protocol + '//' + window.location.host;
+
+        console.log('API_BASE_URL:', API_BASE_URL);
+        console.log('Testing API connection...');
+
+        fetch(API_BASE_URL + '/api/health')
+            .then(response => response.json())
+            .then(data => {
+                console.log('API Response:', data);
+                document.getElementById('result').innerHTML =
+                    '<h2>Success!</h2>' +
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                console.error('API Error:', error);
+                document.getElementById('result').innerHTML =
+                    '<h2>Error!</h2>' +
+                    '<p>' + error.message + '</p>';
+            });
+    </script>
+</body>
+</html>

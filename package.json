@@ -1,0 +1,25 @@
+{
+  "name": "pipe-inspector-electron",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "start:all": "./scripts/start-all.sh",
+    "start:backend": "./scripts/start-backend.sh",
+    "start:frontend": "./scripts/start-frontend.sh",
+    "stop": "./scripts/stop-all.sh",
+    "restart": "./scripts/restart-all.sh",
+    "restart:backend": "./scripts/restart-backend.sh",
+    "restart:main": "./scripts/restart-main.sh",
+    "restart:frontend": "./scripts/restart-frontend.sh",
+    "dev": "./scripts/dev-watch.sh",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "electron": "^38.2.0"
+  }
+}

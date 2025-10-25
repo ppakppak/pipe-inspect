@@ -1,0 +1,8 @@
+# MCP Server Dependencies
+mcp>=0.9.0
+
+# Existing dependencies from Grounded-SAM
+opencv-python
+numpy
+torch
+torchvision

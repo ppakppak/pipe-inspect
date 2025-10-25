@@ -1,0 +1,18 @@
+{
+  "mode": "remote",
+  "local": {
+    "description": "로컬 모드 - GPU가 있는 서버에서 직접 실행",
+    "mcp_server_script": "./mcp-server/server.py",
+    "backend_port": 5003
+  },
+  "remote": {
+    "description": "GPU 서버 REST 모드 - backend_proxy → gpu-server/api.py",
+    "mcp_server_host": "localhost",
+    "mcp_server_port": 5004,
+    "backend_port": 5003
+  },
+  "grounded_sam": {
+    "project_base_dir": "/home/ppak/SynologyDrive/ykpark/linux_devel/ground_sam/Grounded-Segment-Anything",
+    "projects_dir": "projects"
+  }
+}

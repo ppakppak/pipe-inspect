@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.python311_mamba/
+micromamba/
+
+# Logs
+*.log
+backend-proxy.log
+backend.log
+gpu-server.log
+gpu-final.log
+gpu-server-new.log
+video_conversion.log
+video_conversion_kwan.log
+video_conversion_sahara.log
+video_conversion_sahara_gpu.log
+video_conversion_sahara_parallel.log
+sahara_schedule.log
+scheduled_conversion.log
+
+# Node.js
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Project specific
+.video_cache/
+.video_conversion/
+projects/
+test_output/
+users.json
+
+# Model files
+segformer_best.pth
+segformer_best_org.pth
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

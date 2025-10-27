@@ -839,47 +839,63 @@
                 </div>
             </div>
 
-            <!-- Project Creation Section -->
-            <div style="margin-bottom: 20px;">
-                <h3 data-i18n="project.createNew">새 프로젝트 생성</h3>
-                <div style="margin-bottom: 10px;">
-                    <input type="text" id="projectName" data-i18n-placeholder="project.namePlaceholder" placeholder="프로젝트 이름 (필수)"
-                           style="padding: 8px; width: 250px; margin-right: 10px;">
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <input type="text" id="projectWorker" data-i18n-placeholder="project.workerPlaceholder" placeholder="작업자 이름 (선택)"
-                           style="padding: 8px; width: 250px; margin-right: 10px;">
-                </div>
-                <button onclick="createProject(); return false;" data-i18n="project.create">➕ 프로젝트 생성</button>
-            </div>
+            <!-- 2-Column Layout: Project Creation (1) + Comments Dashboard (2) -->
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px; margin-bottom: 30px;">
 
-            <!-- Comments Dashboard Section -->
-            <div style="margin-bottom: 30px;">
-                <h3><span>💬 코멘트 대시보드</span>
-                    <button onclick="loadCommentsDashboard()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px;">🔄 새로고침</button>
-                </h3>
-
-                <!-- Filter Controls -->
-                <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                    <input type="text" id="commentFilterProject" placeholder="프로젝트 필터..."
-                           style="padding: 6px; flex: 1; min-width: 150px;"
-                           oninput="filterComments()">
-                    <input type="text" id="commentFilterUser" placeholder="사용자 필터..."
-                           style="padding: 6px; flex: 1; min-width: 150px;"
-                           oninput="filterComments()">
-                    <input type="text" id="commentFilterLabel" placeholder="라벨 필터..."
-                           style="padding: 6px; flex: 1; min-width: 150px;"
-                           oninput="filterComments()">
-                    <select id="commentSortBy" onchange="filterComments()" style="padding: 6px;">
-                        <option value="recent">최신순</option>
-                        <option value="project">프로젝트순</option>
-                        <option value="user">사용자순</option>
-                    </select>
+                <!-- Left Column: Project Creation Card -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                    <h3 data-i18n="project.createNew" style="margin-top: 0; margin-bottom: 20px; color: #4a9eff;">➕ 새 프로젝트 생성</h3>
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; color: #ccc; font-size: 13px;">프로젝트 이름 (필수)</label>
+                        <input type="text" id="projectName" data-i18n-placeholder="project.namePlaceholder" placeholder="프로젝트 이름 (필수)"
+                               style="padding: 10px; width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; color: #ccc; font-size: 13px;">작업자 이름 (선택)</label>
+                        <input type="text" id="projectWorker" data-i18n-placeholder="project.workerPlaceholder" placeholder="작업자 이름 (선택)"
+                               style="padding: 10px; width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                    </div>
+                    <button onclick="createProject(); return false;" data-i18n="project.create"
+                            style="width: 100%; padding: 12px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                        ➕ 프로젝트 생성
+                    </button>
                 </div>
 
-                <!-- Comments List -->
-                <div id="commentsDashboard" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 200px; max-height: 500px; overflow-y: auto; background: #1e1e1e;">
-                    <span style="color: #888;">코멘트를 불러오는 중...</span>
+                <!-- Right Column: Comments Dashboard Card -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #4a9eff;">💬 코멘트 대시보드</h3>
+                        <button onclick="loadCommentsDashboard()" style="font-size: 12px; padding: 6px 12px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white;">
+                            🔄 새로고침
+                        </button>
+                    </div>
+
+                    <!-- Filter Controls -->
+                    <div style="margin-bottom: 15px; display: grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap: 8px;">
+                        <input type="text" id="commentFilterProject" placeholder="프로젝트 필터..."
+                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                               oninput="filterComments()">
+                        <input type="text" id="commentFilterUser" placeholder="사용자 필터..."
+                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                               oninput="filterComments()">
+                        <input type="text" id="commentFilterLabel" placeholder="라벨 필터..."
+                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                               oninput="filterComments()">
+                        <select id="commentSortBy" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="recent">최신순</option>
+                            <option value="project">프로젝트순</option>
+                            <option value="user">사용자순</option>
+                        </select>
+                        <button id="toggleAnnotationsBtn" onclick="toggleAnnotationsDisplay()"
+                                style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px; white-space: nowrap;">
+                            👁️ 어노테이션 숨김
+                        </button>
+                    </div>
+
+                    <!-- Comments List -->
+                    <div id="commentsDashboard" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 300px; max-height: 450px; overflow-y: auto; background: #1e1e1e;">
+                        <span style="color: #888;">코멘트를 불러오는 중...</span>
+                    </div>
                 </div>
             </div>
 
@@ -959,7 +975,7 @@
                         <!-- Current Frame Annotations -->
                         <div style="margin-bottom: 0; flex-grow: 1; display: flex; flex-direction: column;">
                             <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px; font-size: 14px;" data-i18n="annotation.currentFrame">Current Frame</h4>
-                            <div id="annotationList" style="border: 1px solid #404040; padding: 10px; border-radius: 4px; min-height: 200px; overflow-y: auto; background: #2d2d2d; font-size: 12px; flex-grow: 1;">
+                            <div id="annotationList" style="border: 1px solid #404040; padding: 10px; border-radius: 4px; min-height: 200px; max-height: 280px; overflow-y: auto; background: #2d2d2d; font-size: 12px;">
                                 <span data-i18n="annotation.noAnnotations">No annotations</span>
                             </div>
                             <div style="margin-top: 10px; display: flex; gap: 5px;">
@@ -1039,24 +1055,32 @@
                         </div>
 
                         <!-- Video Controls -->
-                        <div style="display: flex; gap: 10px; align-items: center;">
-                            <button id="playBtn" onclick="togglePlay()" disabled data-i18n="annotation.play">▶ Play</button>
-                            <button id="prevFrameBtn" onclick="prevFrame()" disabled data-i18n="annotation.prev">◀ Prev</button>
-                            <button id="nextFrameBtn" onclick="nextFrame()" disabled data-i18n="annotation.next">Next ▶</button>
-                            <button id="skip15BackBtn" onclick="skip15SecondsBackward()" disabled data-i18n="annotation.skip15Back">⏪ -15s</button>
-                            <button id="skip15ForwardBtn" onclick="skip15SecondsForward()" disabled data-i18n="annotation.skip15Forward">+15s ⏩</button>
-                            <input type="range" id="frameSlider" min="0" max="0" value="0"
-                                   style="flex: 1;" disabled oninput="onSliderChange()">
-                            <span id="frameLabel">Frame: 0 / 0</span>
-                            <label style="color: #e0e0e0; margin-left: 10px; font-size: 14px;" data-i18n="annotation.speed">속도:</label>
-                            <select id="annotationPlaybackSpeed" onchange="changeAnnotationPlaybackSpeed()" style="padding: 6px 10px; background: #2e2e2e; color: #fff; border: 1px solid #404040; border-radius: 4px; cursor: pointer; font-size: 13px;">
-                                <option value="0.25">0.25x</option>
-                                <option value="0.5">0.5x</option>
-                                <option value="1" selected>1x</option>
-                                <option value="1.5">1.5x</option>
-                                <option value="2">2x</option>
-                                <option value="4">4x</option>
-                            </select>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <!-- Playback Buttons Row -->
+                            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                <button id="playBtn" onclick="togglePlay()" disabled data-i18n="annotation.play">▶ Play</button>
+                                <button id="prevFrameBtn" onclick="prevFrame()" disabled data-i18n="annotation.prev">◀ Prev</button>
+                                <button id="nextFrameBtn" onclick="nextFrame()" disabled data-i18n="annotation.next">Next ▶</button>
+                                <button id="skip15BackBtn" onclick="skip15SecondsBackward()" disabled data-i18n="annotation.skip15Back">⏪ -15s</button>
+                                <button id="skip15ForwardBtn" onclick="skip15SecondsForward()" disabled data-i18n="annotation.skip15Forward">+15s ⏩</button>
+                                <span id="frameLabel" style="margin-left: auto;">Frame: 0 / 0</span>
+                                <label style="color: #e0e0e0; font-size: 14px;" data-i18n="annotation.speed">속도:</label>
+                                <select id="annotationPlaybackSpeed" onchange="changeAnnotationPlaybackSpeed()" style="padding: 6px 10px; background: #2e2e2e; color: #fff; border: 1px solid #404040; border-radius: 4px; cursor: pointer; font-size: 13px;">
+                                    <option value="0.25">0.25x</option>
+                                    <option value="0.5">0.5x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="1.5">1.5x</option>
+                                    <option value="2">2x</option>
+                                    <option value="4">4x</option>
+                                    <option value="8">8x</option>
+                                    <option value="16">16x</option>
+                                </select>
+                            </div>
+                            <!-- Progress Bar Row (matches canvas width) -->
+                            <div style="display: flex; width: 100%;">
+                                <input type="range" id="frameSlider" min="0" max="0" value="0"
+                                       style="width: 100%;" disabled oninput="onSliderChange()">
+                            </div>
                         </div>
                         </div>
                     </div>
@@ -2231,8 +2255,14 @@
         // 코멘트 대시보드 기능
         // ============================================
 
+        // 답글 데이터 저장 (comment_id -> replies 배열)
+        const repliesData = new Map();
+
         // 전역 변수로 모든 코멘트 저장
         let allComments = [];
+
+        // 어노테이션 표시 상태 (true: 보임, false: 숨김)
+        let showAnnotations = true;
 
         // 코멘트 대시보드 불러오기
         async function loadCommentsDashboard() {
@@ -2298,12 +2328,18 @@
 
             // 어노테이션을 그리기 위한 타이머
             const annotationDrawTimer = setTimeout(() => {
-                filtered.forEach((comment, index) => {
-                    drawAnnotationOnCanvas(comment, index);
+                filtered.forEach((comment, displayIndex) => {
+                    // 원본 allComments 배열에서의 실제 인덱스 찾기
+                    const actualIndex = allComments.findIndex(c => c.comment_id === comment.comment_id);
+                    drawAnnotationOnCanvas(comment, actualIndex);
                 });
             }, 100);
 
-            dashboard.innerHTML = filtered.map((comment, index) => {
+            dashboard.innerHTML = filtered.map((comment, displayIndex) => {
+                // 원본 allComments 배열에서의 실제 인덱스 찾기
+                const actualIndex = allComments.findIndex(c => c.comment_id === comment.comment_id);
+                const index = actualIndex; // 이후 코드에서 index 사용
+
                 const statusColors = {
                     'open': '#4a9eff',
                     'resolved': '#28a745',
@@ -2337,50 +2373,57 @@
                         ${comment.comment}
                     </div>
 
-                    <!-- 프레임 이미지 및 어노테이션 표시 -->
-                    <div style="margin-bottom: 8px; position: relative; display: inline-block; max-width: 400px; background: #000; border-radius: 4px; overflow: hidden;">
-                        <img
-                            src="${API_BASE_URL}${comment.frame_url}?token=${encodeURIComponent(localStorage.getItem('session_id'))}"
-                            alt="Frame ${comment.frame}"
-                            style="width: 100%; height: auto; display: block;"
-                            onerror="this.onerror=null; this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22300%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%23888%22>이미지 로드 실패</text></svg>';"
-                        />
-                        ${comment.polygon || comment.box ? `
-                            <canvas
-                                id="annotation-canvas-${index}"
-                                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"
-                            ></canvas>
-                        ` : ''}
-                    </div>
-
-                    <div style="font-size: 12px; color: #888; margin-bottom: 8px;">
-                        비디오: ${comment.video_id} | 프로젝트 소유자: ${comment.project_owner}
-                    </div>
-
-                    <!-- 답글 버튼 및 상태 변경 -->
-                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-                        <button onclick="toggleReplies(${index})" style="background: #1a1a1a; color: #4a9eff; border: 1px solid #4a9eff; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 12px;">
-                            💬 답글 (${comment.replies_count || 0})
-                        </button>
-                        <select onchange="updateDiscussionStatus(${index}, this.value)" style="background: #1a1a1a; color: white; border: 1px solid #555; padding: 4px 8px; border-radius: 3px; font-size: 12px;">
-                            <option value="open" ${comment.discussion_status === 'open' ? 'selected' : ''}>진행중</option>
-                            <option value="pending" ${comment.discussion_status === 'pending' ? 'selected' : ''}>보류</option>
-                            <option value="resolved" ${comment.discussion_status === 'resolved' ? 'selected' : ''}>해결됨</option>
-                        </select>
-                    </div>
-
-                    <!-- 답글 섹션 (숨김 상태로 시작) -->
-                    <div id="replies-section-${index}" style="display: none; margin-top: 10px; padding: 10px; background: #1a1a1a; border-radius: 4px;">
-                        <div id="replies-list-${index}" style="margin-bottom: 10px;">
-                            <span style="color: #888;">답글을 불러오는 중...</span>
+                    <!-- 이미지와 컨트롤을 나란히 배치 -->
+                    <div style="display: flex; gap: 15px; margin-bottom: 8px; align-items: flex-start;">
+                        <!-- 왼쪽: 프레임 이미지 및 어노테이션 표시 -->
+                        <div style="flex-shrink: 0;">
+                            <div style="position: relative; display: inline-block; max-width: 400px; background: #000; border-radius: 4px; overflow: hidden;">
+                                <img
+                                    src="${API_BASE_URL}${comment.frame_url}?token=${encodeURIComponent(localStorage.getItem('session_id'))}"
+                                    alt="Frame ${comment.frame}"
+                                    style="width: 100%; height: auto; display: block;"
+                                    onerror="this.onerror=null; this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22300%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%23888%22>이미지 로드 실패</text></svg>';"
+                                />
+                                ${comment.polygon || comment.box ? `
+                                    <canvas
+                                        id="annotation-canvas-${index}"
+                                        style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"
+                                    ></canvas>
+                                ` : ''}
+                            </div>
+                            <div style="font-size: 12px; color: #888; margin-top: 8px;">
+                                비디오: ${comment.video_id} | 프로젝트 소유자: ${comment.project_owner}
+                            </div>
                         </div>
 
-                        <!-- 답글 작성 폼 -->
-                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
-                            <textarea id="reply-input-${index}" placeholder="답글을 입력하세요..." style="width: 100%; min-height: 60px; background: #2a2a2a; color: white; border: 1px solid #555; padding: 8px; border-radius: 3px; resize: vertical; font-family: inherit;"></textarea>
-                            <button onclick="submitReply(${index})" style="margin-top: 8px; background: #4a9eff; color: white; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">
-                                답글 작성
-                            </button>
+                        <!-- 오른쪽: 답글 버튼, 상태 변경 및 답글 리스트 -->
+                        <div style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0;">
+                            <!-- 버튼 영역 -->
+                            <div style="display: flex; gap: 8px;">
+                                <button id="reply-btn-${comment.comment_id}" onclick="toggleReplies('${comment.comment_id}')" style="background: #1a1a1a; color: #4a9eff; border: 1px solid #4a9eff; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
+                                    💬 답글 (${comment.replies_count || 0})
+                                </button>
+                                <select onchange="updateDiscussionStatus('${comment.comment_id}', this.value)" style="background: #1a1a1a; color: white; border: 1px solid #555; padding: 8px; border-radius: 3px; font-size: 12px;">
+                                    <option value="open" ${comment.discussion_status === 'open' ? 'selected' : ''}>진행중</option>
+                                    <option value="pending" ${comment.discussion_status === 'pending' ? 'selected' : ''}>보류</option>
+                                    <option value="resolved" ${comment.discussion_status === 'resolved' ? 'selected' : ''}>해결됨</option>
+                                </select>
+                            </div>
+
+                            <!-- 답글 섹션 (숨김 상태로 시작) -->
+                            <div id="replies-section-${comment.comment_id}" style="display: none; padding: 10px; background: #1a1a1a; border-radius: 4px;">
+                                <div id="replies-list-${comment.comment_id}" style="margin-bottom: 10px; max-height: 300px; overflow-y: auto;">
+                                    <span style="color: #888;">답글을 불러오는 중...</span>
+                                </div>
+
+                                <!-- 답글 작성 폼 -->
+                                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
+                                    <textarea id="reply-input-${comment.comment_id}" placeholder="답글을 입력하세요..." style="width: 100%; min-height: 60px; background: #2a2a2a; color: white; border: 1px solid #555; padding: 8px; border-radius: 3px; resize: vertical; font-family: inherit; box-sizing: border-box;"></textarea>
+                                    <button onclick="submitReply('${comment.comment_id}')" style="margin-top: 8px; background: #4a9eff; color: white; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">
+                                        답글 작성
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2392,22 +2435,26 @@
         // ============================================
 
         // 답글 섹션 토글
-        function toggleReplies(index) {
-            const repliesSection = document.getElementById(`replies-section-${index}`);
+        function toggleReplies(commentId) {
+            const repliesSection = document.getElementById(`replies-section-${commentId}`);
             const currentDisplay = repliesSection.style.display;
 
             if (currentDisplay === 'none') {
                 repliesSection.style.display = 'block';
-                loadReplies(index);
+                loadReplies(commentId);
             } else {
                 repliesSection.style.display = 'none';
             }
         }
 
         // 답글 로드
-        async function loadReplies(index) {
-            const comment = allComments[index];
-            const repliesList = document.getElementById(`replies-list-${index}`);
+        async function loadReplies(commentId) {
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
+            const repliesList = document.getElementById(`replies-list-${commentId}`);
 
             try {
                 repliesList.innerHTML = '<span style="color: #888;">답글을 불러오는 중...</span>';
@@ -2428,17 +2475,53 @@
                 const data = await response.json();
 
                 if (data.success && data.thread && data.thread.replies && data.thread.replies.length > 0) {
-                    repliesList.innerHTML = data.thread.replies.map(reply => `
-                        <div style="background: #2a2a2a; padding: 10px; margin-bottom: 8px; border-left: 2px solid #555; border-radius: 3px;">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                                <span style="color: #4a9eff; font-size: 12px; font-weight: bold;">${reply.user_id}</span>
-                                <span style="color: #888; font-size: 11px;">${new Date(reply.created_at).toLocaleString()}</span>
+                    // 답글 데이터 저장
+                    repliesData.set(commentId, data.thread.replies);
+
+                    const currentUser = getCurrentUser();
+                    const currentUserId = currentUser ? currentUser.user_id : null;
+
+                    repliesList.innerHTML = data.thread.replies.map((reply, replyIndex) => {
+                        const isOwnReply = currentUserId && reply.user_id === currentUserId;
+
+                        return `
+                        <div id="reply-${commentId}-${replyIndex}" style="background: #2a2a2a; padding: 10px; margin-bottom: 8px; border-left: 2px solid ${isOwnReply ? '#4a9eff' : '#555'}; border-radius: 3px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <div>
+                                    <span style="color: #4a9eff; font-size: 12px; font-weight: bold;">${reply.user_id}</span>
+                                    ${isOwnReply ? '<span style="color: #4a9eff; font-size: 10px; margin-left: 5px;">(나)</span>' : ''}
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="color: #888; font-size: 11px;">${new Date(reply.created_at).toLocaleString()}</span>
+                                    ${isOwnReply ? `
+                                        <button onclick="editReply('${commentId}', ${replyIndex}, '${comment.comment_id}')" style="background: #555; color: white; border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;">✏️ 편집</button>
+                                        <button onclick="deleteReply('${commentId}', ${replyIndex}, '${comment.comment_id}')" style="background: #dc3545; color: white; border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;">🗑️ 삭제</button>
+                                    ` : ''}
+                                </div>
                             </div>
-                            <div style="color: #ddd; font-size: 13px; white-space: pre-wrap;">${reply.comment}</div>
+                            <div id="reply-content-${commentId}-${replyIndex}" style="color: #ddd; font-size: 13px; white-space: pre-wrap;">${reply.comment}</div>
                         </div>
-                    `).join('');
+                    `}).join('');
+
+                    // 답글 개수 업데이트
+                    const replyCount = data.thread.replies.length;
+                    comment.replies_count = replyCount;
+                    const btn = document.getElementById(`reply-btn-${commentId}`);
+                    if (btn) {
+                        btn.textContent = `💬 답글 (${replyCount})`;
+                    }
                 } else {
+                    // 답글 데이터 초기화
+                    repliesData.set(commentId, []);
+
                     repliesList.innerHTML = '<span style="color: #888;">아직 답글이 없습니다.</span>';
+
+                    // 답글이 없으면 개수를 0으로 업데이트
+                    comment.replies_count = 0;
+                    const btn = document.getElementById(`reply-btn-${commentId}`);
+                    if (btn) {
+                        btn.textContent = `💬 답글 (0)`;
+                    }
                 }
             } catch (error) {
                 console.error('답글 로드 오류:', error);
@@ -2447,9 +2530,13 @@
         }
 
         // 답글 제출
-        async function submitReply(index) {
-            const comment = allComments[index];
-            const replyInput = document.getElementById(`reply-input-${index}`);
+        async function submitReply(commentId) {
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
+            const replyInput = document.getElementById(`reply-input-${commentId}`);
             const replyText = replyInput.value.trim();
 
             if (!replyText) {
@@ -2491,13 +2578,13 @@
                     replyInput.value = '';
 
                     // 답글 목록 새로고침
-                    await loadReplies(index);
+                    await loadReplies(commentId);
 
                     // 답글 수 업데이트
-                    allComments[index].replies_count = data.total_replies;
+                    comment.replies_count = data.total_replies;
 
                     // 답글 버튼 텍스트 업데이트
-                    const btn = document.querySelector(`#comment-card-${index} button[onclick="toggleReplies(${index})"]`);
+                    const btn = document.getElementById(`reply-btn-${commentId}`);
                     if (btn) {
                         btn.textContent = `💬 답글 (${data.total_replies})`;
                     }
@@ -2513,8 +2600,12 @@
         }
 
         // 토론 상태 업데이트
-        async function updateDiscussionStatus(index, newStatus) {
-            const comment = allComments[index];
+        async function updateDiscussionStatus(commentId, newStatus) {
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
 
             try {
                 const response = await fetch(`${API_BASE_URL}/api/discussions/${comment.comment_id}/status`, {
@@ -2538,7 +2629,7 @@
 
                 if (data.success) {
                     // 상태 업데이트
-                    allComments[index].discussion_status = newStatus;
+                    comment.discussion_status = newStatus;
 
                     // UI 새로고침
                     filterComments();
@@ -2551,6 +2642,164 @@
 
                 // 오류 발생 시 select 되돌리기
                 filterComments();
+            }
+        }
+
+        // 답글 삭제
+        async function deleteReply(commentId, replyIndex, originalCommentId) {
+            if (!confirm('정말로 이 답글을 삭제하시겠습니까?')) {
+                return;
+            }
+
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
+
+            const replies = repliesData.get(commentId);
+            if (!replies || !replies[replyIndex]) {
+                console.error('Reply not found');
+                return;
+            }
+
+            const reply = replies[replyIndex];
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/discussions/reply`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('session_id')}`
+                    },
+                    body: JSON.stringify({
+                        comment_id: originalCommentId,
+                        reply_index: replyIndex,
+                        project_owner: comment.project_owner,
+                        project_name: comment.project_name_full
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('답글 삭제에 실패했습니다');
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('답글이 삭제되었습니다.');
+                    // 답글 목록 새로고침
+                    await loadReplies(commentId);
+                } else {
+                    throw new Error(data.error || '답글 삭제에 실패했습니다');
+                }
+            } catch (error) {
+                console.error('답글 삭제 오류:', error);
+                alert('답글 삭제 중 오류가 발생했습니다: ' + error.message);
+            }
+        }
+
+        // 답글 편집
+        async function editReply(commentId, replyIndex, originalCommentId) {
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
+
+            const replies = repliesData.get(commentId);
+            if (!replies || !replies[replyIndex]) {
+                console.error('Reply not found');
+                return;
+            }
+
+            const reply = replies[replyIndex];
+            const contentDiv = document.getElementById(`reply-content-${commentId}-${replyIndex}`);
+            if (!contentDiv) return;
+
+            // 현재 내용 저장
+            const originalContent = reply.comment;
+
+            // 편집 모드로 전환
+            contentDiv.innerHTML = `
+                <textarea id="edit-reply-input-${commentId}-${replyIndex}"
+                          style="width: 100%; min-height: 60px; background: #1a1a1a; color: white; border: 1px solid #555; padding: 8px; border-radius: 3px; resize: vertical; font-family: inherit; box-sizing: border-box;">${originalContent}</textarea>
+                <div style="margin-top: 8px; display: flex; gap: 8px;">
+                    <button onclick="saveEditedReply('${commentId}', ${replyIndex}, '${originalCommentId}')" style="background: #4a9eff; color: white; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">💾 저장</button>
+                    <button onclick="cancelEditReply('${commentId}', ${replyIndex}, \`${originalContent.replace(/`/g, '\\`')}\`)" style="background: #555; color: white; border: none; padding: 6px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">✖ 취소</button>
+                </div>
+            `;
+
+            // 편집 중에는 편집/삭제 버튼 숨기기
+            const replyDiv = document.getElementById(`reply-${commentId}-${replyIndex}`);
+            const buttons = replyDiv.querySelectorAll('button[onclick^="editReply"], button[onclick^="deleteReply"]');
+            buttons.forEach(btn => btn.style.display = 'none');
+        }
+
+        // 편집 취소
+        function cancelEditReply(commentId, replyIndex, originalContent) {
+            const contentDiv = document.getElementById(`reply-content-${commentId}-${replyIndex}`);
+            if (!contentDiv) return;
+
+            // 원래 내용으로 복원
+            contentDiv.innerHTML = originalContent;
+
+            // 편집/삭제 버튼 다시 표시
+            const replyDiv = document.getElementById(`reply-${commentId}-${replyIndex}`);
+            const buttons = replyDiv.querySelectorAll('button[onclick^="editReply"], button[onclick^="deleteReply"]');
+            buttons.forEach(btn => btn.style.display = '');
+        }
+
+        // 편집된 답글 저장
+        async function saveEditedReply(commentId, replyIndex, originalCommentId) {
+            const comment = allComments.find(c => c.comment_id === commentId);
+            if (!comment) {
+                console.error('Comment not found:', commentId);
+                return;
+            }
+
+            const textarea = document.getElementById(`edit-reply-input-${commentId}-${replyIndex}`);
+            if (!textarea) return;
+
+            const newContent = textarea.value.trim();
+
+            if (!newContent) {
+                alert('답글 내용을 입력해주세요.');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/discussions/reply`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('session_id')}`
+                    },
+                    body: JSON.stringify({
+                        comment_id: originalCommentId,
+                        reply_index: replyIndex,
+                        new_comment: newContent,
+                        project_owner: comment.project_owner,
+                        project_name: comment.project_name_full
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('답글 수정에 실패했습니다');
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('답글이 수정되었습니다.');
+                    // 답글 목록 새로고침
+                    await loadReplies(commentId);
+                } else {
+                    throw new Error(data.error || '답글 수정에 실패했습니다');
+                }
+            } catch (error) {
+                console.error('답글 수정 오류:', error);
+                alert('답글 수정 중 오류가 발생했습니다: ' + error.message);
             }
         }
 
@@ -2575,6 +2824,11 @@
 
                 // 캔버스를 초기화
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // 어노테이션이 숨김 상태면 그리지 않음
+                if (!showAnnotations) {
+                    return;
+                }
 
                 // 폴리곤 그리기
                 if (comment.polygon && Array.isArray(comment.polygon) && comment.polygon.length > 0) {
@@ -2612,6 +2866,25 @@
                 // 이미지 로드 대기
                 img.addEventListener('load', drawOnLoad, { once: true });
             }
+        }
+
+        // 어노테이션 표시/숨김 토글
+        function toggleAnnotationsDisplay() {
+            showAnnotations = !showAnnotations;
+
+            const btn = document.getElementById('toggleAnnotationsBtn');
+            if (showAnnotations) {
+                btn.innerHTML = '👁️ 어노테이션 숨김';
+                btn.style.background = '#4a9eff';
+            } else {
+                btn.innerHTML = '👁️‍🗨️ 어노테이션 보기';
+                btn.style.background = '#555';
+            }
+
+            // 모든 어노테이션 캔버스 다시 그리기
+            allComments.forEach((comment, index) => {
+                drawAnnotationOnCanvas(comment, index);
+            });
         }
 
         // 프로젝트 목록 불러오기 (2열 구조)
@@ -3232,7 +3505,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         statusToggleBtn +
                         '<button onclick="removeVideo(\'' + v.video_id + '\')" style="background: #dc3545; font-size: 12px; padding: 5px 10px;">[Remove]</button>' +
                     '</div>' +
-                    '<small style="color: #999;">Frames: ' + (v.frame_count || 0) +
+                    '<small style="color: #999;">Frames: ' + (v.total_frames || v.frame_count || 0) +
                         (v.width && v.height ? ' | Resolution: ' + v.width + 'x' + v.height : '') +
                         ' | Annotations: ' + (v.annotations || 0) + '</small>' +
                 '</div>';
@@ -4485,6 +4758,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         { name: 'sediment_coating', description: '침전물(탈리, 도장재)' },
                         { name: 'sediment_other', description: '침전물(기타)' },
                         { name: 'slime', description: '슬라임(물때)' },
+                        { name: 'vanishing_point', description: '소실점' },
                         { name: 'needs_discussion', description: '논의필요' }
                     ]  // 기본 클래스
                 };
@@ -4545,6 +4819,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         let currentVideoStatus = 'in_progress';  // 현재 비디오 상태 (in_progress, completed)
         let frameLoadAbortController = null;  // 프레임 로드 요청 취소용 AbortController
         let sliderDebounceTimer = null;  // 슬라이더 디바운스 타이머
+        let lastSliderUpdate = 0;  // 마지막 슬라이더 업데이트 시간 (throttle용)
         let isDrawing = false;
         let startX, startY;
         let currentBox = null;
@@ -5545,11 +5820,21 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     button.onmouseover = () => {
                         button.style.background = '#4a9eff';
                         button.style.borderColor = '#4a9eff';
+                        // 텍스트 색상 변경하여 가독성 향상
+                        const titleDiv = button.querySelector('div:first-child');
+                        const subtitleDiv = button.querySelector('div:nth-child(2)');
+                        if (titleDiv) titleDiv.style.color = '#ffffff';
+                        if (subtitleDiv) subtitleDiv.style.color = '#e0e0e0';
                     };
 
                     button.onmouseout = () => {
                         button.style.background = '#2d2d2d';
                         button.style.borderColor = '#404040';
+                        // 원래 텍스트 색상으로 복원
+                        const titleDiv = button.querySelector('div:first-child');
+                        const subtitleDiv = button.querySelector('div:nth-child(2)');
+                        if (titleDiv) titleDiv.style.color = '#4a9eff';
+                        if (subtitleDiv) subtitleDiv.style.color = '#888';
                     };
 
                     button.onclick = () => {
@@ -6486,35 +6771,55 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             updateAnnotationList();
         }
 
-        // Play/Pause 토글 (하이브리드 방식)
+        // Play/Pause 토글
         function togglePlay() {
-            isPlaying = !isPlaying;
-            document.getElementById('playBtn').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
-
             if (isPlaying) {
-                console.log('[VIDEO] Starting playback');
-                // Start video playback
-                videoElement.play();
-                // Start rendering loop
-                renderLoopActive = true;
-                requestAnimationFrame(renderVideoToCanvas);
-            } else {
-                console.log('[VIDEO] Pausing playback');
-                // Pause video
+                // Pause playback
                 videoElement.pause();
-                // Stop rendering loop
                 renderLoopActive = false;
+                isPlaying = false;
+                document.getElementById('playBtn').textContent = '▶ Play';
+
+                // Sync currentFrame from video time
+                currentFrame = Math.floor(videoElement.currentTime * videoFPS);
+                currentFrame = Math.min(currentFrame, totalFrames - 1);
+                currentFrame = Math.max(currentFrame, 0);
+
                 // Load precise frame image for annotation
                 loadFrame(currentFrame);
+            } else {
+                // Start playback
+                isPlaying = true;
+                document.getElementById('playBtn').textContent = '⏸ Pause';
+
+                // Sync video time to current frame before playing
+                videoElement.currentTime = currentFrame / videoFPS;
+
+                // Start normal playback
+                videoElement.play();
+                renderLoopActive = true;
+                requestAnimationFrame(renderVideoToCanvas);
             }
         }
+
 
         // 어노테이션 탭 재생 속도 변경
         function changeAnnotationPlaybackSpeed() {
             const speed = parseFloat(document.getElementById('annotationPlaybackSpeed').value);
-            if (videoElement) {
-                videoElement.playbackRate = speed;
-                console.log('[VIDEO] Playback speed changed to:', speed + 'x');
+
+            if (!videoElement) {
+                return;
+            }
+
+            // Set video playback speed
+            videoElement.playbackRate = speed;
+            console.log('[VIDEO] Playback speed changed to: ' + speed + 'x');
+
+            // If currently playing, ensure video playback is active
+            if (isPlaying) {
+                renderLoopActive = true;
+                videoElement.play();
+                requestAnimationFrame(renderVideoToCanvas);
             }
         }
 
@@ -6580,8 +6885,36 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
         }
 
-        // 슬라이더 변경 (디바운싱 + 요청 취소)
+        // 슬라이더 변경 (throttle + 디바운싱)
         async function onSliderChange() {
+            // 새로운 프레임 번호 가져오기
+            const targetFrame = parseInt(document.getElementById('frameSlider').value);
+            currentFrame = targetFrame;
+
+            // 비디오 시간 즉시 동기화
+            const targetTime = currentFrame / videoFPS;
+            videoElement.currentTime = targetTime;
+            updateFrameLabel();
+
+            // 현재 시간
+            const now = Date.now();
+
+            // Throttle: 50ms마다 한 번씩만 비디오 프레임을 캔버스에 그리기
+            if (now - lastSliderUpdate > 50) {
+                lastSliderUpdate = now;
+
+                // requestAnimationFrame을 사용하여 비디오 프레임을 즉시 캔버스에 그리기
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {  // 두 번 호출하여 비디오가 프레임을 업데이트할 시간 확보
+                        const canvas = document.getElementById('videoCanvas');
+                        const ctx = canvas.getContext('2d');
+                        if (videoElement.readyState >= 2) {  // HAVE_CURRENT_DATA 이상
+                            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                        }
+                    });
+                });
+            }
+
             // 이전 디바운스 타이머 취소
             if (sliderDebounceTimer) {
                 clearTimeout(sliderDebounceTimer);
@@ -6592,15 +6925,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 frameLoadAbortController.abort();
             }
 
-            // 새로운 프레임 번호 가져오기
-            const targetFrame = parseInt(document.getElementById('frameSlider').value);
-            currentFrame = targetFrame;
-
-            // 비디오 시간 즉시 동기화 (부드러운 슬라이더 경험)
-            videoElement.currentTime = currentFrame / videoFPS;
-            updateFrameLabel();
-
-            // 300ms 디바운스 후 프레임 로드
+            // 200ms 디바운스 후 고품질 프레임 로드 (드래그가 멈춘 후)
             sliderDebounceTimer = setTimeout(async () => {
                 // 새 AbortController 생성
                 frameLoadAbortController = new AbortController();
@@ -6614,7 +6939,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         console.error('[SLIDER] Error loading frame:', error);
                     }
                 }
-            }, 300);  // 300ms 디바운스
+            }, 200);  // 200ms 디바운스
         }
 
         // AI 상태 확인 (UI 제거됨 - 비활성화)
@@ -7337,12 +7662,17 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 }
 
                 // Filter to only include current user's annotations
+                // BUT: If an annotation has a comment added by current user, include it
                 const myAnnotations = {};
                 for (const [frameKey, annotations] of Object.entries(savedFrameAnnotations)) {
                     if (Array.isArray(annotations)) {
                         const myFrameAnnotations = annotations.filter(ann => {
                             // Include if created_by is not set (new annotation) or matches current user
-                            return !ann.created_by || ann.created_by === currentUser.user_id;
+                            const isMyAnnotation = !ann.created_by || ann.created_by === currentUser.user_id;
+                            // Also include if this annotation has a comment field (even if empty - for deletion)
+                            // This ensures comment deletion is also sent to server
+                            const hasCommentField = 'comment' in ann;
+                            return isMyAnnotation || hasCommentField;
                         });
                         myAnnotations[frameKey] = myFrameAnnotations;
                     }
@@ -7397,12 +7727,17 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 }
 
                 // Filter to only include current user's annotations
+                // BUT: If an annotation has a comment added by current user, include it
                 const myAnnotations = {};
                 for (const [frameKey, annotations] of Object.entries(savedFrameAnnotations)) {
                     if (Array.isArray(annotations)) {
                         const myFrameAnnotations = annotations.filter(ann => {
                             // Include if created_by is not set (new annotation) or matches current user
-                            return !ann.created_by || ann.created_by === currentUser.user_id;
+                            const isMyAnnotation = !ann.created_by || ann.created_by === currentUser.user_id;
+                            // Also include if this annotation has a comment field (even if empty - for deletion)
+                            // This ensures comment deletion is also sent to server
+                            const hasCommentField = 'comment' in ann;
+                            return isMyAnnotation || hasCommentField;
                         });
                         myAnnotations[frameKey] = myFrameAnnotations;
                     }

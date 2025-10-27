@@ -781,42 +781,62 @@ def get_project(project_id):
         # annotations_dir 추가 (project_dir은 이미 설정됨)
         annotations_dir = project_dir / 'annotations'
 
-        # 각 비디오의 프레임 수와 어노테이션 수 계산
+        # 각 비디오의 어노테이션 수 계산 (총 프레임 수는 보존)
         if 'videos' in project_data and annotations_dir.exists():
             for video in project_data['videos']:
                 video_id = video.get('video_id')
                 if video_id:
                     video_annotations_dir = annotations_dir / video_id
-                    video_json_file = video_annotations_dir / 'annotations.json'
-                    if video_json_file.exists():
+
+                    # 모든 사용자의 어노테이션을 합산
+                    total_annotation_count = 0
+                    all_annotated_frames = set()
+
+                    if video_annotations_dir.exists():
                         try:
-                            with open(video_json_file, 'r', encoding='utf-8') as vf:
-                                video_data = json.load(vf)
+                            # 디렉토리 내의 모든 JSON 파일 찾기 (사용자별 어노테이션)
+                            for json_file in video_annotations_dir.glob('*.json'):
+                                # .backup 파일은 제외
+                                if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                                    continue
 
-                                # 어노테이션 딕셔너리 가져오기
-                                annotations = video_data.get('annotations', {})
+                                try:
+                                    with open(json_file, 'r', encoding='utf-8') as vf:
+                                        video_data = json.load(vf)
 
-                                # 어노테이션된 프레임 수
-                                video['frame_count'] = len(annotations)
+                                        # 어노테이션 딕셔너리 가져오기
+                                        annotations = video_data.get('annotations', {})
 
-                                # 총 어노테이션 수 계산
-                                annotation_count = sum(len(frame_annotations) for frame_annotations in annotations.values())
+                                        # 프레임 번호 추가
+                                        all_annotated_frames.update(annotations.keys())
 
-                                video['annotations'] = annotation_count
+                                        # 어노테이션 개수 계산
+                                        for frame_annotations in annotations.values():
+                                            total_annotation_count += len(frame_annotations)
+                                except Exception as e:
+                                    logger.warning(f"[PROJECT] Failed to load annotation file {json_file}: {e}")
+
+                            # 어노테이션된 프레임 수 (중복 제거)
+                            video['annotated_frames'] = len(all_annotated_frames)
+
+                            # 총 어노테이션 수
+                            video['annotations'] = total_annotation_count
+
                         except Exception as e:
-                            logger.warning(f"[PROJECT] Failed to load video data for {video_id}: {e}")
-                            video['frame_count'] = 0
+                            logger.warning(f"[PROJECT] Failed to process annotations for {video_id}: {e}")
+                            video['annotated_frames'] = 0
                             video['annotations'] = 0
                     else:
-                        video['frame_count'] = 0
+                        video['annotated_frames'] = 0
                         video['annotations'] = 0
 
         # 프로젝트 통계 계산
         videos = project_data.get('videos', [])
         total_videos = len(videos)
-        annotated_videos = sum(1 for v in videos if v.get('annotations', 0) > 0)
+        # status가 'completed'인 비디오만 완료로 카운팅
+        annotated_videos = sum(1 for v in videos if v.get('status') == 'completed')
         total_annotations = sum(v.get('annotations', 0) for v in videos)
-        annotated_frames = sum(v.get('frame_count', 0) for v in videos)
+        annotated_frames = sum(v.get('annotated_frames', 0) for v in videos)
 
         stats = {
             'total_videos': total_videos,
@@ -2213,50 +2233,100 @@ def save_annotations(project_id: str, video_id: str):
         user_info = user_manager.get_user_info(request.user_id)
         user_name = user_info.get('full_name', request.user_id) if user_info else request.user_id
 
-        # 현재 사용자의 어노테이션만 필터링 (다른 사용자의 어노테이션은 제외)
+        # 어노테이션을 소유자별로 분류하여 저장
         current_time = datetime.now().isoformat()
-        my_annotations = {}
+        annotations_by_owner = {}  # {owner_id: {frame_key: [annotations]}}
 
         for frame_key, frame_annotations in annotations.items():
             if isinstance(frame_annotations, list):
-                my_frame_annotations = []
                 for ann in frame_annotations:
                     if isinstance(ann, dict):
-                        # 작성자 정보가 없거나, 현재 사용자가 작성한 어노테이션만 포함
                         created_by = ann.get('created_by')
 
-                        # 새로 만든 어노테이션이거나 현재 사용자의 어노테이션만 저장
-                        if created_by is None or created_by == request.user_id:
-                            # 작성자 정보 추가/업데이트
-                            if 'created_by' not in ann:
-                                ann['created_by'] = request.user_id
-                                ann['created_by_name'] = user_name
-                                ann['created_at'] = current_time
-                            # 수정 정보는 항상 업데이트
-                            ann['modified_by'] = request.user_id
-                            ann['modified_by_name'] = user_name
-                            ann['modified_at'] = current_time
-                            my_frame_annotations.append(ann)
-                        # else: 다른 사용자의 어노테이션은 무시 (저장하지 않음)
+                        # 새로운 어노테이션인 경우 (created_by가 없음)
+                        if created_by is None:
+                            created_by = request.user_id
+                            ann['created_by'] = request.user_id
+                            ann['created_by_name'] = user_name
+                            ann['created_at'] = current_time
 
-                # 빈 프레임도 저장 (사용자가 명시적으로 프레임을 지운 경우를 기록)
-                my_annotations[frame_key] = my_frame_annotations
+                        # 댓글 삭제 처리: 빈 문자열이면 comment 필드 제거
+                        if 'comment' in ann:
+                            comment_text = ann.get('comment', '').strip()
+                            if not comment_text:
+                                del ann['comment']
 
-        # 사용자별 어노테이션 파일 저장 (user_id.json)
-        annotation_file = annotation_dir / f'{request.user_id}.json'
-        annotation_data = {
-            'project_id': project_id,
-            'video_id': video_id,
-            'user_id': request.user_id,
-            'user_name': user_name,
-            'annotations': my_annotations,  # 현재 사용자의 어노테이션만 저장
-            'updated_at': current_time
-        }
+                        # 수정 정보 업데이트 (댓글 추가/수정/삭제 포함)
+                        ann['modified_by'] = request.user_id
+                        ann['modified_by_name'] = user_name
+                        ann['modified_at'] = current_time
 
-        with open(annotation_file, 'w', encoding='utf-8') as f:
-            json.dump(annotation_data, f, indent=2, ensure_ascii=False)
+                        # 소유자별로 분류
+                        if created_by not in annotations_by_owner:
+                            annotations_by_owner[created_by] = {}
+                        if frame_key not in annotations_by_owner[created_by]:
+                            annotations_by_owner[created_by][frame_key] = []
+                        annotations_by_owner[created_by][frame_key].append(ann)
 
-        logger.info(f"[ANNOTATION] User {request.user_id} ({user_name}) saved annotations for {project_id}/{video_id}")
+        # 각 소유자의 파일을 읽고 업데이트
+        for owner_id, owner_annotations in annotations_by_owner.items():
+            annotation_file = annotation_dir / f'{owner_id}.json'
+
+            # 기존 파일이 있으면 읽어서 병합
+            if annotation_file.exists():
+                try:
+                    with open(annotation_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                    existing_annotations = existing_data.get('annotations', {})
+                except Exception as e:
+                    logger.error(f"[ANNOTATION] Error reading existing file {annotation_file}: {e}")
+                    existing_annotations = {}
+            else:
+                existing_annotations = {}
+
+            # 업데이트할 프레임만 병합 (다른 프레임은 유지)
+            for frame_key, frame_anns in owner_annotations.items():
+                existing_annotations[frame_key] = frame_anns
+
+            # 소유자 정보 조회
+            owner_info = user_manager.get_user_info(owner_id)
+            owner_name = owner_info.get('full_name', owner_id) if owner_info else owner_id
+
+            # 파일 저장
+            annotation_data = {
+                'project_id': project_id,
+                'video_id': video_id,
+                'user_id': owner_id,
+                'user_name': owner_name,
+                'annotations': existing_annotations,
+                'updated_at': current_time
+            }
+
+            with open(annotation_file, 'w', encoding='utf-8') as f:
+                json.dump(annotation_data, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"[ANNOTATION] Updated {owner_id}'s file by {request.user_id} ({user_name}) for {project_id}/{video_id}")
+
+        # 빈 프레임 처리: 현재 사용자가 자신의 어노테이션을 모두 삭제한 경우
+        if request.user_id not in annotations_by_owner:
+            annotation_file = annotation_dir / f'{request.user_id}.json'
+            if annotation_file.exists():
+                try:
+                    with open(annotation_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                    # 빈 프레임도 유지 (명시적 삭제 기록)
+                    annotation_data = {
+                        'project_id': project_id,
+                        'video_id': video_id,
+                        'user_id': request.user_id,
+                        'user_name': user_name,
+                        'annotations': existing_data.get('annotations', {}),
+                        'updated_at': current_time
+                    }
+                    with open(annotation_file, 'w', encoding='utf-8') as f:
+                        json.dump(annotation_data, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"[ANNOTATION] Error updating empty frame: {e}")
 
         return jsonify({
             'success': True,
@@ -2430,6 +2500,9 @@ def get_all_commented_annotations():
 
                         file_owner = json_file.stem
 
+                        # JSON 파일의 user_id를 가져옴 (file_owner보다 우선)
+                        json_user_id = data.get('user_id', file_owner)
+
                         # Handle both new and old JSON formats
                         if 'annotations' in data:
                             annotations_dict = data['annotations']
@@ -2450,13 +2523,17 @@ def get_all_commented_annotations():
 
                                 comment = ann.get('comment', '').strip()
                                 if comment:
-                                    # 코멘트 고유 ID 생성
+                                    # created_by 결정: 어노테이션 > JSON user_id > file_owner
+                                    # 이렇게 하면 annotation.json 같은 잘못된 파일명의 영향을 최소화
+                                    created_by = ann.get('created_by') or json_user_id
+
+                                    # 코멘트 고유 ID 생성 (json_user_id 사용)
                                     comment_id = generate_comment_id(
                                         user_owner,
                                         project_id,
                                         video_id,
                                         frame_key,
-                                        file_owner
+                                        json_user_id  # file_owner 대신 json_user_id 사용
                                     )
 
                                     # ⚡ 최적화: 이미 로드된 discussions_data 재사용
@@ -2478,7 +2555,7 @@ def get_all_commented_annotations():
                                         'video_id': video_id,
                                         'frame': int(frame_key) if frame_key.isdigit() else frame_key,
                                         'file_owner': file_owner,
-                                        'created_by': ann.get('created_by', file_owner),
+                                        'created_by': created_by,  # 개선된 created_by 사용
                                         'label': ann.get('label', 'N/A'),
                                         'comment': comment,
                                         'bbox': ann.get('bbox'),
@@ -2606,6 +2683,144 @@ def add_discussion_reply():
 
     except Exception as e:
         logger.error(f"[DISCUSSIONS] Error adding reply: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/discussions/reply', methods=['DELETE'])
+@require_auth
+def delete_discussion_reply():
+    """토론 답글 삭제"""
+    try:
+        user_id = request.user_id
+        data = request.json
+
+        comment_id = data.get('comment_id')
+        reply_index = data.get('reply_index')
+        project_owner = data.get('project_owner')
+        project_name = data.get('project_name')
+
+        if not all([comment_id is not None, reply_index is not None, project_owner, project_name]):
+            return jsonify({
+                'success': False,
+                'error': '필수 필드가 누락되었습니다'
+            }), 400
+
+        # 토론 데이터 로드
+        discussions_data = load_discussions(project_owner, project_name)
+
+        if comment_id not in discussions_data['discussions']:
+            return jsonify({
+                'success': False,
+                'error': '토론을 찾을 수 없습니다'
+            }), 404
+
+        thread = discussions_data['discussions'][comment_id]
+        replies = thread.get('replies', [])
+
+        if reply_index >= len(replies):
+            return jsonify({
+                'success': False,
+                'error': '답글을 찾을 수 없습니다'
+            }), 404
+
+        # 권한 확인: 본인이 작성한 답글만 삭제 가능
+        if replies[reply_index].get('user_id') != user_id:
+            return jsonify({
+                'success': False,
+                'error': '본인이 작성한 답글만 삭제할 수 있습니다'
+            }), 403
+
+        # 답글 삭제
+        deleted_reply = replies.pop(reply_index)
+
+        # 저장
+        if save_discussions(project_owner, project_name, discussions_data):
+            logger.info(f"[DISCUSSIONS] Reply deleted by {user_id} from comment {comment_id}")
+            return jsonify({
+                'success': True,
+                'total_replies': len(replies)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': '답글 삭제에 실패했습니다'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"[DISCUSSIONS] Error deleting reply: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/discussions/reply', methods=['PUT'])
+@require_auth
+def update_discussion_reply():
+    """토론 답글 수정"""
+    try:
+        user_id = request.user_id
+        data = request.json
+
+        comment_id = data.get('comment_id')
+        reply_index = data.get('reply_index')
+        new_comment = data.get('new_comment', '').strip()
+        project_owner = data.get('project_owner')
+        project_name = data.get('project_name')
+
+        if not all([comment_id is not None, reply_index is not None, new_comment, project_owner, project_name]):
+            return jsonify({
+                'success': False,
+                'error': '필수 필드가 누락되었습니다'
+            }), 400
+
+        # 토론 데이터 로드
+        discussions_data = load_discussions(project_owner, project_name)
+
+        if comment_id not in discussions_data['discussions']:
+            return jsonify({
+                'success': False,
+                'error': '토론을 찾을 수 없습니다'
+            }), 404
+
+        thread = discussions_data['discussions'][comment_id]
+        replies = thread.get('replies', [])
+
+        if reply_index >= len(replies):
+            return jsonify({
+                'success': False,
+                'error': '답글을 찾을 수 없습니다'
+            }), 404
+
+        # 권한 확인: 본인이 작성한 답글만 수정 가능
+        if replies[reply_index].get('user_id') != user_id:
+            return jsonify({
+                'success': False,
+                'error': '본인이 작성한 답글만 수정할 수 있습니다'
+            }), 403
+
+        # 답글 수정
+        replies[reply_index]['comment'] = new_comment
+        replies[reply_index]['updated_at'] = datetime.now().isoformat()
+
+        # 저장
+        if save_discussions(project_owner, project_name, discussions_data):
+            logger.info(f"[DISCUSSIONS] Reply updated by {user_id} in comment {comment_id}")
+            return jsonify({
+                'success': True,
+                'reply': replies[reply_index]
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': '답글 수정에 실패했습니다'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"[DISCUSSIONS] Error updating reply: {e}")
         return jsonify({
             'success': False,
             'error': str(e)

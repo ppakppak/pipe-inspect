@@ -1095,7 +1095,7 @@
                             <div id="statsInfo" style="font-size: 12px; color: #4a9eff; margin-bottom: 10px;">
                                 Saved: 0 | Frames: 0
                             </div>
-                            <div id="statsTable" style="border: 1px solid #404040; padding: 10px; border-radius: 4px; overflow-y: auto; background: #2d2d2d; font-size: 11px; flex-grow: 1;">
+                            <div id="statsTable" style="border: 1px solid #404040; padding: 10px; border-radius: 4px; overflow-y: auto; max-height: 400px; background: #2d2d2d; font-size: 11px; flex-grow: 1;">
                                 <span data-i18n="annotation.noSavedAnnotations">No saved annotations</span>
                             </div>
                         </div>
@@ -2313,7 +2313,12 @@
 
             // 정렬
             if (sortBy === 'recent') {
-                filtered.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+                // 댓글 수정 시간(modified_at) 우선, 없으면 어노테이션 생성 시간(created_at) 사용
+                filtered.sort((a, b) => {
+                    const timeA = a.modified_at || a.created_at || '';
+                    const timeB = b.modified_at || b.created_at || '';
+                    return timeB.localeCompare(timeA);
+                });
             } else if (sortBy === 'project') {
                 filtered.sort((a, b) => a.project_name.localeCompare(b.project_name));
             } else if (sortBy === 'user') {

@@ -2546,6 +2546,10 @@ def get_all_commented_annotations():
                                     # 프레임 이미지 URL 생성
                                     frame_url = f"/api/projects/{project_id}/videos/{video_id}/frame/{int(frame_key) if frame_key.isdigit() else frame_key}"
 
+                                    # 댓글 작성자 정보 (modified_by가 있으면 그것을 사용, 없으면 어노테이션 작성자)
+                                    comment_author = ann.get('modified_by') or created_by
+                                    comment_author_name = ann.get('modified_by_name') or ann.get('created_by_name', comment_author)
+
                                     commented_annotations.append({
                                         'comment_id': comment_id,
                                         'project_owner': user_owner,
@@ -2555,7 +2559,10 @@ def get_all_commented_annotations():
                                         'video_id': video_id,
                                         'frame': int(frame_key) if frame_key.isdigit() else frame_key,
                                         'file_owner': file_owner,
-                                        'created_by': created_by,  # 개선된 created_by 사용
+                                        'created_by': comment_author,  # 댓글 작성자 (modified_by 우선)
+                                        'created_by_name': comment_author_name,  # 댓글 작성자 이름
+                                        'annotation_owner': created_by,  # 어노테이션 원 작성자
+                                        'annotation_owner_name': ann.get('created_by_name', created_by),
                                         'label': ann.get('label', 'N/A'),
                                         'comment': comment,
                                         'bbox': ann.get('bbox'),
@@ -2564,6 +2571,7 @@ def get_all_commented_annotations():
                                         'mask': ann.get('mask'),  # 마스크 데이터 추가
                                         'frame_url': frame_url,  # 프레임 이미지 URL 추가
                                         'created_at': ann.get('created_at'),
+                                        'modified_at': ann.get('modified_at'),  # 댓글 수정 시간
                                         'replies_count': replies_count,
                                         'discussion_status': discussion_status
                                     })

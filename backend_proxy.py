@@ -576,6 +576,57 @@ def list_projects():
                 if project_file.exists():
                     with open(project_file, 'r', encoding='utf-8') as f:
                         project_data = json.load(f)
+
+                        # 각 비디오의 어노테이션 수 계산
+                        annotations_dir = project_dir / 'annotations'
+                        if 'videos' in project_data and annotations_dir.exists():
+                            for video in project_data['videos']:
+                                video_id = video.get('video_id')
+                                if video_id:
+                                    video_annotations_dir = annotations_dir / video_id
+
+                                    # 모든 사용자의 어노테이션을 합산
+                                    total_annotation_count = 0
+                                    all_annotated_frames = set()
+
+                                    if video_annotations_dir.exists():
+                                        try:
+                                            # 디렉토리 내의 모든 JSON 파일 찾기 (사용자별 어노테이션)
+                                            for json_file in video_annotations_dir.glob('*.json'):
+                                                # .backup 파일은 제외
+                                                if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                                                    continue
+
+                                                try:
+                                                    with open(json_file, 'r', encoding='utf-8') as vf:
+                                                        video_data = json.load(vf)
+
+                                                        # 어노테이션 딕셔너리 가져오기
+                                                        annotations = video_data.get('annotations', {})
+
+                                                        # 프레임 번호 추가
+                                                        all_annotated_frames.update(annotations.keys())
+
+                                                        # 어노테이션 개수 계산
+                                                        for frame_annotations in annotations.values():
+                                                            total_annotation_count += len(frame_annotations)
+                                                except Exception as e:
+                                                    logger.warning(f"[PROJECT] Failed to load annotation file {json_file}: {e}")
+
+                                            # 어노테이션된 프레임 수 (중복 제거)
+                                            video['annotated_frames'] = len(all_annotated_frames)
+
+                                            # 총 어노테이션 수
+                                            video['annotations'] = total_annotation_count
+
+                                        except Exception as e:
+                                            logger.warning(f"[PROJECT] Failed to process annotations for {video_id}: {e}")
+                                            video['annotated_frames'] = 0
+                                            video['annotations'] = 0
+                                    else:
+                                        video['annotated_frames'] = 0
+                                        video['annotations'] = 0
+
                         projects.append(project_data)
 
         logger.info(f"[PROJECT] User {request.user_id} listed {len(projects)} projects")

@@ -1107,6 +1107,33 @@
         <div id="dataset-tab" class="tab-content">
             <h2 data-i18n="dataset.title">Dataset Builder</h2>
 
+            <!-- Admin Dashboard (관리자 전용) -->
+            <div id="adminDashboardSection" style="display: none; margin-bottom: 30px;">
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h3 style="margin: 0; color: #4a9eff;">📊 관리자 대시보드 - 전체 프로젝트 현황</h3>
+                        <button onclick="loadAdminDashboard()" style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
+                            🔄 새로고침
+                        </button>
+                    </div>
+
+                    <!-- 전체 통계 요약 -->
+                    <div id="adminSummaryCards" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 20px;">
+                        <!-- Summary cards will be populated by JavaScript -->
+                    </div>
+
+                    <!-- 프로젝트 목록 테이블 -->
+                    <div style="margin-bottom: 10px;">
+                        <input type="text" id="adminProjectFilter" placeholder="프로젝트 또는 사용자 검색..."
+                               style="padding: 8px; width: 300px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                               oninput="filterAdminProjects()">
+                    </div>
+                    <div id="adminProjectsList" style="max-height: 600px; overflow-y: auto; border: 1px solid #404040; border-radius: 4px; background: #1e1e1e;">
+                        <div style="padding: 20px; text-align: center; color: #999;">대시보드를 로드하려면 새로고침 버튼을 클릭하세요.</div>
+                    </div>
+                </div>
+            </div>
+
             <div style="margin-bottom: 20px;">
                 <h3 data-i18n="dataset.projectInfo">프로젝트 정보</h3>
                 <div id="datasetProjectInfo" style="color: #999;">
@@ -8786,8 +8813,155 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 setTimeout(() => {
                     checkAIStatus();
                 }, 500);
+
+                // 관리자인 경우 대시보드 표시
+                const user = getCurrentUser();
+                if (user && user.user_id === 'admin') {
+                    const adminSection = document.getElementById('adminDashboardSection');
+                    if (adminSection) {
+                        adminSection.style.display = 'block';
+                    }
+                }
             }
         });
+
+        // ========== 관리자 대시보드 함수 ==========
+        let allAdminProjects = [];
+
+        async function loadAdminDashboard() {
+            try {
+                const response = await authFetch('/api/admin/dashboard');
+                const data = await response.json();
+
+                if (data.success) {
+                    allAdminProjects = data.projects || [];
+                    const summary = data.summary || {};
+
+                    // 요약 카드 업데이트
+                    const summaryCards = document.getElementById('adminSummaryCards');
+                    summaryCards.innerHTML = `
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #4a9eff;">${summary.total_projects || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">총 프로젝트</div>
+                        </div>
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #28a745;">${summary.total_videos || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">총 비디오</div>
+                        </div>
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #ffa500;">${summary.completed_videos || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">완료된 비디오</div>
+                        </div>
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #ff6b6b;">${summary.total_annotations || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">총 어노테이션</div>
+                        </div>
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #9b59b6;">${summary.annotated_frames || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">어노테이션 프레임</div>
+                        </div>
+                        <div style="background: #1e1e1e; padding: 15px; border-radius: 4px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: bold; color: #3498db;">${summary.unique_contributors || 0}</div>
+                            <div style="font-size: 12px; color: #999; margin-top: 5px;">기여자 수</div>
+                        </div>
+                    `;
+
+                    // 프로젝트 목록 렌더링
+                    renderAdminProjects();
+                } else {
+                    alert('대시보드 로드 실패: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('[ADMIN DASHBOARD] Error loading:', error);
+                alert('대시보드 로드 중 오류 발생: ' + error.message);
+            }
+        }
+
+        function renderAdminProjects(filterText = '') {
+            const projectsList = document.getElementById('adminProjectsList');
+
+            let filtered = allAdminProjects;
+            if (filterText) {
+                const lower = filterText.toLowerCase();
+                filtered = allAdminProjects.filter(p =>
+                    p.project_name.toLowerCase().includes(lower) ||
+                    p.user_name.toLowerCase().includes(lower) ||
+                    p.user_id.toLowerCase().includes(lower)
+                );
+            }
+
+            if (filtered.length === 0) {
+                projectsList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">프로젝트가 없습니다.</div>';
+                return;
+            }
+
+            let html = `
+                <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                    <thead style="position: sticky; top: 0; background: #2d2d2d; z-index: 1;">
+                        <tr>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">사용자</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">프로젝트</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">비디오</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">완료</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">어노테이션</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">프레임</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">클래스 분포</th>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">기여자</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            filtered.forEach(project => {
+                const completionRate = project.total_videos > 0
+                    ? Math.round(project.completed_videos / project.total_videos * 100)
+                    : 0;
+
+                // 클래스 분포 문자열
+                const classDistribution = Object.entries(project.class_distribution)
+                    .map(([label, count]) => `${label}: ${count}`)
+                    .join(', ') || '-';
+
+                // 기여자 문자열
+                const contributors = project.contributors.join(', ') || '-';
+
+                html += `
+                    <tr style="border-bottom: 1px solid #404040;">
+                        <td style="padding: 8px; border: 1px solid #404040;">
+                            <div style="font-weight: bold;">${project.user_name}</div>
+                            <div style="font-size: 10px; color: #999;">${project.user_id}</div>
+                        </td>
+                        <td style="padding: 8px; border: 1px solid #404040;">
+                            <div style="font-weight: bold;">${project.project_name}</div>
+                            <div style="font-size: 10px; color: #999;">${project.project_id}</div>
+                        </td>
+                        <td style="padding: 8px; border: 1px solid #404040; text-align: center;">${project.total_videos}</td>
+                        <td style="padding: 8px; border: 1px solid #404040; text-align: center;">
+                            <div>${project.completed_videos}</div>
+                            <div style="font-size: 10px; color: ${completionRate === 100 ? '#28a745' : '#ffa500'};">${completionRate}%</div>
+                        </td>
+                        <td style="padding: 8px; border: 1px solid #404040; text-align: center; font-weight: bold; color: #ff6b6b;">${project.total_annotations}</td>
+                        <td style="padding: 8px; border: 1px solid #404040; text-align: center;">${project.annotated_frames}</td>
+                        <td style="padding: 8px; border: 1px solid #404040; font-size: 10px; max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="${classDistribution}">${classDistribution}</td>
+                        <td style="padding: 8px; border: 1px solid #404040; font-size: 10px;">${contributors}</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            projectsList.innerHTML = html;
+        }
+
+        function filterAdminProjects() {
+            const filterInput = document.getElementById('adminProjectFilter');
+            const filterText = filterInput ? filterInput.value : '';
+            renderAdminProjects(filterText);
+        }
+
     </script>
 </body>
 </html>

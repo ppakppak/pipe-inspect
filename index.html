@@ -1113,6 +1113,10 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                         <h3 style="margin: 0; color: #4a9eff;">📊 관리자 대시보드 - 전체 프로젝트 현황</h3>
                         <div style="display: flex; gap: 10px;">
+                            <button id="createDatasetFromAdminBtn" onclick="createDatasetFromSelectedProjects()"
+                                    style="padding: 8px 16px; background: #9b59b6; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; display: none;">
+                                📦 선택한 프로젝트로 데이터셋 생성 (<span id="selectedProjectCount">0</span>)
+                            </button>
                             <button onclick="exportAdminDashboardCSV()" style="padding: 8px 16px; background: #28a745; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
                                 📥 CSV 내보내기
                             </button>
@@ -1148,6 +1152,11 @@
                         <!-- Content will be populated by JavaScript -->
                     </div>
                 </div>
+            </div>
+
+            <!-- 관리자 대시보드에서 선택한 프로젝트 정보 표시 영역 -->
+            <div id="datasetBuilderInfo" style="margin-bottom: 20px;">
+                <!-- Populated by admin dashboard selection -->
             </div>
 
             <div style="margin-bottom: 20px;">
@@ -8845,6 +8854,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         let allAdminProjects = [];
         let adminSortColumn = null;
         let adminSortDirection = 'asc';
+        let selectedAdminProjects = new Set(); // 선택된 프로젝트 인덱스 저장
 
         async function loadAdminDashboard() {
             try {
@@ -8964,6 +8974,9 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
                     <thead style="position: sticky; top: 0; background: #2d2d2d; z-index: 1;">
                         <tr>
+                            <th style="padding: 10px; border: 1px solid #404040; text-align: center; width: 40px;">
+                                <input type="checkbox" id="selectAllProjects" onchange="toggleAllProjectSelection()" style="cursor: pointer;">
+                            </th>
                             <th onclick="sortAdminProjects('user')" style="padding: 10px; border: 1px solid #404040; text-align: left; cursor: pointer; user-select: none;">사용자${getSortIcon('user')}</th>
                             <th onclick="sortAdminProjects('project')" style="padding: 10px; border: 1px solid #404040; text-align: left; cursor: pointer; user-select: none;">프로젝트${getSortIcon('project')}</th>
                             <th onclick="sortAdminProjects('videos')" style="padding: 10px; border: 1px solid #404040; text-align: center; cursor: pointer; user-select: none;">비디오${getSortIcon('videos')}</th>
@@ -8977,7 +8990,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     <tbody>
             `;
 
-            filtered.forEach(project => {
+            filtered.forEach((project, index) => {
+                const projectIndex = allAdminProjects.indexOf(project);
+                const isChecked = selectedAdminProjects.has(projectIndex);
+
                 const completionRate = project.total_videos > 0
                     ? Math.round(project.completed_videos / project.total_videos * 100)
                     : 0;
@@ -8992,12 +9008,15 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
                 html += `
                     <tr style="border-bottom: 1px solid #404040;">
+                        <td style="padding: 8px; border: 1px solid #404040; text-align: center;">
+                            <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleProjectSelection(${projectIndex})" style="cursor: pointer;">
+                        </td>
                         <td style="padding: 8px; border: 1px solid #404040;">
                             <div style="font-weight: bold;">${project.user_name}</div>
                             <div style="font-size: 10px; color: #999;">${project.user_id}</div>
                         </td>
                         <td style="padding: 8px; border: 1px solid #404040;">
-                            <div style="font-weight: bold; color: #4a9eff; cursor: pointer; text-decoration: underline;" onclick="showProjectDetail(${allAdminProjects.indexOf(project)})">${project.project_name}</div>
+                            <div style="font-weight: bold; color: #4a9eff; cursor: pointer; text-decoration: underline;" onclick="showProjectDetail(${projectIndex})">${project.project_name}</div>
                             <div style="font-size: 10px; color: #999;">${project.project_id}</div>
                         </td>
                         <td style="padding: 8px; border: 1px solid #404040; text-align: center;">${project.total_videos}</td>
@@ -9117,6 +9136,130 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         function closeProjectDetail() {
             const modal = document.getElementById('projectDetailModal');
             modal.style.display = 'none';
+        }
+
+        function toggleProjectSelection(projectIndex) {
+            if (selectedAdminProjects.has(projectIndex)) {
+                selectedAdminProjects.delete(projectIndex);
+            } else {
+                selectedAdminProjects.add(projectIndex);
+            }
+            updateSelectionUI();
+        }
+
+        function toggleAllProjectSelection() {
+            const checkbox = document.getElementById('selectAllProjects');
+            if (checkbox.checked) {
+                // 모든 프로젝트 선택
+                allAdminProjects.forEach((_, index) => {
+                    selectedAdminProjects.add(index);
+                });
+            } else {
+                // 모든 선택 해제
+                selectedAdminProjects.clear();
+            }
+            updateSelectionUI();
+            renderAdminProjects();
+        }
+
+        function updateSelectionUI() {
+            const count = selectedAdminProjects.size;
+            const createBtn = document.getElementById('createDatasetFromAdminBtn');
+            const countSpan = document.getElementById('selectedProjectCount');
+
+            if (count > 0) {
+                createBtn.style.display = 'block';
+                countSpan.textContent = count;
+            } else {
+                createBtn.style.display = 'none';
+            }
+
+            // "전체 선택" 체크박스 상태 업데이트
+            const selectAllCheckbox = document.getElementById('selectAllProjects');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.checked = (count === allAdminProjects.length && count > 0);
+            }
+        }
+
+        async function createDatasetFromSelectedProjects() {
+            if (selectedAdminProjects.size === 0) {
+                alert('프로젝트를 선택해주세요.');
+                return;
+            }
+
+            // 선택된 프로젝트 정보 수집
+            const selectedProjects = Array.from(selectedAdminProjects)
+                .map(index => allAdminProjects[index])
+                .filter(p => p);
+
+            if (selectedProjects.length === 0) {
+                alert('유효한 프로젝트가 선택되지 않았습니다.');
+                return;
+            }
+
+            // 데이터셋 빌더 탭으로 전환하고 선택된 프로젝트 정보 전달
+            const datasetTab = document.querySelector('[data-tab="dataset-builder"]');
+            if (datasetTab) {
+                datasetTab.click();
+
+                // 데이터셋 빌더에 선택된 프로젝트 정보 전달
+                setTimeout(() => {
+                    populateDatasetBuilderFromAdminSelection(selectedProjects);
+                }, 100);
+            } else {
+                alert('데이터셋 빌더 탭을 찾을 수 없습니다.');
+            }
+        }
+
+        async function populateDatasetBuilderFromAdminSelection(selectedProjects) {
+            console.log('[DATASET FROM ADMIN] 선택된 프로젝트:', selectedProjects.length);
+
+            // 프로젝트별로 사용자와 프로젝트 ID 수집
+            const projectsToLoad = selectedProjects.map(p => ({
+                user_id: p.user_id,
+                user_name: p.user_name,
+                project_id: p.project_id,
+                project_name: p.project_name
+            }));
+
+            // 데이터셋 빌더 섹션에 정보 표시
+            const builderInfo = document.getElementById('datasetBuilderInfo');
+            if (builderInfo) {
+                let html = `
+                    <div style="background: #2d2d2d; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <h4 style="color: #9b59b6; margin: 0 0 10px 0;">📦 관리자 대시보드에서 선택한 프로젝트 (${projectsToLoad.length}개)</h4>
+                        <div style="max-height: 200px; overflow-y: auto;">
+                `;
+
+                projectsToLoad.forEach(p => {
+                    html += `
+                        <div style="background: #1e1e1e; padding: 8px; margin-bottom: 5px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-weight: bold; color: #4a9eff;">${p.project_name}</span>
+                                <span style="font-size: 11px; color: #999; margin-left: 10px;">(${p.user_name})</span>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += `
+                        </div>
+                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #404040;">
+                            <p style="color: #ccc; font-size: 13px; margin: 0;">
+                                이 프로젝트들의 어노테이션을 결합하여 데이터셋을 생성합니다.<br>
+                                아래에서 출력 형식을 선택하고 '데이터셋 빌드' 버튼을 클릭하세요.
+                            </p>
+                        </div>
+                    </div>
+                `;
+
+                builderInfo.innerHTML = html;
+            }
+
+            // 전역 변수에 저장하여 데이터셋 빌드 시 사용
+            window.adminSelectedProjects = projectsToLoad;
+
+            alert(`${projectsToLoad.length}개 프로젝트가 데이터셋 빌더에 로드되었습니다.\n출력 형식을 선택하고 '데이터셋 빌드' 버튼을 클릭하세요.`);
         }
 
         function exportAdminDashboardCSV() {

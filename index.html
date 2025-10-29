@@ -1112,9 +1112,14 @@
                 <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                         <h3 style="margin: 0; color: #4a9eff;">📊 관리자 대시보드 - 전체 프로젝트 현황</h3>
-                        <button onclick="loadAdminDashboard()" style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
-                            🔄 새로고침
-                        </button>
+                        <div style="display: flex; gap: 10px;">
+                            <button onclick="exportAdminDashboardCSV()" style="padding: 8px 16px; background: #28a745; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
+                                📥 CSV 내보내기
+                            </button>
+                            <button onclick="loadAdminDashboard()" style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
+                                🔄 새로고침
+                            </button>
+                        </div>
                     </div>
 
                     <!-- 전체 통계 요약 -->
@@ -1130,6 +1135,17 @@
                     </div>
                     <div id="adminProjectsList" style="max-height: 600px; overflow-y: auto; border: 1px solid #404040; border-radius: 4px; background: #1e1e1e;">
                         <div style="padding: 20px; text-align: center; color: #999;">대시보드를 로드하려면 새로고침 버튼을 클릭하세요.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 프로젝트 상세 모달 -->
+            <div id="projectDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; overflow: auto;">
+                <div style="position: relative; background: #2d2d2d; margin: 50px auto; padding: 30px; max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+                    <button onclick="closeProjectDetail()" style="position: absolute; top: 15px; right: 15px; background: #ff4444; border: none; color: white; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold;">✕ 닫기</button>
+
+                    <div id="projectDetailContent">
+                        <!-- Content will be populated by JavaScript -->
                     </div>
                 </div>
             </div>
@@ -8960,6 +8976,52 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             const filterInput = document.getElementById('adminProjectFilter');
             const filterText = filterInput ? filterInput.value : '';
             renderAdminProjects(filterText);
+        }
+
+        function exportAdminDashboardCSV() {
+            if (allAdminProjects.length === 0) {
+                alert('내보낼 데이터가 없습니다. 먼저 새로고침 버튼을 클릭하세요.');
+                return;
+            }
+
+            // CSV 헤더
+            let csv = '사용자ID,사용자명,프로젝트ID,프로젝트명,총비디오,완료비디오,완료율(%),총어노테이션,어노테이션프레임,클래스분포,기여자\n';
+
+            // 데이터 행
+            allAdminProjects.forEach(project => {
+                const completionRate = project.total_videos > 0
+                    ? Math.round(project.completed_videos / project.total_videos * 100)
+                    : 0;
+
+                const classDistribution = Object.entries(project.class_distribution)
+                    .map(([label, count]) => `${label}:${count}`)
+                    .join(';');
+
+                const contributors = project.contributors.join(';');
+
+                // CSV 행 추가 (따옴표로 감싸서 쉼표 문제 방지)
+                csv += `"${project.user_id}","${project.user_name}","${project.project_id}","${project.project_name}",`;
+                csv += `${project.total_videos},${project.completed_videos},${completionRate},`;
+                csv += `${project.total_annotations},${project.annotated_frames},"${classDistribution}","${contributors}"\n`;
+            });
+
+            // BOM 추가 (한글 인코딩 문제 해결)
+            const BOM = '\uFEFF';
+            const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+
+            const now = new Date();
+            const filename = `admin_dashboard_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}.csv`;
+
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            console.log(`[ADMIN DASHBOARD] CSV exported: ${filename}`);
         }
 
     </script>

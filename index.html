@@ -9198,17 +9198,12 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
 
             // 데이터셋 빌더 탭으로 전환하고 선택된 프로젝트 정보 전달
-            const datasetTab = document.querySelector('[data-tab="dataset-builder"]');
-            if (datasetTab) {
-                datasetTab.click();
+            showTab('dataset');
 
-                // 데이터셋 빌더에 선택된 프로젝트 정보 전달
-                setTimeout(() => {
-                    populateDatasetBuilderFromAdminSelection(selectedProjects);
-                }, 100);
-            } else {
-                alert('데이터셋 빌더 탭을 찾을 수 없습니다.');
-            }
+            // 데이터셋 빌더에 선택된 프로젝트 정보 전달
+            setTimeout(() => {
+                populateDatasetBuilderFromAdminSelection(selectedProjects);
+            }, 100);
         }
 
         async function populateDatasetBuilderFromAdminSelection(selectedProjects) {

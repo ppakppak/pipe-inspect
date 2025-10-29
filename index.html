@@ -8843,6 +8843,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
         // ========== 관리자 대시보드 함수 ==========
         let allAdminProjects = [];
+        let adminSortColumn = null;
+        let adminSortDirection = 'asc';
 
         async function loadAdminDashboard() {
             try {
@@ -8911,16 +8913,63 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
+            // 정렬 적용
+            if (adminSortColumn) {
+                filtered.sort((a, b) => {
+                    let valA, valB;
+
+                    switch(adminSortColumn) {
+                        case 'user':
+                            valA = a.user_name.toLowerCase();
+                            valB = b.user_name.toLowerCase();
+                            break;
+                        case 'project':
+                            valA = a.project_name.toLowerCase();
+                            valB = b.project_name.toLowerCase();
+                            break;
+                        case 'videos':
+                            valA = a.total_videos;
+                            valB = b.total_videos;
+                            break;
+                        case 'completed':
+                            valA = a.completed_videos;
+                            valB = b.completed_videos;
+                            break;
+                        case 'annotations':
+                            valA = a.total_annotations;
+                            valB = b.total_annotations;
+                            break;
+                        case 'frames':
+                            valA = a.annotated_frames;
+                            valB = b.annotated_frames;
+                            break;
+                        default:
+                            return 0;
+                    }
+
+                    if (typeof valA === 'string') {
+                        return adminSortDirection === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                    } else {
+                        return adminSortDirection === 'asc' ? valA - valB : valB - valA;
+                    }
+                });
+            }
+
+            const getSortIcon = (column) => {
+                if (adminSortColumn !== column) return '';
+                return adminSortDirection === 'asc' ? ' ▲' : ' ▼';
+            };
+
             let html = `
                 <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
                     <thead style="position: sticky; top: 0; background: #2d2d2d; z-index: 1;">
                         <tr>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">사용자</th>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: left;">프로젝트</th>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">비디오</th>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">완료</th>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">어노테이션</th>
-                            <th style="padding: 10px; border: 1px solid #404040; text-align: center;">프레임</th>
+                            <th onclick="sortAdminProjects('user')" style="padding: 10px; border: 1px solid #404040; text-align: left; cursor: pointer; user-select: none;">사용자${getSortIcon('user')}</th>
+                            <th onclick="sortAdminProjects('project')" style="padding: 10px; border: 1px solid #404040; text-align: left; cursor: pointer; user-select: none;">프로젝트${getSortIcon('project')}</th>
+                            <th onclick="sortAdminProjects('videos')" style="padding: 10px; border: 1px solid #404040; text-align: center; cursor: pointer; user-select: none;">비디오${getSortIcon('videos')}</th>
+                            <th onclick="sortAdminProjects('completed')" style="padding: 10px; border: 1px solid #404040; text-align: center; cursor: pointer; user-select: none;">완료${getSortIcon('completed')}</th>
+                            <th onclick="sortAdminProjects('annotations')" style="padding: 10px; border: 1px solid #404040; text-align: center; cursor: pointer; user-select: none;">어노테이션${getSortIcon('annotations')}</th>
+                            <th onclick="sortAdminProjects('frames')" style="padding: 10px; border: 1px solid #404040; text-align: center; cursor: pointer; user-select: none;">프레임${getSortIcon('frames')}</th>
                             <th style="padding: 10px; border: 1px solid #404040; text-align: left;">클래스 분포</th>
                             <th style="padding: 10px; border: 1px solid #404040; text-align: left;">기여자</th>
                         </tr>
@@ -8976,6 +9025,18 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             const filterInput = document.getElementById('adminProjectFilter');
             const filterText = filterInput ? filterInput.value : '';
             renderAdminProjects(filterText);
+        }
+
+        function sortAdminProjects(column) {
+            if (adminSortColumn === column) {
+                // 같은 컬럼 클릭 시 방향 토글
+                adminSortDirection = adminSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                // 다른 컬럼 클릭 시 해당 컬럼으로 오름차순 정렬
+                adminSortColumn = column;
+                adminSortDirection = 'asc';
+            }
+            renderAdminProjects();
         }
 
         function exportAdminDashboardCSV() {

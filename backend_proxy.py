@@ -3171,7 +3171,7 @@ def get_admin_dashboard():
         # 모든 사용자의 프로젝트 스캔
         all_projects = []
 
-        for user_dir in DATA_DIR.iterdir():
+        for user_dir in BASE_PROJECTS_DIR.iterdir():
             if not user_dir.is_dir():
                 continue
 

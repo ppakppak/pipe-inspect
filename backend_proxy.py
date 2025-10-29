@@ -3152,7 +3152,161 @@ if __name__ == '__main__':
             count = user_manager.cleanup_expired_sessions()
             if count > 0:
                 logger.info(f"[AUTH] Cleaned up {count} expired sessions")
+@app.route('/api/admin/dashboard', methods=['GET'])
+@require_auth
+def get_admin_dashboard():
+    """관리자용 전체 프로젝트 통계 대시보드"""
+    import json
+    from pathlib import Path
+    from collections import defaultdict
 
+    try:
+        # 관리자 권한 확인
+        if request.user_id != 'admin':
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+
+        # 모든 사용자의 프로젝트 스캔
+        all_projects = []
+
+        for user_dir in DATA_DIR.iterdir():
+            if not user_dir.is_dir():
+                continue
+
+            user_id = user_dir.name
+
+            # 사용자 정보 가져오기
+            user_info = user_manager.get_user_info(user_id)
+            user_name = user_info.get('full_name', user_id) if user_info else user_id
+
+            # 사용자의 모든 프로젝트 스캔
+            for project_dir in user_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+
+                project_file = project_dir / 'project.json'
+                if not project_file.exists():
+                    continue
+
+                try:
+                    with open(project_file, 'r', encoding='utf-8') as f:
+                        project_data = json.load(f)
+
+                    project_id = project_data.get('id', project_dir.name)
+                    project_name = project_data.get('name', 'Unnamed Project')
+                    classes = project_data.get('classes', [])
+                    videos = project_data.get('videos', [])
+
+                    # 어노테이션 통계 계산
+                    annotations_dir = project_dir / 'annotations'
+                    total_annotations = 0
+                    annotated_frames = 0
+                    class_distribution = defaultdict(int)
+                    contributors = set()
+                    video_frame_counts = {}
+
+                    if annotations_dir.exists():
+                        for video in videos:
+                            video_id = video.get('video_id')
+                            if not video_id:
+                                continue
+
+                            video_annotations_dir = annotations_dir / video_id
+                            if not video_annotations_dir.exists():
+                                continue
+
+                            video_frames = set()
+                            video_ann_count = 0
+
+                            # 모든 사용자의 어노테이션 파일 읽기
+                            for ann_file in video_annotations_dir.glob('*.json'):
+                                if ann_file.stem.endswith('.backup'):
+                                    continue
+
+                                try:
+                                    with open(ann_file, 'r', encoding='utf-8') as af:
+                                        ann_data = json.load(af)
+
+                                    contributor_id = ann_data.get('user_id', ann_file.stem)
+                                    contributors.add(contributor_id)
+
+                                    annotations = ann_data.get('annotations', {})
+                                    for frame_key, frame_anns in annotations.items():
+                                        if not isinstance(frame_anns, list) or len(frame_anns) == 0:
+                                            continue
+
+                                        video_frames.add(frame_key)
+
+                                        for ann in frame_anns:
+                                            if isinstance(ann, dict):
+                                                video_ann_count += 1
+                                                total_annotations += 1
+                                                label = ann.get('label', 'unknown')
+                                                class_distribution[label] += 1
+
+                                except Exception as e:
+                                    logger.warning(f"[ADMIN DASHBOARD] Failed to read {ann_file}: {e}")
+
+                            if len(video_frames) > 0:
+                                annotated_frames += len(video_frames)
+                                video_frame_counts[video_id] = {
+                                    'frames': len(video_frames),
+                                    'annotations': video_ann_count
+                                }
+
+                    # 비디오 통계
+                    total_videos = len(videos)
+                    completed_videos = sum(1 for v in videos if v.get('status') == 'completed')
+
+                    all_projects.append({
+                        'user_id': user_id,
+                        'user_name': user_name,
+                        'project_id': project_id,
+                        'project_name': project_name,
+                        'classes': classes,
+                        'total_videos': total_videos,
+                        'completed_videos': completed_videos,
+                        'total_annotations': total_annotations,
+                        'annotated_frames': annotated_frames,
+                        'class_distribution': dict(class_distribution),
+                        'contributors': list(contributors),
+                        'video_details': video_frame_counts,
+                        'created_at': project_data.get('created', ''),
+                        'updated_at': project_data.get('updated', '')
+                    })
+
+                except Exception as e:
+                    logger.warning(f"[ADMIN DASHBOARD] Failed to process project {project_dir}: {e}")
+
+        # 전체 통계
+        total_stats = {
+            'total_projects': len(all_projects),
+            'total_videos': sum(p['total_videos'] for p in all_projects),
+            'completed_videos': sum(p['completed_videos'] for p in all_projects),
+            'total_annotations': sum(p['total_annotations'] for p in all_projects),
+            'annotated_frames': sum(p['annotated_frames'] for p in all_projects),
+            'unique_contributors': len(set(c for p in all_projects for c in p['contributors']))
+        }
+
+        logger.info(f"[ADMIN DASHBOARD] Fetched {len(all_projects)} projects for admin")
+
+        return jsonify({
+            'success': True,
+            'projects': all_projects,
+            'summary': total_stats
+        })
+
+    except Exception as e:
+        logger.error(f"[ADMIN DASHBOARD] Error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+if __name__ == '__main__':
     # 세션 정리 스레드 시작
     cleanup_thread = threading.Thread(target=cleanup_sessions, daemon=True)
     cleanup_thread.start()

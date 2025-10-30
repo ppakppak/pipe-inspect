@@ -2054,9 +2054,17 @@ def build_yolo_dataset():
             # 웹 호환 비디오 경로로 변환
             video_path_obj = Path(video_path)
             if 'SAHARA' in str(video_path):
-                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/SAHARA') / video_path_obj.relative_to(Path(video_path).parents[len(video_path_obj.parts) - video_path_obj.parts.index('SAHARA') - 2])
+                parts_list = list(video_path_obj.parts)
+                sahara_idx = parts_list.index('SAHARA')
+                relative_path = Path(*parts_list[sahara_idx+1:])
+                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/SAHARA') / relative_path
+                web_video_path = web_video_path.with_suffix('.mp4')
             elif '관내시경영상' in str(video_path):
-                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/관내시경영상') / video_path_obj.relative_to(Path(video_path).parents[len(video_path_obj.parts) - video_path_obj.parts.index('관내시경영상') - 2])
+                parts_list = list(video_path_obj.parts)
+                kwan_idx = parts_list.index('관내시경영상')
+                relative_path = Path(*parts_list[kwan_idx+1:])
+                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/관내시경영상') / relative_path
+                web_video_path = web_video_path.with_suffix('.mp4')
             else:
                 web_video_path = Path(str(video_path).replace('.avi', '.mp4').replace('.AVI', '.mp4'))
 

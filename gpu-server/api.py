@@ -2196,14 +2196,29 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Saved - Train: {train_count}, Val: {val_count}, Test: {test_count}")
 
-        # 모든 프로젝트의 클래스 매핑을 병합
+        # 실제 어노테이션에서 사용된 label 필드 수집
+        # (project.json 인덱스 기반 매핑보다 실제 label 필드가 우선)
+        class_id_to_label = {}
+        for frame_data in all_frames:
+            for anno in frame_data['annotations']:
+                class_id = anno.get('class_id', 0)
+                label = anno.get('label')
+                if label:
+                    class_id_to_label[class_id] = label
+
+        # 모든 프로젝트의 클래스 매핑을 병합 (fallback용)
         merged_class_mapping = {}
         for project_dir_str, class_mapping in project_classes.items():
             merged_class_mapping.update(class_mapping)
 
-        # 사용된 클래스 정보 정리
+        # 사용된 클래스 정보 정리 (label 필드 우선, 없으면 project.json 사용)
         sorted_class_ids = sorted(used_classes)
-        class_names_list = [merged_class_mapping.get(cid, f'class_{cid}') for cid in sorted_class_ids]
+        class_names_list = []
+        for cid in sorted_class_ids:
+            if cid in class_id_to_label:
+                class_names_list.append(class_id_to_label[cid])
+            else:
+                class_names_list.append(merged_class_mapping.get(cid, f'class_{cid}'))
         num_classes = len(sorted_class_ids)
 
         print(f"[DATASET BUILD] Used classes ({num_classes}): {sorted_class_ids}")

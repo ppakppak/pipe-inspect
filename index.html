@@ -1194,16 +1194,13 @@
                 <div style="margin-bottom: 10px;">
                     <label data-i18n="dataset.format">데이터셋 형식:</label>
                     <select id="datasetFormat" style="margin-left: 10px;">
-                        <option value="classification">Classification</option>
-                        <option value="yolo">YOLO Detection</option>
+                        <option value="yolo">YOLO Segmentation</option>
                     </select>
                 </div>
             </div>
 
             <div style="margin-bottom: 20px;">
-                <button onclick="buildDataset()" style="padding: 10px 20px;" data-i18n="dataset.build">🚀 Build Dataset</button>
-                <button onclick="exportSegFormer()" style="padding: 10px 20px; margin-left: 10px;" data-i18n="dataset.exportSegFormer">🎯 Export SegFormer</button>
-                <button onclick="exportYOLO()" style="padding: 10px 20px; margin-left: 10px;" data-i18n="dataset.exportYOLO">📦 Export YOLO</button>
+                <button onclick="buildDataset()" style="padding: 10px 20px; font-size: 14px; font-weight: bold; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer;" data-i18n="dataset.build">🚀 데이터셋 빌드</button>
             </div>
 
             <div style="margin-bottom: 10px;">
@@ -7901,16 +7898,219 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         }
 
         // ===== Dataset Tab Functions =====
+        let selectedVideosForDataset = new Set();
+        let datasetProjectVideos = []; // 선택 가능한 비디오 목록
+
+        async function loadVideosForDataset() {
+            // Admin 대시보드에서 선택한 프로젝트가 있는지 확인
+            if (!window.adminSelectedProjects || window.adminSelectedProjects.length === 0) {
+                document.getElementById('datasetVideosList').innerHTML =
+                    '<span style="color: #999;">관리자 대시보드에서 프로젝트를 먼저 선택하세요.</span>';
+                return;
+            }
+
+            const videosList = document.getElementById('datasetVideosList');
+            videosList.innerHTML = '<div style="text-align: center; padding: 20px;">비디오 목록 로딩 중...</div>';
+
+            try {
+                datasetProjectVideos = [];
+
+                // 각 프로젝트의 상세 정보를 가져와서 비디오 목록 수집
+                for (const project of window.adminSelectedProjects) {
+                    const response = await authFetch(`/api/projects/${project.project_id}`);
+                    const data = await response.json();
+
+                    if (data.success && data.project.videos) {
+                        data.project.videos.forEach(video => {
+                            datasetProjectVideos.push({
+                                project_id: project.project_id,
+                                project_name: project.project_name,
+                                user_id: project.user_id,
+                                user_name: project.user_name,
+                                video_id: video.video_id,
+                                video_name: video.video_name || video.video_id,
+                                annotations: video.annotations || 0,
+                                annotated_frames: video.annotated_frames || 0,
+                                status: video.status
+                            });
+                        });
+                    }
+                }
+
+                // 비디오 목록 렌더링
+                renderDatasetVideos();
+
+            } catch (error) {
+                console.error('[DATASET] Error loading videos:', error);
+                videosList.innerHTML = '<span style="color: #ff6b6b;">비디오 목록 로드 실패: ' + error.message + '</span>';
+            }
+        }
+
+        function renderDatasetVideos() {
+            const videosList = document.getElementById('datasetVideosList');
+
+            if (datasetProjectVideos.length === 0) {
+                videosList.innerHTML = '<span style="color: #999;">어노테이션이 있는 비디오가 없습니다.</span>';
+                return;
+            }
+
+            // 어노테이션이 있는 비디오만 필터링
+            const videosWithAnnotations = datasetProjectVideos.filter(v => v.annotations > 0);
+
+            if (videosWithAnnotations.length === 0) {
+                videosList.innerHTML = '<span style="color: #999;">어노테이션이 있는 비디오가 없습니다.</span>';
+                return;
+            }
+
+            let html = '<div style="max-height: 400px; overflow-y: auto;">';
+
+            videosWithAnnotations.forEach((video, index) => {
+                const videoKey = `${video.user_id}/${video.project_id}/${video.video_id}`;
+                const isSelected = selectedVideosForDataset.has(videoKey);
+
+                html += `
+                    <div style="background: ${isSelected ? '#2d4a2d' : '#1e1e1e'}; padding: 10px; margin-bottom: 8px; border-radius: 4px; border: 1px solid ${isSelected ? '#4a9' : '#404040'}; cursor: pointer;" onclick="toggleVideoSelection('${videoKey}')">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
+                                <input type="checkbox" ${isSelected ? 'checked' : ''} style="margin-right: 10px;" onchange="event.stopPropagation(); toggleVideoSelection('${videoKey}')">
+                                <span style="font-weight: bold; color: #4a9eff;">${video.video_name}</span>
+                                <span style="font-size: 11px; color: #999; margin-left: 10px;">(${video.project_name} - ${video.user_name})</span>
+                            </div>
+                            <div style="display: flex; gap: 15px; font-size: 12px;">
+                                <span style="color: #ffa500;">📊 ${video.annotations}개</span>
+                                <span style="color: #9b59b6;">🎞️ ${video.annotated_frames}프레임</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            html += `
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #404040; font-size: 13px; color: #ccc;">
+                    <strong>선택된 비디오: ${selectedVideosForDataset.size}개</strong> /
+                    전체 어노테이션: ${videosWithAnnotations.filter(v => selectedVideosForDataset.has(`${v.user_id}/${v.project_id}/${v.video_id}`)).reduce((sum, v) => sum + v.annotations, 0)}개
+                </div>
+            `;
+
+            videosList.innerHTML = html;
+        }
+
+        function toggleVideoSelection(videoKey) {
+            if (selectedVideosForDataset.has(videoKey)) {
+                selectedVideosForDataset.delete(videoKey);
+            } else {
+                selectedVideosForDataset.add(videoKey);
+            }
+            renderDatasetVideos();
+        }
+
         function selectAllVideos() {
-            alert('비디오 전체 선택 기능은 구현 예정입니다.');
+            const videosWithAnnotations = datasetProjectVideos.filter(v => v.annotations > 0);
+            videosWithAnnotations.forEach(video => {
+                const videoKey = `${video.user_id}/${video.project_id}/${video.video_id}`;
+                selectedVideosForDataset.add(videoKey);
+            });
+            renderDatasetVideos();
         }
 
         function deselectAllVideos() {
-            alert('비디오 선택 해제 기능은 구현 예정입니다.');
+            selectedVideosForDataset.clear();
+            renderDatasetVideos();
         }
 
-        function buildDataset() {
-            alert('데이터셋 빌드 기능은 구현 예정입니다.');
+        async function buildDataset() {
+            if (selectedVideosForDataset.size === 0) {
+                alert('빌드할 비디오를 선택해주세요.');
+                return;
+            }
+
+            // 선택된 비디오 정보 수집
+            const selectedVideos = datasetProjectVideos.filter(v =>
+                selectedVideosForDataset.has(`${v.user_id}/${v.project_id}/${v.video_id}`)
+            );
+
+            // 설정 값 가져오기
+            const outputDir = document.getElementById('datasetOutputPath').value.trim();
+            const splitRatio = document.getElementById('datasetSplit').value.trim();
+            const augmentMultiplier = parseInt(document.getElementById('datasetAugment').value) || 0;
+            const format = document.getElementById('datasetFormat').value;
+
+            // YOLO만 지원
+            if (format !== 'yolo') {
+                alert('현재 YOLO Detection 형식만 지원됩니다.');
+                return;
+            }
+
+            // 확인 메시지
+            const totalAnnotations = selectedVideos.reduce((sum, v) => sum + v.annotations, 0);
+            const totalFrames = selectedVideos.reduce((sum, v) => sum + v.annotated_frames, 0);
+
+            if (!confirm(
+                `YOLO 데이터셋을 생성하시겠습니까?\n\n` +
+                `선택된 비디오: ${selectedVideos.length}개\n` +
+                `총 어노테이션: ${totalAnnotations}개\n` +
+                `어노테이션 프레임: ${totalFrames}개\n` +
+                `Train/Val/Test 비율: ${splitRatio}\n` +
+                `Augmentation: ${augmentMultiplier}배\n` +
+                `출력 디렉토리: ${outputDir}`
+            )) {
+                return;
+            }
+
+            // 진행 상황 초기화
+            const progressBar = document.getElementById('datasetProgressBar');
+            const logDiv = document.getElementById('datasetLog');
+            progressBar.style.width = '0%';
+            logDiv.innerHTML = '';
+
+            function addLog(message, color = '#ccc') {
+                const timestamp = new Date().toLocaleTimeString();
+                logDiv.innerHTML += `<div style="color: ${color};">[${timestamp}] ${message}</div>`;
+                logDiv.scrollTop = logDiv.scrollHeight;
+            }
+
+            addLog('데이터셋 빌드 시작...', '#4a9eff');
+            addLog(`선택된 비디오: ${selectedVideos.length}개`, '#4a9eff');
+
+            try {
+                const response = await authFetch('/api/dataset/build', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        videos: selectedVideos,
+                        output_dir: outputDir,
+                        split_ratio: splitRatio,
+                        augment_multiplier: augmentMultiplier,
+                        format: format
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    progressBar.style.width = '100%';
+                    addLog('✅ 데이터셋 빌드 완료!', '#28a745');
+                    addLog(`출력 디렉토리: ${data.output_dir}`, '#4a9eff');
+                    addLog(`총 이미지: ${data.total_images || 0}개`, '#4a9eff');
+                    addLog(`Train: ${data.train_count || 0}개`, '#4a9eff');
+                    addLog(`Val: ${data.val_count || 0}개`, '#4a9eff');
+                    addLog(`Test: ${data.test_count || 0}개`, '#4a9eff');
+
+                    alert(`데이터셋 빌드 완료!\n\n출력 위치: ${data.output_dir}\n총 ${data.total_images}개 이미지 생성`);
+                } else {
+                    progressBar.style.width = '0%';
+                    addLog('❌ 빌드 실패: ' + data.error, '#ff6b6b');
+                    alert('데이터셋 빌드 실패: ' + data.error);
+                }
+            } catch (error) {
+                progressBar.style.width = '0%';
+                addLog('❌ 오류 발생: ' + error.message, '#ff6b6b');
+                console.error('[DATASET] Build error:', error);
+                alert('데이터셋 빌드 중 오류 발생: ' + error.message);
+            }
         }
 
         async function exportYOLO() {
@@ -9254,7 +9454,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             // 전역 변수에 저장하여 데이터셋 빌드 시 사용
             window.adminSelectedProjects = projectsToLoad;
 
-            alert(`${projectsToLoad.length}개 프로젝트가 데이터셋 빌더에 로드되었습니다.\n출력 형식을 선택하고 '데이터셋 빌드' 버튼을 클릭하세요.`);
+            // 자동으로 비디오 목록 로드
+            await loadVideosForDataset();
+
+            alert(`${projectsToLoad.length}개 프로젝트가 데이터셋 빌더에 로드되었습니다.\n아래에서 비디오를 선택하고 '데이터셋 빌드' 버튼을 클릭하세요.`);
         }
 
         function exportAdminDashboardCSV() {

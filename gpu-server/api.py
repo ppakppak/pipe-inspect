@@ -2026,21 +2026,8 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Split ratio: Train={train_ratio:.2f}, Val={val_ratio:.2f}, Test={test_ratio:.2f}")
 
-        # 클래스 ID to 이름 매핑 (표준 클래스 목록)
-        class_id_to_name = {
-            0: 'normal',  # 정상부
-            1: 'deformation',  # 변형
-            2: 'crack',  # 균열
-            3: 'corrosion',  # 부식
-            4: 'sediment_soil',  # 침전물(흙)
-            5: 'sediment_sand',  # 침전물(모래)
-            6: 'sediment_corrosion',  # 침전물(부식 생성물)
-            7: 'sediment_coating',  # 침전물(탈리, 도장재)
-            8: 'sediment_other',  # 침전물(기타)
-            9: 'slime',  # 슬라임(물때)
-            10: 'vanishing_point',  # 소실점
-            11: 'needs_discussion'  # 논의필요
-        }
+        # 프로젝트별 클래스 정의 수집
+        project_classes = {}  # project_dir -> class_id_to_name mapping
 
         # 실제 사용된 클래스 수집
         used_classes = set()
@@ -2054,13 +2041,26 @@ def build_yolo_dataset():
             annotations = anno_data['annotations']
             project_dir = Path(anno_data['project_dir'])
 
-            # 비디오 정보 찾기
+            # 비디오 정보 및 클래스 정의 찾기
             project_file = project_dir / 'project.json'
             video_path = None
 
             if project_file.exists():
                 with open(project_file, 'r', encoding='utf-8') as f:
                     project_json = json.load(f)
+
+                    # 프로젝트의 클래스 정의 읽기 (처음 한 번만)
+                    project_dir_str = str(project_dir)
+                    if project_dir_str not in project_classes:
+                        classes = project_json.get('classes', [])
+                        class_mapping = {}
+                        for idx, cls in enumerate(classes):
+                            class_name = cls.get('name', f'class_{idx}')
+                            class_mapping[idx] = class_name
+                        project_classes[project_dir_str] = class_mapping
+                        print(f"[DATASET BUILD] Loaded {len(class_mapping)} classes from project {project_id}")
+
+                    # 비디오 경로 찾기
                     for video in project_json.get('videos', []):
                         if video.get('video_id') == video_id:
                             video_path = video.get('video_path')
@@ -2105,7 +2105,8 @@ def build_yolo_dataset():
                     'video_id': video_id,
                     'video_path': str(web_video_path),
                     'frame_num': frame_num,
-                    'annotations': frame_annos
+                    'annotations': frame_annos,
+                    'project_dir': str(project_dir)
                 })
 
         if not all_frames:
@@ -2195,9 +2196,14 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Saved - Train: {train_count}, Val: {val_count}, Test: {test_count}")
 
+        # 모든 프로젝트의 클래스 매핑을 병합
+        merged_class_mapping = {}
+        for project_dir_str, class_mapping in project_classes.items():
+            merged_class_mapping.update(class_mapping)
+
         # 사용된 클래스 정보 정리
         sorted_class_ids = sorted(used_classes)
-        class_names_list = [class_id_to_name.get(cid, f'class_{cid}') for cid in sorted_class_ids]
+        class_names_list = [merged_class_mapping.get(cid, f'class_{cid}') for cid in sorted_class_ids]
         num_classes = len(sorted_class_ids)
 
         print(f"[DATASET BUILD] Used classes ({num_classes}): {sorted_class_ids}")

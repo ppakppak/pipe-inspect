@@ -2249,6 +2249,115 @@ def export_dataset():
     return jsonify(data), status_code
 
 
+@app.route('/api/dataset/build', methods=['POST'])
+@require_auth
+def build_dataset():
+    """다중 프로젝트 데이터셋 빌드"""
+    import json
+    from pathlib import Path
+
+    try:
+        data = request.get_json()
+        videos = data.get('videos', [])
+        output_dir = data.get('output_dir', 'pipe_dataset')
+        split_ratio = data.get('split_ratio', '0.7,0.15,0.15')
+        augment_multiplier = data.get('augment_multiplier', 0)
+        format_type = data.get('format', 'yolo')
+
+        if not videos:
+            return jsonify({
+                'success': False,
+                'error': 'No videos selected'
+            }), 400
+
+        if format_type != 'yolo':
+            return jsonify({
+                'success': False,
+                'error': 'Only YOLO format is supported'
+            }), 400
+
+        logger.info(f"[DATASET BUILD] Building dataset from {len(videos)} videos")
+        logger.info(f"[DATASET BUILD] Output: {output_dir}, Split: {split_ratio}, Augment: {augment_multiplier}x")
+
+        # 각 비디오의 어노테이션 수집
+        annotations_data = []
+
+        for video in videos:
+            user_id = video['user_id']
+            project_id = video['project_id']
+            video_id = video['video_id']
+
+            # 프로젝트 디렉토리 찾기
+            project_dir = Path(BASE_PROJECTS_DIR) / user_id / project_id
+            if not project_dir.exists():
+                logger.warning(f"[DATASET BUILD] Project dir not found: {project_dir}")
+                continue
+
+            # 어노테이션 디렉토리
+            annotations_dir = project_dir / 'annotations' / video_id
+            if not annotations_dir.exists():
+                logger.warning(f"[DATASET BUILD] Annotations dir not found: {annotations_dir}")
+                continue
+
+            # 모든 사용자의 어노테이션 JSON 파일 읽기
+            for json_file in annotations_dir.glob('*.json'):
+                if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                    continue
+
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        anno_data = json.load(f)
+
+                    annotations_data.append({
+                        'user_id': user_id,
+                        'project_id': project_id,
+                        'video_id': video_id,
+                        'annotations': anno_data.get('annotations', {}),
+                        'video_name': video.get('video_name', video_id),
+                        'project_dir': str(project_dir)
+                    })
+
+                except Exception as e:
+                    logger.error(f"[DATASET BUILD] Error reading {json_file}: {e}")
+
+        if not annotations_data:
+            return jsonify({
+                'success': False,
+                'error': 'No annotations found in selected videos'
+            }), 400
+
+        logger.info(f"[DATASET BUILD] Collected {len(annotations_data)} annotation files")
+
+        # GPU 서버로 전달하여 실제 빌드 수행
+        build_request = {
+            'annotations_data': annotations_data,
+            'output_dir': output_dir,
+            'split_ratio': split_ratio,
+            'augment_multiplier': augment_multiplier,
+            'format': format_type,
+            'base_projects_dir': str(BASE_PROJECTS_DIR)
+        }
+
+        # GPU 서버에 빌드 요청
+        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo', method='POST', json=build_request)
+
+        if status_code == 200 and gpu_response.get('success'):
+            logger.info(f"[DATASET BUILD] Success: {gpu_response.get('output_dir')}")
+        else:
+            logger.error(f"[DATASET BUILD] Failed: {gpu_response.get('error')}")
+
+        return jsonify(gpu_response), status_code
+
+    except Exception as e:
+        logger.error(f"[DATASET BUILD] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/polygon/generate_mask', methods=['POST'])
 def generate_mask_from_polygon():
     """폴리곤에서 마스크 생성"""

@@ -2026,6 +2026,25 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Split ratio: Train={train_ratio:.2f}, Val={val_ratio:.2f}, Test={test_ratio:.2f}")
 
+        # 클래스 ID to 이름 매핑 (표준 클래스 목록)
+        class_id_to_name = {
+            0: 'normal',  # 정상부
+            1: 'deformation',  # 변형
+            2: 'crack',  # 균열
+            3: 'corrosion',  # 부식
+            4: 'sediment_soil',  # 침전물(흙)
+            5: 'sediment_sand',  # 침전물(모래)
+            6: 'sediment_corrosion',  # 침전물(부식 생성물)
+            7: 'sediment_coating',  # 침전물(탈리, 도장재)
+            8: 'sediment_other',  # 침전물(기타)
+            9: 'slime',  # 슬라임(물때)
+            10: 'vanishing_point',  # 소실점
+            11: 'needs_discussion'  # 논의필요
+        }
+
+        # 실제 사용된 클래스 수집
+        used_classes = set()
+
         # 모든 어노테이션 프레임 수집
         all_frames = []
         for anno_data in annotations_data:
@@ -2074,6 +2093,12 @@ def build_yolo_dataset():
                     continue
 
                 frame_num = int(frame_num_str)
+
+                # 사용된 클래스 수집
+                for anno in frame_annos:
+                    class_id = anno.get('class_id', 0)
+                    used_classes.add(class_id)
+
                 all_frames.append({
                     'user_id': user_id,
                     'project_id': project_id,
@@ -2170,6 +2195,14 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Saved - Train: {train_count}, Val: {val_count}, Test: {test_count}")
 
+        # 사용된 클래스 정보 정리
+        sorted_class_ids = sorted(used_classes)
+        class_names_list = [class_id_to_name.get(cid, f'class_{cid}') for cid in sorted_class_ids]
+        num_classes = len(sorted_class_ids)
+
+        print(f"[DATASET BUILD] Used classes ({num_classes}): {sorted_class_ids}")
+        print(f"[DATASET BUILD] Class names: {class_names_list}")
+
         # data.yaml 생성
         yaml_content = f"""# YOLO Dataset Configuration
 path: {output_path}
@@ -2178,10 +2211,10 @@ val: val/images
 test: test/images
 
 # Number of classes
-nc: 1
+nc: {num_classes}
 
 # Class names
-names: ['pipe_defect']
+names: {class_names_list}
 """
 
         with open(output_path / 'data.yaml', 'w') as f:
@@ -2196,11 +2229,14 @@ names: ['pipe_defect']
             'test_count': test_count,
             'split_ratio': split_ratio,
             'format': 'yolo_segmentation',
-            'augment_multiplier': augment_multiplier
+            'augment_multiplier': augment_multiplier,
+            'num_classes': num_classes,
+            'class_names': class_names_list,
+            'class_ids': sorted_class_ids
         }
 
-        with open(output_path / 'dataset_info.json', 'w') as f:
-            json.dump(info, f, indent=2)
+        with open(output_path / 'dataset_info.json', 'w', encoding='utf-8') as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
 
         print(f"[DATASET BUILD] ✅ Dataset build complete: {output_path}")
 

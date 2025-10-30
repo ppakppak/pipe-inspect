@@ -2196,6 +2196,22 @@ def build_yolo_dataset():
 
         print(f"[DATASET BUILD] Saved - Train: {train_count}, Val: {val_count}, Test: {test_count}")
 
+        # 한글 클래스 이름을 영문으로 매핑 (YOLO 호환성)
+        korean_to_english = {
+            '정상부': 'normal',
+            '변형': 'deformation',
+            '균열': 'crack',
+            '부식': 'corrosion',
+            '침전물(흙)': 'sediment_soil',
+            '침전물(모래)': 'sediment_sand',
+            '침전물(부식 생성물)': 'sediment_corrosion',
+            '침전물(탈리, 도장재)': 'sediment_coating',
+            '침전물(기타)': 'sediment_other',
+            '슬라임(물때)': 'slime',
+            '논의필요': 'needs_discussion',
+            '소실점': 'vanishing_point'
+        }
+
         # 실제 어노테이션에서 사용된 label 필드 수집
         # (project.json 인덱스 기반 매핑보다 실제 label 필드가 우선)
         class_id_to_label = {}
@@ -2204,7 +2220,9 @@ def build_yolo_dataset():
                 class_id = anno.get('class_id', 0)
                 label = anno.get('label')
                 if label:
-                    class_id_to_label[class_id] = label
+                    # 한글이면 영문으로 변환, 이미 영문이면 그대로 사용
+                    english_label = korean_to_english.get(label, label)
+                    class_id_to_label[class_id] = english_label
 
         # 모든 프로젝트의 클래스 매핑을 병합 (fallback용)
         merged_class_mapping = {}
@@ -2218,7 +2236,10 @@ def build_yolo_dataset():
             if cid in class_id_to_label:
                 class_names_list.append(class_id_to_label[cid])
             else:
-                class_names_list.append(merged_class_mapping.get(cid, f'class_{cid}'))
+                # project.json fallback도 한글이면 영문으로 변환
+                fallback_name = merged_class_mapping.get(cid, f'class_{cid}')
+                english_name = korean_to_english.get(fallback_name, fallback_name)
+                class_names_list.append(english_name)
         num_classes = len(sorted_class_ids)
 
         print(f"[DATASET BUILD] Used classes ({num_classes}): {sorted_class_ids}")

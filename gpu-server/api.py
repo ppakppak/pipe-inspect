@@ -1973,6 +1973,248 @@ def run_video_inference():
 
 
 
+@app.route('/api/dataset/build_yolo', methods=['POST'])
+def build_yolo_dataset():
+    """다중 프로젝트 YOLO 데이터셋 빌드"""
+    from pathlib import Path
+    import random
+    import shutil
+    from datetime import datetime
+
+    try:
+        data = request.get_json()
+        annotations_data = data.get('annotations_data', [])
+        output_dir = data.get('output_dir', 'pipe_dataset')
+        split_ratio = data.get('split_ratio', '0.7,0.15,0.15')
+        augment_multiplier = data.get('augment_multiplier', 0)
+        base_projects_dir = Path(data.get('base_projects_dir', '/home/intu/Nas2/k_water/pipe_inspector_data'))
+
+        if not annotations_data:
+            return jsonify({'success': False, 'error': 'No annotations data provided'}), 400
+
+        print(f"[DATASET BUILD] Building YOLO dataset from {len(annotations_data)} annotation files")
+
+        # 출력 디렉토리 설정
+        output_path = Path(output_dir)
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_dir
+
+        # 기존 디렉토리가 있으면 타임스탬프 추가
+        if output_path.exists():
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = output_path.parent / f"{output_path.name}_{timestamp}"
+
+        # 디렉토리 구조 생성
+        (output_path / 'train' / 'images').mkdir(parents=True, exist_ok=True)
+        (output_path / 'train' / 'labels').mkdir(parents=True, exist_ok=True)
+        (output_path / 'val' / 'images').mkdir(parents=True, exist_ok=True)
+        (output_path / 'val' / 'labels').mkdir(parents=True, exist_ok=True)
+        (output_path / 'test' / 'images').mkdir(parents=True, exist_ok=True)
+        (output_path / 'test' / 'labels').mkdir(parents=True, exist_ok=True)
+
+        print(f"[DATASET BUILD] Output directory: {output_path}")
+
+        # Split ratio 파싱
+        try:
+            train_ratio, val_ratio, test_ratio = map(float, split_ratio.split(','))
+            total_ratio = train_ratio + val_ratio + test_ratio
+            train_ratio /= total_ratio
+            val_ratio /= total_ratio
+            test_ratio /= total_ratio
+        except:
+            train_ratio, val_ratio, test_ratio = 0.7, 0.15, 0.15
+
+        print(f"[DATASET BUILD] Split ratio: Train={train_ratio:.2f}, Val={val_ratio:.2f}, Test={test_ratio:.2f}")
+
+        # 모든 어노테이션 프레임 수집
+        all_frames = []
+        for anno_data in annotations_data:
+            user_id = anno_data['user_id']
+            project_id = anno_data['project_id']
+            video_id = anno_data['video_id']
+            annotations = anno_data['annotations']
+            project_dir = Path(anno_data['project_dir'])
+
+            # 비디오 정보 찾기
+            project_file = project_dir / 'project.json'
+            video_path = None
+
+            if project_file.exists():
+                with open(project_file, 'r', encoding='utf-8') as f:
+                    project_json = json.load(f)
+                    for video in project_json.get('videos', []):
+                        if video.get('video_id') == video_id:
+                            video_path = video.get('video_path')
+                            break
+
+            if not video_path:
+                print(f"[DATASET BUILD] Warning: Video path not found for {video_id}")
+                continue
+
+            # 웹 호환 비디오 경로로 변환
+            video_path_obj = Path(video_path)
+            if 'SAHARA' in str(video_path):
+                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/SAHARA') / video_path_obj.relative_to(Path(video_path).parents[len(video_path_obj.parts) - video_path_obj.parts.index('SAHARA') - 2])
+            elif '관내시경영상' in str(video_path):
+                web_video_path = Path('/home/intu/nas2_kwater/Videos_web/관내시경영상') / video_path_obj.relative_to(Path(video_path).parents[len(video_path_obj.parts) - video_path_obj.parts.index('관내시경영상') - 2])
+            else:
+                web_video_path = Path(str(video_path).replace('.avi', '.mp4').replace('.AVI', '.mp4'))
+
+            # 각 프레임에 대해
+            for frame_num_str, frame_annos in annotations.items():
+                if not frame_annos:
+                    continue
+
+                frame_num = int(frame_num_str)
+                all_frames.append({
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'video_id': video_id,
+                    'video_path': str(web_video_path),
+                    'frame_num': frame_num,
+                    'annotations': frame_annos
+                })
+
+        if not all_frames:
+            return jsonify({'success': False, 'error': 'No frames with annotations found'}), 400
+
+        print(f"[DATASET BUILD] Total frames: {len(all_frames)}")
+
+        # 프레임을 무작위로 섞기
+        random.shuffle(all_frames)
+
+        # Train/Val/Test 분할
+        train_end = int(len(all_frames) * train_ratio)
+        val_end = train_end + int(len(all_frames) * val_ratio)
+
+        train_frames = all_frames[:train_end]
+        val_frames = all_frames[train_end:val_end]
+        test_frames = all_frames[val_end:]
+
+        print(f"[DATASET BUILD] Train: {len(train_frames)}, Val: {len(val_frames)}, Test: {len(test_frames)}")
+
+        # 각 세트별로 이미지 및 라벨 저장
+        def process_frames(frames, split_name):
+            saved_count = 0
+            for idx, frame_data in enumerate(frames):
+                try:
+                    video_path = frame_data['video_path']
+                    frame_num = frame_data['frame_num']
+                    annotations = frame_data['annotations']
+
+                    # 비디오에서 프레임 추출
+                    cap = cv2.VideoCapture(video_path)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                    ret, frame = cap.read()
+                    cap.release()
+
+                    if not ret:
+                        print(f"[DATASET BUILD] Failed to extract frame {frame_num} from {video_path}")
+                        continue
+
+                    # 이미지 파일명
+                    image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{frame_num}.jpg"
+                    image_path = output_path / split_name / 'images' / image_filename
+                    label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
+
+                    # 이미지 저장
+                    cv2.imwrite(str(image_path), frame)
+
+                    # YOLO 라벨 생성
+                    height, width = frame.shape[:2]
+                    yolo_labels = []
+
+                    for anno in annotations:
+                        if not anno.get('polygon'):
+                            continue
+
+                        # 클래스 ID (label 필드에서 추출, 없으면 0)
+                        class_id = anno.get('class_id', 0)
+
+                        # 폴리곤 좌표 정규화
+                        polygon = anno['polygon']
+                        normalized_coords = []
+                        for point in polygon:
+                            x_norm = point['x'] / width
+                            y_norm = point['y'] / height
+                            normalized_coords.append(f"{x_norm:.6f} {y_norm:.6f}")
+
+                        # YOLO segmentation 형식: class_id x1 y1 x2 y2 ... xn yn
+                        yolo_line = f"{class_id} " + " ".join(normalized_coords)
+                        yolo_labels.append(yolo_line)
+
+                    # 라벨 파일 저장
+                    if yolo_labels:
+                        with open(label_path, 'w') as f:
+                            f.write('\n'.join(yolo_labels))
+                        saved_count += 1
+
+                except Exception as e:
+                    print(f"[DATASET BUILD] Error processing frame: {e}")
+                    continue
+
+            return saved_count
+
+        # 각 세트 처리
+        train_count = process_frames(train_frames, 'train')
+        val_count = process_frames(val_frames, 'val')
+        test_count = process_frames(test_frames, 'test')
+
+        print(f"[DATASET BUILD] Saved - Train: {train_count}, Val: {val_count}, Test: {test_count}")
+
+        # data.yaml 생성
+        yaml_content = f"""# YOLO Dataset Configuration
+path: {output_path}
+train: train/images
+val: val/images
+test: test/images
+
+# Number of classes
+nc: 1
+
+# Class names
+names: ['pipe_defect']
+"""
+
+        with open(output_path / 'data.yaml', 'w') as f:
+            f.write(yaml_content)
+
+        # dataset_info.json 생성
+        info = {
+            'created_at': datetime.now().isoformat(),
+            'total_frames': len(all_frames),
+            'train_count': train_count,
+            'val_count': val_count,
+            'test_count': test_count,
+            'split_ratio': split_ratio,
+            'format': 'yolo_segmentation',
+            'augment_multiplier': augment_multiplier
+        }
+
+        with open(output_path / 'dataset_info.json', 'w') as f:
+            json.dump(info, f, indent=2)
+
+        print(f"[DATASET BUILD] ✅ Dataset build complete: {output_path}")
+
+        return jsonify({
+            'success': True,
+            'output_dir': str(output_path),
+            'total_images': train_count + val_count + test_count,
+            'train_count': train_count,
+            'val_count': val_count,
+            'test_count': test_count
+        })
+
+    except Exception as e:
+        print(f"[DATASET BUILD] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     print("🚀 Starting GPU Server API...")
     print("📡 API Server: http://0.0.0.0:5004")

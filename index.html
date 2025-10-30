@@ -7997,12 +7997,21 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         }
 
         function toggleVideoSelection(videoKey) {
+            // 현재 스크롤 위치 저장
+            const videosList = document.getElementById('datasetVideosList');
+            const scrollPosition = videosList.scrollTop;
+
             if (selectedVideosForDataset.has(videoKey)) {
                 selectedVideosForDataset.delete(videoKey);
             } else {
                 selectedVideosForDataset.add(videoKey);
             }
             renderDatasetVideos();
+
+            // 스크롤 위치 복원
+            requestAnimationFrame(() => {
+                videosList.scrollTop = scrollPosition;
+            });
         }
 
         function selectAllVideos() {

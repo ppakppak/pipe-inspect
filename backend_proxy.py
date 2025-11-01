@@ -166,16 +166,20 @@ def forward_to_gpu(path, method='GET', **kwargs):
     try:
         params = kwargs.get('params', None)
 
+        # 데이터셋 빌드는 시간이 오래 걸리므로 타임아웃을 길게 설정
+        is_dataset_build = '/dataset/build' in endpoint
+        timeout = 600 if is_dataset_build else 30  # 10분 vs 30초
+
         if method == 'GET':
-            response = requests.get(url, params=params, timeout=30)
+            response = requests.get(url, params=params, timeout=timeout)
         elif method == 'POST':
             # files가 있으면 multipart/form-data, 없으면 JSON
             if 'files' in kwargs:
-                response = requests.post(url, files=kwargs.get('files'), params=params, timeout=30)
+                response = requests.post(url, files=kwargs.get('files'), params=params, timeout=timeout)
             else:
-                response = requests.post(url, json=kwargs.get('json'), params=params, timeout=30)
+                response = requests.post(url, json=kwargs.get('json'), params=params, timeout=timeout)
         elif method == 'DELETE':
-            response = requests.delete(url, params=params, timeout=30)
+            response = requests.delete(url, params=params, timeout=timeout)
         else:
             logger.error(f"Unsupported HTTP method: {method}")
             return {'success': False, 'error': 'Unsupported method'}, 400

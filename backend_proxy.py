@@ -167,7 +167,7 @@ def forward_to_gpu(path, method='GET', **kwargs):
         params = kwargs.get('params', None)
 
         # 데이터셋 빌드는 시간이 오래 걸리므로 타임아웃을 길게 설정
-        is_dataset_build = '/dataset/build' in endpoint
+        is_dataset_build = '/dataset/build' in path
         timeout = 600 if is_dataset_build else 30  # 10분 vs 30초
 
         if method == 'GET':

@@ -45,6 +45,9 @@ job_lock = threading.Lock()
 app = Flask(__name__)
 CORS(app)
 
+# 대용량 JSON 요청 허용 (데이터셋 빌드 시 100MB까지)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+
 
 @app.route('/api/health', methods=['GET'])
 def health_check():

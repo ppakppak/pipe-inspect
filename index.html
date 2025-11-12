@@ -574,7 +574,7 @@
                 <h3>프로젝트 정보</h3>
                 <div style="margin-bottom: 20px;">
                     <div style="color: #888; font-size: 12px; margin-bottom: 5px;">프로젝트 이름:</div>
-                    <div id="settingsProjectName" style="color: #4a9eff; font-size: 16px; font-weight: 600;">-</div>
+                    <input type="text" id="settingsProjectName" placeholder="프로젝트 이름 입력" style="width: 100%; padding: 10px; font-size: 16px; font-weight: 600; background: #2d2d2d; color: #4a9eff; border: 2px solid #404040; border-radius: 4px;" />
                 </div>
                 <div style="margin-bottom: 20px;">
                     <div style="color: #888; font-size: 12px; margin-bottom: 5px;">프로젝트 ID:</div>
@@ -708,9 +708,9 @@
         box-shadow: 0 4px 20px rgba(0,0,0,0.5);
         padding: 10px;
         min-width: 200px;
-        max-width: 300px;
+        max-width: 800px;
     ">
-        <div id="classSelectionButtons" style="display: flex; flex-direction: column; gap: 8px;">
+        <div id="classSelectionButtons" style="display: grid; gap: 8px;">
             <!-- 클래스 버튼들이 동적으로 추가됨 -->
         </div>
     </div>
@@ -1921,8 +1921,10 @@
 
         // 클래스 이름 표시용 helper 함수 (언어에 따라 name/description 선택)
         function getClassDisplayName(classObj) {
-            if (currentLanguage === 'ko') {
-                return classObj.description || classObj.name;
+            // 한국어 모드: 설명을 메인으로, 이름을 괄호 안에 (설명이 있을 경우)
+            // 영어 모드: 이름만
+            if (currentLanguage === 'ko' && classObj.description) {
+                return `${classObj.description} (${classObj.name})`;
             } else {
                 return classObj.name;
             }
@@ -2219,14 +2221,14 @@
             // 탭 버튼 활성화 상태 업데이트
             document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
 
-            // 클릭 이벤트로 호출된 경우
-            if (window.event && window.event.target) {
+            // 클릭 이벤트로 호출된 경우 (event target이 탭 버튼인 경우만)
+            if (window.event && window.event.target && window.event.target.classList && window.event.target.classList.contains('tab')) {
                 window.event.target.classList.add('active');
             } else {
                 // 프로그램적으로 호출된 경우 - 탭 이름으로 버튼 찾기
                 const tabButtons = document.querySelectorAll('.tab');
                 const tabIndex = {'project': 0, 'annotation': 1, 'dataset': 2, 'training': 3, 'inference': 4, 'admin': 5};
-                if (tabIndex[tabName] !== undefined) {
+                if (tabIndex[tabName] !== undefined && tabButtons[tabIndex[tabName]]) {
                     tabButtons[tabIndex[tabName]].classList.add('active');
                 }
             }
@@ -2251,6 +2253,9 @@
                     loadAdminAnnotationStats();
                 }
             }
+
+            // 히스토리에 탭 전환 기록
+            pushToHistory('tab', { tab: tabName }, `Tab: ${tabName}`);
         }
 
         // API Base URL 설정
@@ -2299,6 +2304,94 @@
             playbackInterval: null,
             frameCache: new Map()  // 프레임 이미지 캐시
         };
+
+        // ============================================
+        // 브라우저 뒤로가기 기능 (History API)
+        // ============================================
+
+        let isRestoringHistory = false;  // 히스토리 복원 중인지 여부 (무한 루프 방지)
+
+        // 현재 상태를 History에 푸시
+        function pushToHistory(type, data, title) {
+            if (isRestoringHistory) return;  // 복원 중에는 새 히스토리 추가하지 않음
+
+            const state = {
+                type: type,  // 'tab', 'project', 'video', 'frame'
+                data: data,
+                timestamp: Date.now()
+            };
+
+            // URL 파라미터로 상태 표현 (선택사항)
+            let url = window.location.pathname;
+            if (type === 'tab') {
+                url = `?tab=${data.tab}`;
+            } else if (type === 'project') {
+                url = `?tab=project&project=${encodeURIComponent(data.projectId)}`;
+            } else if (type === 'video') {
+                url = `?tab=annotation&project=${encodeURIComponent(data.projectId)}&video=${encodeURIComponent(data.videoId)}`;
+            } else if (type === 'frame') {
+                url = `?tab=annotation&project=${encodeURIComponent(data.projectId)}&video=${encodeURIComponent(data.videoId)}&frame=${data.frame}`;
+            }
+
+            history.pushState(state, title, url);
+            console.log('[HISTORY] Pushed:', type, data);
+        }
+
+        // 히스토리 상태 복원
+        async function restoreHistoryState(state) {
+            if (!state) return;
+
+            isRestoringHistory = true;  // 복원 중 플래그 설정
+            console.log('[HISTORY] Restoring state:', state.type, state.data);
+
+            try {
+                if (state.type === 'tab') {
+                    // 탭 변경
+                    showTab(state.data.tab);
+
+                } else if (state.type === 'project') {
+                    // 프로젝트 열기
+                    showTab('project');
+                    await openProject(state.data.projectId);
+
+                } else if (state.type === 'video') {
+                    // 비디오 선택
+                    showTab('annotation');
+                    if (!currentProject || currentProject.id !== state.data.projectId) {
+                        await openProject(state.data.projectId);
+                    }
+                    await startAnnotation(state.data.videoId);
+
+                } else if (state.type === 'frame') {
+                    // 특정 프레임으로 이동
+                    showTab('annotation');
+                    if (!currentProject || currentProject.id !== state.data.projectId) {
+                        await openProject(state.data.projectId);
+                    }
+                    if (currentVideoId !== state.data.videoId) {
+                        await startAnnotation(state.data.videoId);
+                    }
+                    // 프레임 로드 대기 후 이동
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    if (state.data.frame !== undefined && state.data.frame !== null) {
+                        currentFrame = state.data.frame;
+                        await loadFrame(currentFrame);
+                    }
+                }
+            } catch (error) {
+                console.error('[HISTORY] Error restoring state:', error);
+            } finally {
+                isRestoringHistory = false;  // 복원 완료
+            }
+        }
+
+        // 브라우저 뒤로가기/앞으로가기 이벤트 처리
+        window.addEventListener('popstate', async (event) => {
+            console.log('[HISTORY] Pop state event:', event.state);
+            if (event.state) {
+                await restoreHistoryState(event.state);
+            }
+        });
 
         // ============================================
         // 코멘트 대시보드 기능
@@ -2389,6 +2482,23 @@
                 });
             }, 100);
 
+            // Lazy loading을 위한 Intersection Observer 설정
+            const imageObserver = new IntersectionObserver((entries, observer) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const img = entry.target;
+                        const dataSrc = img.getAttribute('data-src');
+                        if (dataSrc) {
+                            img.src = dataSrc;
+                            img.removeAttribute('data-src');
+                            observer.unobserve(img);
+                        }
+                    }
+                });
+            }, {
+                rootMargin: '50px' // 화면 경계 50px 전에 로드 시작
+            });
+
             dashboard.innerHTML = filtered.map((comment, displayIndex) => {
                 // 원본 allComments 배열에서의 실제 인덱스 찾기
                 const actualIndex = allComments.findIndex(c => c.comment_id === comment.comment_id);
@@ -2433,7 +2543,9 @@
                         <div style="flex-shrink: 0;">
                             <div style="position: relative; display: inline-block; max-width: 400px; background: #000; border-radius: 4px; overflow: hidden;">
                                 <img
-                                    src="${API_BASE_URL}${comment.frame_url}?token=${encodeURIComponent(localStorage.getItem('session_id'))}"
+                                    loading="lazy"
+                                    data-src="${API_BASE_URL}${comment.frame_url}?token=${encodeURIComponent(localStorage.getItem('session_id'))}"
+                                    src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'><rect width='100%25' height='100%25' fill='%23222'/><text x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%23888' font-size='14'>이미지 로딩 중...</text></svg>"
                                     alt="Frame ${comment.frame}"
                                     style="width: 100%; height: auto; display: block;"
                                     onerror="this.onerror=null; this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22300%22><rect width=%22100%25%22 height=%22100%25%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%23888%22>이미지 로드 실패</text></svg>';"
@@ -2453,7 +2565,10 @@
                         <!-- 오른쪽: 답글 버튼, 상태 변경 및 답글 리스트 -->
                         <div style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0;">
                             <!-- 버튼 영역 -->
-                            <div style="display: flex; gap: 8px;">
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button onclick="goToAnnotation('${comment.project_name_full}', '${comment.video_id}', ${comment.frame})" style="background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
+                                    📍 어노테이션으로 이동
+                                </button>
                                 <button id="reply-btn-${comment.comment_id}" onclick="toggleReplies('${comment.comment_id}')" style="background: #1a1a1a; color: #4a9eff; border: 1px solid #4a9eff; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
                                     💬 답글 (${comment.replies_count || 0})
                                 </button>
@@ -2482,6 +2597,13 @@
                     </div>
                 </div>
             `}).join('');
+
+            // Lazy loading 적용: data-src가 있는 모든 이미지를 Observer에 등록
+            setTimeout(() => {
+                const lazyImages = dashboard.querySelectorAll('img[data-src]');
+                lazyImages.forEach(img => imageObserver.observe(img));
+                console.log(`[LAZY_LOAD] ${lazyImages.length}개 이미지 lazy loading 적용`);
+            }, 100);
         }
 
         // ============================================
@@ -2693,9 +2815,91 @@
             } catch (error) {
                 console.error('상태 업데이트 오류:', error);
                 alert('상태 업데이트 중 오류가 발생했습니다: ' + error.message);
+            }
+        }
 
-                // 오류 발생 시 select 되돌리기
-                filterComments();
+        // Comment에서 어노테이션으로 이동
+        async function goToAnnotation(projectId, videoId, frameNum) {
+            try {
+                // 1. 프로젝트 로드
+                console.log('프로젝트 로드:', projectId);
+                await openProject(projectId);
+
+                // 2. 비디오 리스트가 렌더링될 때까지 대기 (최대 5초)
+                let videoItem = null;
+                let attempts = 0;
+                const maxAttempts = 10;
+
+                while (!videoItem && attempts < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    videoItem = document.querySelector(`[data-video-id="${videoId}"]`);
+                    attempts++;
+                    console.log(`비디오 찾기 시도 ${attempts}/${maxAttempts}...`);
+                }
+
+                if (videoItem) {
+                    console.log('비디오 선택:', videoId);
+
+                    // [Start Annotation] 버튼 찾아서 클릭
+                    const startBtn = videoItem.querySelector('button[onclick*="startAnnotation"]');
+                    if (startBtn) {
+                        startBtn.click();
+                    } else {
+                        // 버튼이 없으면 직접 startAnnotation 호출
+                        await startAnnotation(videoId);
+                    }
+
+                    // 3. currentVideoId가 목표 videoId와 일치할 때까지 대기 (최대 10초)
+                    let videoLoadAttempts = 0;
+                    while (currentVideoId !== videoId && videoLoadAttempts < 20) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        videoLoadAttempts++;
+                        console.log(`비디오 로드 대기 ${videoLoadAttempts}/20... (목표: ${videoId}, 현재: ${currentVideoId})`);
+                    }
+
+                    if (currentVideoId !== videoId) {
+                        throw new Error(`비디오 로드에 실패했습니다. (목표: ${videoId}, 현재: ${currentVideoId})`);
+                    }
+
+                    console.log('✅ 올바른 비디오 로드 완료:', currentVideoId);
+
+                    // 4. totalFrames가 설정될 때까지 추가 대기 (비디오 정보 완전 로드 확인)
+                    let frameInfoAttempts = 0;
+                    while (!totalFrames && frameInfoAttempts < 10) {
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        frameInfoAttempts++;
+                        console.log(`비디오 정보 대기 ${frameInfoAttempts}/10... (totalFrames: ${totalFrames})`);
+                    }
+
+                    // 5. 추가 안정화 시간 (500ms)
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    console.log(`📊 비디오 정보: totalFrames=${totalFrames}, 이동할 프레임=${frameNum}`);
+
+                    // 6. 프레임 범위 검증
+                    if (totalFrames && frameNum >= totalFrames) {
+                        console.warn(`⚠️ 프레임 번호 초과: ${frameNum} >= ${totalFrames}, 마지막 프레임으로 이동`);
+                        frameNum = totalFrames - 1;
+                    }
+
+                    // 7. 프레임으로 이동
+                    console.log('🎯 프레임 이동:', frameNum);
+                    currentFrame = frameNum;
+                    await loadFrame(currentFrame);
+
+                    // 5. 화면을 Video Annotation 섹션으로 스크롤
+                    const videoSection = document.getElementById('videoAnnotationSection');
+                    if (videoSection) {
+                        videoSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+
+                    console.log('어노테이션으로 이동 완료');
+                } else {
+                    console.error('비디오를 찾을 수 없습니다:', videoId);
+                    alert('해당 비디오를 찾을 수 없습니다.\n프로젝트에 비디오가 포함되어 있지 않거나 로드에 실패했습니다.');
+                }
+            } catch (error) {
+                console.error('어노테이션 이동 오류:', error);
+                alert('어노테이션으로 이동하는 중 오류가 발생했습니다: ' + error.message);
             }
         }
 
@@ -3489,12 +3693,44 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
             document.getElementById('currentProjectStats').innerHTML =
                 'ID: ' + currentProject.id + '<br>' +
-                '클래스: ' + (classes.length > 0 ? classes.map(c => c.description || c.name).join(', ') : '없음') + '<br>' +
+                '클래스: ' + (classes.length > 0 ? classes.map(c => getClassDisplayName(c)).join(', ') : '없음') + '<br>' +
                 '비디오: ' + stats.total_videos + ' (완료 ' + stats.annotated_videos + ')<br>' +
                 '총 어노테이션: ' + stats.total_annotations + ' (' + stats.annotated_frames + ' 프레임)<br>' +
                 '데이터셋: ' + stats.datasets;
 
-            displayVideos();
+            // 코멘트 개수를 먼저 가져온 후 비디오 리스트 표시
+            // fetchCommentCounts()가 내부에서 displayVideos()를 호출함
+            fetchCommentCounts();
+        }
+
+        // 전역 변수로 코멘트 개수 저장
+        let videoCommentCounts = {};
+
+        // 비디오별 코멘트 개수 가져오기
+        async function fetchCommentCounts() {
+            if (!currentProject) return;
+
+            try {
+                const response = await fetch(`/api/projects/${encodeURIComponent(currentProject.id)}/comments/counts`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        videoCommentCounts = data.counts || {};
+                        console.log('[COMMENT_COUNTS] Loaded comment counts:', videoCommentCounts);
+                        console.log('[COMMENT_COUNTS] Refreshing video list with comment counts...');
+                        // 코멘트 개수를 받아온 후 비디오 리스트 업데이트
+                        displayVideos();
+                        console.log('[COMMENT_COUNTS] Video list refreshed');
+                    }
+                }
+            } catch (error) {
+                console.error('[COMMENT_COUNTS] Error fetching comment counts:', error);
+            }
         }
 
         // 비디오 목록 표시
@@ -3506,7 +3742,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
-            videosList.innerHTML = currentProject.videos.map(v => {
+            videosList.innerHTML = currentProject.videos.map((v, index) => {
                 // 디렉토리 메타데이터 파싱 (하이픈으로 구분된 부분들)
                 let dirMetaDisplay = '';
                 if (v.nas_metadata && v.nas_metadata.parent_dir) {
@@ -3529,29 +3765,23 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     ? '<button onclick="toggleVideoStatus(\'' + v.video_id + '\', \'in_progress\')" style="background: #6c757d; font-size: 12px; padding: 5px 10px; margin-right: 5px;" title="진행중으로 변경">[진행중으로]</button>'
                     : '<button onclick="toggleVideoStatus(\'' + v.video_id + '\', \'completed\')" style="background: #28a745; font-size: 12px; padding: 5px 10px; margin-right: 5px;" title="완료로 변경">[완료로 표시]</button>';
 
-                // 코멘트 확인
-                const commentsKey = 'frameClassComments_' + currentProject.id;
-                let hasComments = false;
-                try {
-                    const savedComments = localStorage.getItem(commentsKey);
-                    if (savedComments) {
-                        const comments = JSON.parse(savedComments);
-                        // 코멘트가 하나라도 있는지 확인
-                        hasComments = Object.keys(comments).length > 0;
-                    }
-                } catch (e) {
-                    console.error('[COMMENT] Error loading comments for video', v.video_id, e);
-                }
+                // 코멘트 개수 확인
+                const commentCount = videoCommentCounts[v.video_id] || 0;
+                const commentIcon = commentCount > 0
+                    ? ' <span style="display: inline-block; background: #ffa500; color: white; padding: 6px 12px; border-radius: 4px; font-size: 14px; font-weight: bold; margin-left: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" title="코멘트 개수">💬 ' + commentCount + '</span>'
+                    : '';
 
-                const commentIcon = hasComments ? ' <span style="color: #ffa500;" title="코멘트 있음">💬</span>' : '';
+                // 비디오 번호 뱃지
+                const videoNumber = '<span style="display: inline-block; background: #555; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; margin-right: 8px;">#' + (index + 1) + '</span>';
 
-                return '<div style="padding: 10px; margin: 5px 0; background: #2d2d2d; border-radius: 4px; border-left: 4px solid ' + borderColor + ';">' +
+                return '<div data-video-id="' + v.video_id + '" style="padding: 10px; margin: 5px 0; background: #2d2d2d; border-radius: 4px; border-left: 4px solid ' + borderColor + ';">' +
                     '<div style="margin-bottom: 8px;">' +
+                        videoNumber +
                         '<strong style="color: #4a9eff; font-size: 14px;">📹 ' + v.filename + '</strong>' +
                         commentIcon +
                         statusBadge +
                         '<br>' +
-                        (dirMetaDisplay ? '<small style="color: #4a9eff;">📋 ' + dirMetaDisplay + '</small>' : '') +
+                        (dirMetaDisplay ? '<small style="color: #4a9eff; margin-left: 34px;">📋 ' + dirMetaDisplay + '</small>' : '') +
                     '</div>' +
                     '<div style="margin-bottom: 5px;">' +
                         '<button onclick="startAnnotation(\'' + v.video_id + '\')" style="background: #4a9eff; font-size: 12px; padding: 5px 10px; margin-right: 5px;">[Start Annotation]</button>' +
@@ -3728,7 +3958,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
 
             // 모달 정보 업데이트
-            document.getElementById('settingsProjectName').textContent = currentProject.name;
+            document.getElementById('settingsProjectName').value = currentProject.name;
             document.getElementById('settingsProjectId').textContent = currentProject.id;
 
             // 클래스 목록 표시
@@ -3782,7 +4012,11 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 headerDiv.style.alignItems = 'center';
 
                 const nameSpan = document.createElement('span');
-                nameSpan.textContent = `${index + 1}. ${getClassDisplayName(classObj)}`;
+                // 클래스 이름과 설명을 명확히 구분하여 표시
+                const displayText = classObj.description
+                    ? `${index + 1}. ${classObj.name} (${classObj.description})`
+                    : `${index + 1}. ${classObj.name}`;
+                nameSpan.textContent = displayText;
                 nameSpan.style.fontWeight = '600';
                 nameSpan.style.color = '#4a9eff';
                 nameSpan.style.cursor = 'pointer';
@@ -3817,31 +4051,26 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 headerDiv.appendChild(nameSpan);
                 headerDiv.appendChild(deleteBtn);
 
+                // 설명 편집 버튼 추가
+                if (classObj.description || true) { // 항상 표시
+                    const editDescBtn = document.createElement('button');
+                    editDescBtn.textContent = classObj.description ? '✏️ 설명 편집' : '➕ 설명 추가';
+                    editDescBtn.style.padding = '4px 8px';
+                    editDescBtn.style.fontSize = '11px';
+                    editDescBtn.style.marginLeft = '8px';
+                    editDescBtn.style.background = '#555';
+                    editDescBtn.onclick = function() {
+                        const newDesc = prompt('클래스 설명을 입력하세요:', classObj.description || '');
+                        if (newDesc !== null) {
+                            tempClassList[index].description = newDesc.trim();
+                            updateSettingsClassList();
+                            console.log('[SETTINGS] Updated description for', classObj.name);
+                        }
+                    };
+                    headerDiv.appendChild(editDescBtn);
+                }
+
                 item.appendChild(headerDiv);
-
-                // 설명 추가 (있으면)
-                const descDiv = document.createElement('div');
-                descDiv.style.color = '#999';
-                descDiv.style.fontSize = '12px';
-                descDiv.style.paddingLeft = '10px';
-                descDiv.style.whiteSpace = 'pre-wrap';
-                descDiv.style.cursor = 'pointer';
-                descDiv.title = '우클릭하여 설명 변경';
-                descDiv.textContent = classObj.description || '(설명 없음 - 우클릭하여 추가)';
-
-                // 우클릭으로 설명 수정
-                descDiv.oncontextmenu = function(e) {
-                    e.preventDefault();
-                    const newDesc = prompt('클래스 설명을 입력하세요:', classObj.description || '');
-                    if (newDesc !== null) { // Cancel 클릭 시 null 반환
-                        tempClassList[index].description = newDesc.trim();
-                        updateSettingsClassList();
-                        console.log('[SETTINGS] Updated description for', classObj.name);
-                    }
-                };
-
-                item.appendChild(descDiv);
-
                 container.appendChild(item);
             });
         }
@@ -3902,6 +4131,13 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
+            // 프로젝트 이름 가져오기
+            const newProjectName = document.getElementById('settingsProjectName').value.trim();
+            if (!newProjectName) {
+                alert('프로젝트 이름을 입력해주세요.');
+                return;
+            }
+
             try {
                 const response = await authFetch('/api/projects/' + currentProject.id, {
                     method: 'PATCH',
@@ -3909,6 +4145,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
+                        name: newProjectName,
                         classes: tempClassList
                     })
                 });
@@ -3919,7 +4156,26 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     alert('프로젝트 설정이 저장되었습니다.');
 
                     // currentProject 업데이트
+                    currentProject.name = newProjectName;
                     currentProject.classes = [...tempClassList];
+
+                    // 프로젝트 정보 표시 영역 업데이트
+                    document.getElementById('currentProjectName').textContent = newProjectName;
+
+                    // 클래스 정보 업데이트
+                    const stats = currentProject.stats || {
+                        total_videos: 0,
+                        annotated_videos: 0,
+                        total_annotations: 0,
+                        annotated_frames: 0,
+                        datasets: 0
+                    };
+                    document.getElementById('currentProjectStats').innerHTML =
+                        'ID: ' + currentProject.id + '<br>' +
+                        '클래스: ' + (tempClassList.length > 0 ? tempClassList.map(c => getClassDisplayName(c)).join(', ') : '없음') + '<br>' +
+                        '비디오: ' + stats.total_videos + ' (완료 ' + stats.annotated_videos + ')<br>' +
+                        '총 어노테이션: ' + stats.total_annotations + ' (' + stats.annotated_frames + ' 프레임)<br>' +
+                        '데이터셋: ' + stats.datasets;
 
                     // 라디오 버튼 업데이트
                     updateClassRadioButtons();
@@ -3928,6 +4184,9 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     if (selectedClassIndex >= tempClassList.length) {
                         selectedClassIndex = 0;
                     }
+
+                    // 프로젝트 목록 새로고침
+                    loadAllProjects();
 
                     // 모달 닫기
                     closeProjectSettings();
@@ -5899,6 +6158,19 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
                     buttonsContainer.appendChild(button);
                 });
+
+                // 클래스 개수에 따라 Grid 레이아웃 설정 (1열 최대 5개)
+                const classCount = classes.length;
+                if (classCount <= 5) {
+                    // 5개 이하: 1열
+                    buttonsContainer.style.gridTemplateColumns = '1fr';
+                } else if (classCount <= 10) {
+                    // 6~10개: 2열
+                    buttonsContainer.style.gridTemplateColumns = 'repeat(2, 1fr)';
+                } else {
+                    // 11개 이상: 3열
+                    buttonsContainer.style.gridTemplateColumns = 'repeat(3, 1fr)';
+                }
 
                 // 팝업을 일단 표시하여 크기 계산
                 popup.style.display = 'block';
@@ -8588,6 +8860,15 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             const frameInterval = (1000 / playerState.fps) / playerState.playbackSpeed;
 
             playerState.playbackInterval = setInterval(() => {
+                // 재생 상태 체크 - pause가 눌렸으면 즉시 중단
+                if (!playerState.isPlaying) {
+                    if (playerState.playbackInterval) {
+                        clearInterval(playerState.playbackInterval);
+                        playerState.playbackInterval = null;
+                    }
+                    return;
+                }
+
                 playerState.currentFrameIndex++;
 
                 // 끝에 도달하면 처음으로

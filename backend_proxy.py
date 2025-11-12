@@ -954,6 +954,18 @@ def update_project(project_id):
         # 업데이트할 데이터 가져오기
         update_data = request.json
 
+        # 프로젝트 이름 업데이트
+        if 'name' in update_data:
+            new_name = update_data['name'].strip()
+            if not new_name:
+                return jsonify({
+                    'success': False,
+                    'error': 'Project name cannot be empty'
+                }), 400
+
+            project_data['name'] = new_name
+            logger.info(f"[PROJECT] Updated name for project {project_id}: {new_name}")
+
         # 클래스 목록 업데이트
         if 'classes' in update_data:
             classes = update_data['classes']
@@ -2748,6 +2760,80 @@ def get_all_commented_annotations():
         })
     except Exception as e:
         logger.error(f"[COMMENTS] Error fetching commented annotations: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/projects/<path:project_id>/comments/counts', methods=['GET'])
+@require_auth
+def get_project_comment_counts(project_id: str):
+    """프로젝트 내 비디오별 코멘트 개수 조회"""
+    try:
+        import json
+        from pathlib import Path
+
+        # 프로젝트 디렉토리 찾기
+        project_dir = find_project_dir(project_id, request.user_id)
+        if not project_dir:
+            return jsonify({
+                'success': False,
+                'error': 'Project not found'
+            }), 404
+
+        # 어노테이션 디렉토리
+        annotations_dir = project_dir / 'annotations'
+        if not annotations_dir.exists():
+            return jsonify({
+                'success': True,
+                'counts': {}
+            })
+
+        # 비디오별 코멘트 개수 집계
+        video_comment_counts = {}
+
+        # 각 비디오 폴더 탐색
+        for video_folder in annotations_dir.iterdir():
+            if not video_folder.is_dir():
+                continue
+
+            video_id = video_folder.name
+            comment_count = 0
+
+            # 각 사용자의 어노테이션 파일 확인
+            for json_file in video_folder.glob('*.json'):
+                if 'backup' in json_file.name or 'before_fix' in json_file.name:
+                    continue
+
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+
+                    annotations = data.get('annotations', {})
+
+                    # 코멘트가 있는 어노테이션 개수 세기
+                    for frame_key, frame_annotations in annotations.items():
+                        if isinstance(frame_annotations, list):
+                            for ann in frame_annotations:
+                                if isinstance(ann, dict) and ann.get('comment'):
+                                    comment_count += 1
+
+                except Exception as e:
+                    logger.warning(f"[COMMENT_COUNTS] Error reading {json_file}: {e}")
+                    continue
+
+            if comment_count > 0:
+                video_comment_counts[video_id] = comment_count
+
+        logger.info(f"[COMMENT_COUNTS] Project {project_id}: {len(video_comment_counts)} videos with comments")
+        return jsonify({
+            'success': True,
+            'counts': video_comment_counts
+        })
+
+    except Exception as e:
+        logger.error(f"[COMMENT_COUNTS] Error: {e}")
         return jsonify({
             'success': False,
             'error': str(e)

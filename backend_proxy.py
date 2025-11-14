@@ -2840,6 +2840,234 @@ def get_project_comment_counts(project_id: str):
         }), 500
 
 
+@app.route('/api/projects/<path:project_id>/annotations/summary', methods=['GET'])
+@require_auth
+def get_annotation_summary(project_id: str):
+    """프로젝트의 어노테이션 요약 정보 조회"""
+    try:
+        # 프로젝트 디렉토리 찾기
+        project_dir = find_project_dir(project_id, request.user_id)
+        if not project_dir:
+            return jsonify({'success': False, 'error': 'Project not found'}), 404
+
+        # 프로젝트 정보 로드
+        project_json = project_dir / 'project.json'
+        if not project_json.exists():
+            return jsonify({'success': False, 'error': 'Project metadata not found'}), 404
+
+        with open(project_json, 'r', encoding='utf-8') as f:
+            project_data = json.load(f)
+
+        videos = project_data.get('videos', [])
+        video_summary = []
+
+        # 프로젝트 전체 통계
+        total_annotations = 0
+        total_frames_set = set()
+        by_class = {}
+        by_worker = {}
+
+        # 각 비디오의 어노테이션 통계 수집
+        for video in videos:
+            video_id = video.get('video_id')
+            video_name = video.get('name', video_id)
+            total_frames = video.get('total_frames', 0)
+
+            # 비디오의 모든 어노테이션 파일 스캔
+            annotated_frames = set()
+            video_annotations = 0
+
+            # annotations 폴더의 모든 사용자 JSON 파일 스캔
+            annotations_dir = project_dir / 'annotations' / video_id
+            if annotations_dir.exists():
+                for json_file in annotations_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        worker_name = json_file.stem
+
+                        # 어노테이션 데이터 추출 (두 가지 형식 지원)
+                        if isinstance(data, dict) and 'annotations' in data:
+                            user_annotations = data['annotations']
+                            worker_name = data.get('user_name', worker_name)
+                        else:
+                            user_annotations = data
+
+                        for frame_key, frame_annos in user_annotations.items():
+                            # frame_annos가 리스트인지 확인
+                            if not isinstance(frame_annos, list):
+                                continue
+
+                            if frame_annos and len(frame_annos) > 0:
+                                # 프레임 번호 추출
+                                try:
+                                    frame_num = int(frame_key)
+                                    annotated_frames.add(frame_num)
+                                    total_frames_set.add(f"{video_id}_{frame_num}")
+                                except ValueError:
+                                    continue
+
+                                for anno in frame_annos:
+                                    if not isinstance(anno, dict):
+                                        continue
+
+                                    video_annotations += 1
+                                    total_annotations += 1
+
+                                    # 클래스별 집계
+                                    label = anno.get('label', '알 수 없음')
+                                    by_class[label] = by_class.get(label, 0) + 1
+
+                                    # 작업자별 집계
+                                    created_by_name = anno.get('created_by_name', worker_name)
+                                    by_worker[created_by_name] = by_worker.get(created_by_name, 0) + 1
+
+                    except Exception as e:
+                        logger.warning(f"[ANNOTATION_SUMMARY] Error reading {json_file}: {e}")
+                        continue
+
+            video_summary.append({
+                'video_id': video_id,
+                'video_name': video_name,
+                'total_frames': total_frames,
+                'annotated_frames': len(annotated_frames),
+                'total_annotations': video_annotations
+            })
+
+        logger.info(f"[ANNOTATION_SUMMARY] Project {project_id}: {len(video_summary)} videos, {total_annotations} annotations")
+        return jsonify({
+            'success': True,
+            'summary': {
+                'videos': video_summary,
+                'total_videos': len(videos),
+                'total_annotations': total_annotations,
+                'total_frames': len(total_frames_set),
+                'by_class': by_class,
+                'by_worker': by_worker
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"[ANNOTATION_SUMMARY] Error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/annotations/global-summary', methods=['GET'])
+@require_auth
+def get_global_annotation_summary():
+    """전체 어노테이션 요약 정보 조회 (모든 프로젝트)"""
+    try:
+        user_id = request.user_id
+
+        # 사용자의 모든 프로젝트 찾기
+        user_projects_dir = BASE_PROJECTS_DIR / user_id
+        all_project_dirs = []
+
+        # 본인 프로젝트
+        if user_projects_dir.exists():
+            all_project_dirs.extend([d for d in user_projects_dir.iterdir() if d.is_dir()])
+
+        # 공유 프로젝트
+        for owner_dir in BASE_PROJECTS_DIR.iterdir():
+            if owner_dir.is_dir() and owner_dir.name != user_id:
+                for project_dir in owner_dir.iterdir():
+                    if project_dir.is_dir():
+                        project_json = project_dir / 'project.json'
+                        if project_json.exists():
+                            try:
+                                with open(project_json, 'r', encoding='utf-8') as f:
+                                    project_data = json.load(f)
+                                    if user_id in project_data.get('shared_with', []):
+                                        all_project_dirs.append(project_dir)
+                            except Exception as e:
+                                logger.warning(f"[GLOBAL_SUMMARY] Error reading {project_json}: {e}")
+
+        # 통계 집계
+        total_projects = len(all_project_dirs)
+        total_annotations = 0
+        total_frames = set()
+        by_class = {}
+        by_worker = {}
+
+        for project_dir in all_project_dirs:
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            # 각 비디오 폴더 탐색
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                # 각 사용자의 어노테이션 파일 스캔
+                for json_file in video_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        worker_name = json_file.stem  # 파일명이 작업자 ID
+
+                        # 어노테이션 데이터 추출 (두 가지 형식 지원)
+                        # 형식 1: {annotations: {frame_key: [annotations]}}
+                        # 형식 2: {frame_key: [annotations]}
+                        if isinstance(data, dict) and 'annotations' in data:
+                            user_annotations = data['annotations']
+                            worker_name = data.get('user_name', worker_name)
+                        else:
+                            user_annotations = data
+
+                        for frame_key, frame_annos in user_annotations.items():
+                            # frame_annos가 리스트인지 확인
+                            if not isinstance(frame_annos, list):
+                                continue
+
+                            if frame_annos and len(frame_annos) > 0:
+                                # 프레임 키 생성 (프로젝트/비디오/프레임 조합)
+                                frame_id = f"{project_dir.name}/{video_dir.name}/{frame_key}"
+                                total_frames.add(frame_id)
+
+                                for anno in frame_annos:
+                                    if not isinstance(anno, dict):
+                                        continue
+
+                                    total_annotations += 1
+
+                                    # 클래스별 집계
+                                    label = anno.get('label', '알 수 없음')
+                                    by_class[label] = by_class.get(label, 0) + 1
+
+                                    # 작업자별 집계
+                                    created_by_name = anno.get('created_by_name', worker_name)
+                                    by_worker[created_by_name] = by_worker.get(created_by_name, 0) + 1
+
+                    except Exception as e:
+                        logger.warning(f"[GLOBAL_SUMMARY] Error reading {json_file}: {e}")
+                        continue
+
+        logger.info(f"[GLOBAL_SUMMARY] User {user_id}: {total_projects} projects, {total_annotations} annotations")
+        return jsonify({
+            'success': True,
+            'summary': {
+                'total_projects': total_projects,
+                'total_annotations': total_annotations,
+                'total_frames': len(total_frames),
+                'by_class': by_class,
+                'by_worker': by_worker
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"[GLOBAL_SUMMARY] Error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 # ============================================
 # 토론 스레드 기능
 # ============================================

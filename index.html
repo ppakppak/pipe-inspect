@@ -801,40 +801,57 @@
         <div id="project-tab" class="tab-content active">
             <h2 data-i18n="project.title">프로젝트 관리</h2>
 
-            <!-- Current Project Section -->
-            <div id="currentProjectSection" style="margin-bottom: 30px; display: none;">
-                <h3 data-i18n="project.current">현재 프로젝트</h3>
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 4px; border-left: 4px solid #4a9eff;">
-                    <div style="margin-bottom: 15px;">
-                        <strong id="currentProjectName" style="font-size: 18px; color: #4a9eff;">프로젝트 이름</strong>
-                        <button onclick="openProjectSettings()" style="float: right; background: #4a9eff; margin-left: 10px;" data-i18n="common.settings">⚙️ 설정</button>
-                        <button onclick="closeProject()" style="float: right; background: #dc3545;" data-i18n="common.close">✖ 닫기</button>
-                    </div>
-                    <div id="currentProjectStats" style="font-size: 14px; color: #999; line-height: 1.8;">
-                        통계 정보...
-                    </div>
+            <!-- Global/Project Annotation Dashboard -->
+            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 30px;">
+                <h3 id="annotationDashboardTitle" style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">
+                    📊 전체 어노테이션 현황
+                    <button onclick="refreshAnnotationDashboard()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px; background: #555;">🔄 새로고침</button>
+                </h3>
+                <div id="globalAnnotationDashboard" style="background: #1e1e1e; padding: 15px; border-radius: 4px;">
+                    <span style="color: #888;">데이터를 불러오는 중...</span>
                 </div>
+            </div>
 
-                <!-- Videos Section -->
-                <div style="margin-top: 20px;">
-                    <h3><span data-i18n="project.videos">프로젝트 비디오</span>
-                        <button onclick="showAddVideoDialog()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px;" data-i18n="project.addVideo">➕ 비디오 추가</button>
-                    </h3>
-
-                    <!-- Upload Progress Bar -->
-                    <div id="uploadProgress" style="display: none; margin-bottom: 10px; background: #1e1e1e; border: 1px solid #404040; border-radius: 4px; padding: 10px;">
-                        <div style="margin-bottom: 5px;">
-                            <span id="uploadFileName" style="font-weight: bold; color: #4a9eff;"></span>
-                            <span id="uploadPercent" style="float: right; color: #888;">0%</span>
+            <!-- Current Project Section - 2 Column Layout -->
+            <div id="currentProjectSection" style="margin-bottom: 30px; display: none;">
+                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
+                    <!-- Current Project Info Card -->
+                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                        <h3 data-i18n="project.current" style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">현재 프로젝트</h3>
+                        <div style="background: #1e1e1e; padding: 20px; border-radius: 4px; border-left: 4px solid #4a9eff;">
+                            <div style="margin-bottom: 15px;">
+                                <strong id="currentProjectName" style="font-size: 18px; color: #4a9eff; display: block; margin-bottom: 10px;">프로젝트 이름</strong>
+                                <button onclick="openProjectSettings()" style="width: 100%; margin-bottom: 8px; background: #4a9eff;" data-i18n="common.settings">⚙️ 설정</button>
+                                <button onclick="closeProject()" style="width: 100%; background: #dc3545;" data-i18n="common.close">✖ 닫기</button>
+                            </div>
+                            <div id="currentProjectStats" style="font-size: 14px; color: #999; line-height: 1.8;">
+                                통계 정보...
+                            </div>
                         </div>
-                        <div style="width: 100%; height: 20px; background: #2a2a2a; border-radius: 10px; overflow: hidden;">
-                            <div id="uploadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #4a9eff, #2e7bd4); transition: width 0.3s ease;"></div>
-                        </div>
-                        <div id="uploadStatus" style="margin-top: 5px; font-size: 12px; color: #888;"></div>
                     </div>
 
-                    <div id="videosList" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 150px; background: #1e1e1e;">
-                        <span data-i18n="project.noVideos">비디오가 없습니다.</span>
+                    <!-- Project Videos Card -->
+                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                        <h3 style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">
+                            <span data-i18n="project.videos">프로젝트 비디오</span>
+                            <button onclick="showAddVideoDialog()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px;" data-i18n="project.addVideo">➕ 비디오 추가</button>
+                        </h3>
+
+                        <!-- Upload Progress Bar -->
+                        <div id="uploadProgress" style="display: none; margin-bottom: 10px; background: #1e1e1e; border: 1px solid #404040; border-radius: 4px; padding: 10px;">
+                            <div style="margin-bottom: 5px;">
+                                <span id="uploadFileName" style="font-weight: bold; color: #4a9eff;"></span>
+                                <span id="uploadPercent" style="float: right; color: #888;">0%</span>
+                            </div>
+                            <div style="width: 100%; height: 20px; background: #2a2a2a; border-radius: 10px; overflow: hidden;">
+                                <div id="uploadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #4a9eff, #2e7bd4); transition: width 0.3s ease;"></div>
+                            </div>
+                            <div id="uploadStatus" style="margin-top: 5px; font-size: 12px; color: #888;"></div>
+                        </div>
+
+                        <div id="videosList" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 150px; max-height: 400px; overflow-y: auto; background: #1e1e1e;">
+                            <span data-i18n="project.noVideos">비디오가 없습니다.</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1034,7 +1051,7 @@
 
                             <!-- 컨텍스트 메뉴 -->
                             <div id="annotationContextMenu" style="
-                                position: absolute;
+                                position: fixed;
                                 display: none;
                                 background: #2d2d2d;
                                 border: 1px solid #404040;
@@ -1042,7 +1059,8 @@
                                 padding: 4px 0;
                                 box-shadow: 0 2px 8px rgba(0,0,0,0.5);
                                 z-index: 1000;
-                                min-width: 150px;">
+                                min-width: 150px;
+                                max-width: 800px;">
                             </div>
                             <!-- Overlay canvas for annotations and preview -->
                             <canvas id="previewCanvas" width="1200" height="900" style="position: absolute; top: 0; left: 0; width: 100%; height: auto; display: block; pointer-events: none;"></canvas>
@@ -2239,9 +2257,10 @@
                 loadSystemStats();
             }
 
-            // 프로젝트 탭 클릭 시 코멘트 대시보드 자동 로드
+            // 프로젝트 탭 클릭 시 코멘트 대시보드 및 전체 어노테이션 대시보드 자동 로드
             if (tabName === 'project') {
                 loadCommentsDashboard();
+                loadGlobalAnnotationDashboard();
             }
 
             // 관리자 사용자가 프로젝트/어노테이션 탭 클릭 시 관리자용 데이터 로드
@@ -2566,7 +2585,7 @@
                         <div style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0;">
                             <!-- 버튼 영역 -->
                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <button onclick="goToAnnotation('${comment.project_name_full}', '${comment.video_id}', ${comment.frame})" style="background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
+                                <button onclick="goToAnnotation('${comment.project_name_full}', '${comment.video_id}', ${comment.frame}, '${comment.label}', ${comment.box ? JSON.stringify(comment.box).replace(/"/g, '&quot;') : 'null'})" style="background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
                                     📍 어노테이션으로 이동
                                 </button>
                                 <button id="reply-btn-${comment.comment_id}" onclick="toggleReplies('${comment.comment_id}')" style="background: #1a1a1a; color: #4a9eff; border: 1px solid #4a9eff; padding: 8px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap;">
@@ -2819,7 +2838,7 @@
         }
 
         // Comment에서 어노테이션으로 이동
-        async function goToAnnotation(projectId, videoId, frameNum) {
+        async function goToAnnotation(projectId, videoId, frameNum, targetLabel = null, targetBox = null) {
             try {
                 // 1. 프로젝트 로드
                 console.log('프로젝트 로드:', projectId);
@@ -2886,13 +2905,68 @@
                     currentFrame = frameNum;
                     await loadFrame(currentFrame);
 
-                    // 5. 화면을 Video Annotation 섹션으로 스크롤
+                    // 8. UI 업데이트 (어노테이션 리스트 및 통계)
+                    updateAnnotationList();
+                    updateStatistics();
+
+                    // 9. 타겟 라벨이 지정된 경우 해당 어노테이션 선택
+                    if (targetLabel) {
+                        const allAnnotations = frameAnnotations[currentFrame] || [];
+
+                        // 전체 프레임 마스크를 제외한 어노테이션들 (updateAnnotationList와 동일한 필터)
+                        const visibleAnnotations = allAnnotations.filter(anno => !anno.is_full_frame);
+
+                        // Box 좌표가 제공된 경우 정확한 매칭, 없으면 라벨만으로 매칭
+                        let targetIndex = -1;
+
+                        if (targetBox) {
+                            // Box 좌표로 정확하게 매칭 (좌표가 거의 일치하는 것 찾기)
+                            targetIndex = visibleAnnotations.findIndex(anno => {
+                                if (!anno.box) return false;
+
+                                // 좌표 차이 허용 범위 (소수점 오차 고려)
+                                const tolerance = 0.1;
+                                return anno.label === targetLabel &&
+                                    Math.abs(anno.box.x - targetBox.x) < tolerance &&
+                                    Math.abs(anno.box.y - targetBox.y) < tolerance &&
+                                    Math.abs(anno.box.width - targetBox.width) < tolerance &&
+                                    Math.abs(anno.box.height - targetBox.height) < tolerance;
+                            });
+
+                            if (targetIndex === -1) {
+                                console.warn(`⚠️ Box 좌표로 정확한 매칭 실패, 라벨만으로 재시도`);
+                            }
+                        }
+
+                        // Box로 못 찾았거나 Box가 없으면 라벨만으로 찾기
+                        if (targetIndex === -1) {
+                            targetIndex = visibleAnnotations.findIndex(anno => anno.label === targetLabel);
+                        }
+
+                        if (targetIndex !== -1) {
+                            selectedAnnotationIndex = targetIndex;
+                            console.log(`✅ 어노테이션 선택됨: ${targetLabel} (인덱스: ${targetIndex})`);
+
+                            // 캔버스 다시 그리기 (선택된 어노테이션 하이라이트)
+                            drawFrameWithMasks();
+
+                            // 어노테이션 리스트 다시 업데이트 (선택 상태 반영)
+                            updateAnnotationList();
+
+                            // 코멘트 섹션 업데이트
+                            updateCommentSection();
+                        } else {
+                            console.warn(`⚠️ 타겟 어노테이션을 찾을 수 없음: ${targetLabel}`);
+                        }
+                    }
+
+                    // 10. 화면을 Video Annotation 섹션으로 스크롤
                     const videoSection = document.getElementById('videoAnnotationSection');
                     if (videoSection) {
                         videoSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }
 
-                    console.log('어노테이션으로 이동 완료');
+                    console.log('✅ 어노테이션으로 이동 완료 (프레임, 리스트, 통계 업데이트됨)');
                 } else {
                     console.error('비디오를 찾을 수 없습니다:', videoId);
                     alert('해당 비디오를 찾을 수 없습니다.\n프로젝트에 비디오가 포함되어 있지 않거나 로드에 실패했습니다.');
@@ -3235,6 +3309,9 @@
 
                     // 프레임-클래스 코멘트 로드
                     loadFrameClassComments();
+
+                    // 대시보드를 프로젝트별 통계로 전환
+                    loadAnnotationDashboard();
                 } else {
                     alert('[ERROR] Error: ' + data.error);
                 }
@@ -3923,9 +4000,193 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         }
 
         // 프로젝트 닫기
+        // 어노테이션 대시보드 로드
+
+        // 어노테이션 대시보드 로드 (전체 또는 프로젝트별)
+        async function loadAnnotationDashboard() {
+            const dashboard = document.getElementById('globalAnnotationDashboard');
+            const titleEl = document.getElementById('annotationDashboardTitle');
+            dashboard.innerHTML = '<span style="color: #888;">데이터를 불러오는 중...</span>';
+
+            try {
+                let apiUrl, titleText;
+
+                // 프로젝트가 열려있으면 프로젝트별 통계, 아니면 전체 통계
+                if (currentProject) {
+                    apiUrl = `/api/projects/${encodeURIComponent(currentProject.id)}/annotations/summary`;
+                    titleText = `📊 ${currentProject.name} - 어노테이션 현황`;
+                } else {
+                    apiUrl = `/api/annotations/global-summary`;
+                    titleText = '📊 전체 어노테이션 현황';
+                }
+
+                // 제목 업데이트
+                titleEl.innerHTML = titleText + '<button onclick="refreshAnnotationDashboard()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px; background: #555;">🔄 새로고침</button>';
+
+                const response = await fetch(apiUrl, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('대시보드 데이터를 불러오지 못했습니다');
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    displayAnnotationDashboard(data.summary, !!currentProject);
+                } else {
+                    dashboard.innerHTML = '<span style="color: #f44;">오류: ' + (data.error || '알 수 없는 오류') + '</span>';
+                }
+            } catch (error) {
+                console.error('대시보드 로드 오류:', error);
+                dashboard.innerHTML = '<span style="color: #f44;">대시보드를 불러오는 중 오류가 발생했습니다</span>';
+            }
+        }
+
+        // 레거시 함수 (하위 호환성)
+        async function loadGlobalAnnotationDashboard() {
+            await loadAnnotationDashboard();
+        }
+
+        // 어노테이션 대시보드 표시 (전체 또는 프로젝트별)
+        function displayAnnotationDashboard(summary, isProjectView) {
+            const dashboard = document.getElementById('globalAnnotationDashboard');
+
+            if (!summary) {
+                dashboard.innerHTML = '<span style="color: #888;">어노테이션 데이터가 없습니다</span>';
+                return;
+            }
+
+            const totalAnnotations = summary.total_annotations || 0;
+            const totalFrames = summary.total_frames || 0;
+            const totalProjects = summary.total_projects;
+            const totalVideos = summary.total_videos;
+
+            let html = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px;">`;
+
+            // 전체 현황이면 프로젝트 수 표시, 프로젝트별이면 비디오 수 표시
+            if (!isProjectView && totalProjects !== undefined) {
+                html += `
+                    <div style="background: #2a2a2a; padding: 15px; border-radius: 4px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: bold; color: #4a9eff;">${totalProjects.toLocaleString()}</div>
+                        <div style="font-size: 12px; color: #888; margin-top: 5px;">총 프로젝트</div>
+                    </div>`;
+            } else if (isProjectView && totalVideos !== undefined) {
+                html += `
+                    <div style="background: #2a2a2a; padding: 15px; border-radius: 4px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: bold; color: #4a9eff;">${totalVideos.toLocaleString()}</div>
+                        <div style="font-size: 12px; color: #888; margin-top: 5px;">총 비디오</div>
+                    </div>`;
+            }
+
+            html += `
+                    <div style="background: #2a2a2a; padding: 15px; border-radius: 4px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: bold; color: #28a745;">${totalFrames.toLocaleString()}</div>
+                        <div style="font-size: 12px; color: #888; margin-top: 5px;">어노테이션된 프레임</div>
+                    </div>
+                    <div style="background: #2a2a2a; padding: 15px; border-radius: 4px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: bold; color: #ffa500;">${totalAnnotations.toLocaleString()}</div>
+                        <div style="font-size: 12px; color: #888; margin-top: 5px;">총 어노테이션</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <!-- 클래스별 통계 -->
+                    <div>
+                        <h4 style="margin-top: 0; margin-bottom: 10px; color: #ccc; font-size: 14px;">클래스별 어노테이션</h4>
+                        <div style="background: #2a2a2a; padding: 12px; border-radius: 4px; max-height: 250px; overflow-y: auto;">
+            `;
+
+            // 클래스별 통계 표시
+            const classesByCount = summary.by_class || {};
+            const sortedClasses = Object.entries(classesByCount).sort((a, b) => b[1] - a[1]);
+
+            if (sortedClasses.length > 0) {
+                sortedClasses.forEach(([className, count]) => {
+                    const percentage = totalAnnotations > 0 ? ((count / totalAnnotations) * 100).toFixed(1) : 0;
+                    html += `
+                        <div style="margin-bottom: 10px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
+                                <span style="font-size: 13px; color: #ccc;">${className}</span>
+                                <span style="font-size: 13px; color: #4a9eff; font-weight: bold;">${count.toLocaleString()} (${percentage}%)</span>
+                            </div>
+                            <div style="width: 100%; height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden;">
+                                <div style="width: ${percentage}%; height: 100%; background: #4a9eff; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<span style="color: #888; font-size: 12px;">데이터 없음</span>';
+            }
+
+            html += `
+                        </div>
+                    </div>
+
+                    <!-- 작업자별 통계 -->
+                    <div>
+                        <h4 style="margin-top: 0; margin-bottom: 10px; color: #ccc; font-size: 14px;">작업자별 어노테이션</h4>
+                        <div style="background: #2a2a2a; padding: 12px; border-radius: 4px; max-height: 250px; overflow-y: auto;">
+            `;
+
+            // 작업자별 통계 표시
+            const workersByCount = summary.by_worker || {};
+            const sortedWorkers = Object.entries(workersByCount).sort((a, b) => b[1] - a[1]);
+
+            if (sortedWorkers.length > 0) {
+                sortedWorkers.forEach(([workerName, count]) => {
+                    const percentage = totalAnnotations > 0 ? ((count / totalAnnotations) * 100).toFixed(1) : 0;
+                    html += `
+                        <div style="margin-bottom: 10px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
+                                <span style="font-size: 13px; color: #ccc;">${workerName || '알 수 없음'}</span>
+                                <span style="font-size: 13px; color: #28a745; font-weight: bold;">${count.toLocaleString()} (${percentage}%)</span>
+                            </div>
+                            <div style="width: 100%; height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden;">
+                                <div style="width: ${percentage}%; height: 100%; background: #28a745; transition: width 0.3s;"></div>
+                            </div>
+                        </div>
+                    `;
+                });
+            } else {
+                html += '<span style="color: #888; font-size: 12px;">데이터 없음</span>';
+            }
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            dashboard.innerHTML = html;
+        }
+
+        // 대시보드 새로고침
+        function refreshAnnotationDashboard() {
+            loadAnnotationDashboard();
+        }
+
+        // 레거시 함수 (하위 호환성)
+        function refreshGlobalDashboard() {
+            refreshAnnotationDashboard();
+        }
+
+        // 레거시 함수 (하위 호환성)
+        function displayGlobalAnnotationDashboard(summary) {
+            displayAnnotationDashboard(summary, false);
+        }
+
         function closeProject() {
             currentProject = null;
             document.getElementById('currentProjectSection').style.display = 'none';
+
+            // 프로젝트를 닫으면 전체 통계로 복원
+            loadAnnotationDashboard();
         }
 
         // 프로젝트 설정 모달 열기
@@ -6531,7 +6792,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             // 어노테이션을 찾았으면 컨텍스트 메뉴 표시
             if (clickedAnnotationIndex !== -1) {
                 contextMenuAnnotationIndex = clickedAnnotationIndex;
-                showContextMenu(e.clientX, e.clientY);
+                // 마우스 클릭 위치에서 약간 오른쪽 아래에 표시 (offset +5px)
+                showContextMenu(e.clientX + 5, e.clientY + 5);
             } else {
                 hideContextMenu();
             }
@@ -6548,10 +6810,24 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
+            const classes = currentProject.classes;
+            const classCount = classes.length;
+
+            // 컬럼 수 결정 (5개 이하: 1열, 6-10개: 2열, 11개 이상: 3열)
+            let gridColumns = '1fr';
+            if (classCount > 10) {
+                gridColumns = 'repeat(3, 1fr)';
+            } else if (classCount > 5) {
+                gridColumns = 'repeat(2, 1fr)';
+            }
+
             // 메뉴 내용 생성
             let menuHTML = '<div style="padding: 4px 0; color: #fff; font-size: 12px; font-weight: bold; padding: 8px 12px; border-bottom: 1px solid #404040;">클래스 변경</div>';
 
-            currentProject.classes.forEach((cls, index) => {
+            // 그리드 컨테이너 시작
+            menuHTML += `<div style="display: grid; grid-template-columns: ${gridColumns}; gap: 4px; padding: 4px;">`;
+
+            classes.forEach((cls, index) => {
                 const annotation = (frameAnnotations[currentFrame] || [])[contextMenuAnnotationIndex];
                 const isCurrentClass = annotation && annotation.label === cls.name;
 
@@ -6562,28 +6838,68 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         background: ${isCurrentClass ? '#404040' : 'transparent'};
                         color: ${isCurrentClass ? '#4a9eff' : '#fff'};
                         transition: background 0.2s;
+                        border-radius: 4px;
                     " onmouseover="this.style.background='#404040'" onmouseout="this.style.background='${isCurrentClass ? '#404040' : 'transparent'}'">
                         <span style="display: inline-block; width: 12px; height: 12px; background: ${cls.color || '#4a9eff'}; margin-right: 8px; vertical-align: middle;"></span>
-                        ${cls.description || cls.name}
+                        ${getClassDisplayName(cls)}
                     </div>
                 `;
             });
 
-            menu.innerHTML = menuHTML;
-            menu.style.display = 'block';
-            menu.style.left = x + 'px';
-            menu.style.top = y + 'px';
+            // 그리드 컨테이너 종료
+            menuHTML += '</div>';
 
-            // 화면 밖으로 나가지 않도록 조정
-            setTimeout(() => {
-                const menuRect = menu.getBoundingClientRect();
-                if (menuRect.right > window.innerWidth) {
-                    menu.style.left = (x - menuRect.width) + 'px';
-                }
-                if (menuRect.bottom > window.innerHeight) {
-                    menu.style.top = (y - menuRect.height) + 'px';
-                }
-            }, 0);
+            menu.innerHTML = menuHTML;
+
+            // 메뉴를 숨긴 상태로 표시하여 크기 측정
+            menu.style.visibility = 'hidden';
+            menu.style.display = 'block';
+            menu.style.left = '0px';
+            menu.style.top = '0px';
+
+            // 강제로 레이아웃 재계산 (reflow)
+            menu.offsetHeight;
+
+            // 메뉴 크기 측정 후 위치 계산
+            const menuRect = menu.getBoundingClientRect();
+            const menuWidth = menuRect.width;
+            const menuHeight = menuRect.height;
+
+            // 화면 크기
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+
+            // 기본 오프셋
+            const offset = 5;
+
+            // 수평 위치 결정: 클릭 지점이 화면 오른쪽에 가까우면 메뉴를 왼쪽에 표시
+            let menuX;
+            if (x + menuWidth + offset > viewportWidth) {
+                // 화면 오른쪽이면 메뉴를 마우스 왼쪽에 표시
+                menuX = x - menuWidth - offset;
+            } else {
+                // 화면 왼쪽이면 메뉴를 마우스 오른쪽에 표시
+                menuX = x + offset;
+            }
+
+            // 수직 위치 결정: 클릭 지점이 화면 아래쪽에 가까우면 메뉴를 위쪽에 표시
+            let menuY;
+            if (y + menuHeight + offset > viewportHeight) {
+                // 화면 아래쪽이면 메뉴를 마우스 위쪽에 표시
+                menuY = y - menuHeight - offset;
+            } else {
+                // 화면 위쪽이면 메뉴를 마우스 아래쪽에 표시
+                menuY = y + offset;
+            }
+
+            // 최종 위치가 화면 밖으로 나가지 않도록 보정
+            menuX = Math.max(0, Math.min(menuX, viewportWidth - menuWidth));
+            menuY = Math.max(0, Math.min(menuY, viewportHeight - menuHeight));
+
+            // 최종 위치 설정 및 표시
+            menu.style.left = menuX + 'px';
+            menu.style.top = menuY + 'px';
+            menu.style.visibility = 'visible';
         }
 
         // 컨텍스트 메뉴 숨기기
@@ -7837,14 +8153,22 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
-            const annotations = frameAnnotations[currentFrame];
-            if (!annotations || selectedAnnotationIndex >= annotations.length) {
+            const allAnnotations = frameAnnotations[currentFrame];
+            if (!allAnnotations) {
+                alert('No annotations found');
+                return;
+            }
+
+            // 전체 프레임 마스크를 제외한 어노테이션들 (updateAnnotationList와 동일한 필터)
+            const visibleAnnotations = allAnnotations.filter(anno => !anno.is_full_frame);
+
+            if (selectedAnnotationIndex >= visibleAnnotations.length) {
                 alert('Selected annotation not found');
                 selectedAnnotationIndex = -1;
                 return;
             }
 
-            const anno = annotations[selectedAnnotationIndex];
+            const anno = visibleAnnotations[selectedAnnotationIndex];
             const newLabel = prompt('Edit label:', anno.label);
 
             if (newLabel && newLabel.trim() !== '') {
@@ -7862,8 +8186,16 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
-            const annotations = frameAnnotations[currentFrame];
-            if (!annotations || selectedAnnotationIndex >= annotations.length) {
+            const allAnnotations = frameAnnotations[currentFrame];
+            if (!allAnnotations) {
+                alert('No annotations found');
+                return;
+            }
+
+            // 전체 프레임 마스크를 제외한 어노테이션들 (updateAnnotationList와 동일한 필터)
+            const visibleAnnotations = allAnnotations.filter(anno => !anno.is_full_frame);
+
+            if (selectedAnnotationIndex >= visibleAnnotations.length) {
                 alert('Selected annotation not found');
                 selectedAnnotationIndex = -1;
                 return;
@@ -7877,7 +8209,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
 
             // 선택된 어노테이션 확인
-            const selectedAnnotation = annotations[selectedAnnotationIndex];
+            const selectedAnnotation = visibleAnnotations[selectedAnnotationIndex];
 
             // 현재 사용자의 어노테이션인지 확인
             if (selectedAnnotation.created_by && selectedAnnotation.created_by !== currentUser.user_id) {
@@ -7886,11 +8218,19 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 return;
             }
 
-            // 삭제 수행
-            annotations.splice(selectedAnnotationIndex, 1);
+            // 전체 배열에서 해당 어노테이션의 실제 인덱스 찾기
+            const actualIndex = allAnnotations.indexOf(selectedAnnotation);
+            if (actualIndex === -1) {
+                alert('어노테이션을 찾을 수 없습니다');
+                selectedAnnotationIndex = -1;
+                return;
+            }
+
+            // 삭제 수행 (전체 배열에서 삭제)
+            allAnnotations.splice(actualIndex, 1);
 
             // 빈 배열이면 프레임 키 유지 (빈 배열로 저장하여 명시적 삭제 기록)
-            if (annotations.length === 0) {
+            if (allAnnotations.length === 0) {
                 frameAnnotations[currentFrame] = [];
             }
 

@@ -911,26 +911,54 @@
                         </button>
                     </div>
 
-                    <!-- Filter Controls -->
-                    <div style="margin-bottom: 15px; display: grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap: 8px;">
-                        <input type="text" id="commentFilterProject" placeholder="프로젝트 필터..."
-                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
-                               oninput="filterComments()">
-                        <input type="text" id="commentFilterUser" placeholder="사용자 필터..."
-                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
-                               oninput="filterComments()">
-                        <input type="text" id="commentFilterLabel" placeholder="라벨 필터..."
-                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
-                               oninput="filterComments()">
+                    <!-- Filter Controls - Row 1 -->
+                    <div style="margin-bottom: 10px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 8px;">
+                        <select id="commentFilterProject" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">모든 프로젝트</option>
+                        </select>
+                        <select id="commentFilterUser" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">모든 사용자</option>
+                        </select>
+                        <select id="commentFilterLabel" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">모든 라벨</option>
+                        </select>
+                        <select id="commentFilterStatus" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">모든 상태</option>
+                            <option value="open">진행중</option>
+                            <option value="resolved">해결됨</option>
+                            <option value="pending">보류</option>
+                        </select>
                         <select id="commentSortBy" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
                             <option value="recent">최신순</option>
                             <option value="project">프로젝트순</option>
                             <option value="user">사용자순</option>
                         </select>
+                    </div>
+
+                    <!-- Filter Controls - Row 2 -->
+                    <div style="margin-bottom: 10px; display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 8px; align-items: center;">
+                        <input type="date" id="commentFilterDateFrom" onchange="filterComments()"
+                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                        <input type="date" id="commentFilterDateTo" onchange="filterComments()"
+                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                        <label style="color: #888; font-size: 13px; display: flex; align-items: center; gap: 6px; padding-left: 10px; cursor: pointer;">
+                            <input type="checkbox" id="commentFilterMyOnly" onchange="filterComments()"
+                                   style="width: 16px; height: 16px; cursor: pointer;">
+                            <span>내 코멘트만 보기</span>
+                        </label>
+                        <button onclick="resetCommentFilters()"
+                                style="padding: 8px 16px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px; white-space: nowrap;">
+                            🔄 필터 초기화
+                        </button>
                         <button id="toggleAnnotationsBtn" onclick="toggleAnnotationsDisplay()"
                                 style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px; white-space: nowrap;">
                             👁️ 어노테이션 숨김
                         </button>
+                    </div>
+
+                    <!-- Filter Results Count -->
+                    <div id="commentFilterCount" style="color: #888; font-size: 13px; margin-bottom: 10px; padding: 5px 10px; background: #252525; border-radius: 4px;">
+                        전체: 0개 / 표시: 0개
                     </div>
 
                     <!-- Comments List -->
@@ -2535,7 +2563,12 @@
 
                 if (data.success) {
                     allComments = data.comments || [];
-                    filterComments(); // 필터 적용 후 표시
+
+                    // 드롭다운 옵션 생성
+                    populateCommentFilters();
+
+                    // 필터 적용 후 표시
+                    filterComments();
                 } else {
                     dashboard.innerHTML = '<span style="color: #f44;">오류: ' + (data.error || '알 수 없는 오류') + '</span>';
                 }
@@ -2545,20 +2578,81 @@
             }
         }
 
+        // 필터 드롭다운 옵션 채우기
+        function populateCommentFilters() {
+            // 프로젝트 목록 추출
+            const projects = [...new Set(allComments.map(c => c.project_name))].sort();
+            const projectSelect = document.getElementById('commentFilterProject');
+            projectSelect.innerHTML = '<option value="">모든 프로젝트</option>';
+            projects.forEach(project => {
+                const option = document.createElement('option');
+                option.value = project;
+                option.textContent = project;
+                projectSelect.appendChild(option);
+            });
+
+            // 사용자 목록 추출
+            const users = [...new Set(allComments.map(c => c.created_by))].sort();
+            const userSelect = document.getElementById('commentFilterUser');
+            userSelect.innerHTML = '<option value="">모든 사용자</option>';
+            users.forEach(user => {
+                const option = document.createElement('option');
+                option.value = user;
+                option.textContent = user;
+                userSelect.appendChild(option);
+            });
+
+            // 라벨 목록 추출
+            const labels = [...new Set(allComments.map(c => c.label))].sort();
+            const labelSelect = document.getElementById('commentFilterLabel');
+            labelSelect.innerHTML = '<option value="">모든 라벨</option>';
+            labels.forEach(label => {
+                const option = document.createElement('option');
+                option.value = label;
+                option.textContent = label;
+                labelSelect.appendChild(option);
+            });
+        }
+
         // 코멘트 필터링 및 표시
         function filterComments() {
             const dashboard = document.getElementById('commentsDashboard');
-            const projectFilter = document.getElementById('commentFilterProject')?.value.toLowerCase() || '';
-            const userFilter = document.getElementById('commentFilterUser')?.value.toLowerCase() || '';
-            const labelFilter = document.getElementById('commentFilterLabel')?.value.toLowerCase() || '';
+            const projectFilter = document.getElementById('commentFilterProject')?.value || '';
+            const userFilter = document.getElementById('commentFilterUser')?.value || '';
+            const labelFilter = document.getElementById('commentFilterLabel')?.value || '';
+            const statusFilter = document.getElementById('commentFilterStatus')?.value || '';
+            const dateFrom = document.getElementById('commentFilterDateFrom')?.value || '';
+            const dateTo = document.getElementById('commentFilterDateTo')?.value || '';
+            const myOnly = document.getElementById('commentFilterMyOnly')?.checked || false;
             const sortBy = document.getElementById('commentSortBy')?.value || 'recent';
+
+            // 현재 사용자 정보
+            const currentUser = localStorage.getItem('username');
 
             // 필터 적용
             let filtered = allComments.filter(comment => {
-                const matchProject = !projectFilter || comment.project_name.toLowerCase().includes(projectFilter);
-                const matchUser = !userFilter || comment.created_by.toLowerCase().includes(userFilter);
-                const matchLabel = !labelFilter || comment.label.toLowerCase().includes(labelFilter);
-                return matchProject && matchUser && matchLabel;
+                // 프로젝트 필터
+                const matchProject = !projectFilter || comment.project_name === projectFilter;
+
+                // 사용자 필터
+                const matchUser = !userFilter || comment.created_by === userFilter;
+
+                // 라벨 필터
+                const matchLabel = !labelFilter || comment.label === labelFilter;
+
+                // 상태 필터
+                const matchStatus = !statusFilter || (comment.discussion_status || 'open') === statusFilter;
+
+                // 날짜 필터
+                const commentDate = new Date(comment.modified_at || comment.created_at);
+                const matchDateFrom = !dateFrom || commentDate >= new Date(dateFrom);
+                const matchDateTo = !dateTo || commentDate <= new Date(dateTo + 'T23:59:59');
+
+                // 내 코멘트만 보기
+                const matchOwner = !myOnly || comment.created_by === currentUser;
+
+                return matchProject && matchUser && matchLabel && matchStatus &&
+                       matchDateFrom && matchDateTo && matchOwner;
             });
 
             // 정렬
@@ -2573,6 +2667,14 @@
                 filtered.sort((a, b) => a.project_name.localeCompare(b.project_name));
             } else if (sortBy === 'user') {
                 filtered.sort((a, b) => a.created_by.localeCompare(b.created_by));
+            }
+
+            // 필터 결과 카운트 업데이트
+            const countDiv = document.getElementById('commentFilterCount');
+            if (countDiv) {
+                const totalCount = allComments.length;
+                const filteredCount = filtered.length;
+                countDiv.innerHTML = `전체: <strong>${totalCount}</strong>개 / 표시: <strong style="color: #4a9eff;">${filteredCount}</strong>개`;
             }
 
             // 표시
@@ -3290,6 +3392,28 @@
         }
 
         // 어노테이션 표시/숨김 토글
+        // 필터 초기화
+        function resetCommentFilters() {
+            // 드롭다운 초기화
+            document.getElementById('commentFilterProject').value = '';
+            document.getElementById('commentFilterUser').value = '';
+            document.getElementById('commentFilterLabel').value = '';
+            document.getElementById('commentFilterStatus').value = '';
+
+            // 날짜 필터 초기화
+            document.getElementById('commentFilterDateFrom').value = '';
+            document.getElementById('commentFilterDateTo').value = '';
+
+            // 체크박스 초기화
+            document.getElementById('commentFilterMyOnly').checked = false;
+
+            // 정렬 초기화
+            document.getElementById('commentSortBy').value = 'recent';
+
+            // 필터 재적용
+            filterComments();
+        }
+
         function toggleAnnotationsDisplay() {
             showAnnotations = !showAnnotations;
 
@@ -6375,7 +6499,9 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             // 새로운 점 추가
                             currentPolygonPoints.push({x: clickX, y: clickY});
                             console.log('[POLYGON] Added point', currentPolygonPoints.length);
-                            renderCanvas();
+                            // 프리뷰 업데이트
+                            previewPolygon = [...currentPolygonPoints];
+                            scheduleRedraw();
                         }
                     }
                     return;

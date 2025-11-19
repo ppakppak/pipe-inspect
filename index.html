@@ -6445,18 +6445,26 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
             // 폴리곤 드래그 그리기 중
             if (isDrawingPolygon) {
-                // 마지막 점과의 거리가 일정 이상이면 새 점 추가 (부드러운 곡선)
-                const lastPoint = currentPolygonPoints[currentPolygonPoints.length - 1];
-                const dx = currentX - lastPoint.x;
-                const dy = currentY - lastPoint.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
+                // 드래그 모드: 마우스 이동 시 자동으로 점 추가
+                if (annotationMode === 'polygon') {
+                    // 마지막 점과의 거리가 일정 이상이면 새 점 추가 (부드러운 곡선)
+                    const lastPoint = currentPolygonPoints[currentPolygonPoints.length - 1];
+                    const dx = currentX - lastPoint.x;
+                    const dy = currentY - lastPoint.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
 
-                // 20픽셀 이상 움직이면 새 점 추가 (점 개수 25%로 감소)
-                if (distance > 20) {
-                    currentPolygonPoints.push({x: currentX, y: currentY});
+                    // 20픽셀 이상 움직이면 새 점 추가 (점 개수 25%로 감소)
+                    if (distance > 20) {
+                        currentPolygonPoints.push({x: currentX, y: currentY});
 
-                    // 프리뷰 폴리곤 업데이트
-                    previewPolygon = [...currentPolygonPoints];
+                        // 프리뷰 폴리곤 업데이트
+                        previewPolygon = [...currentPolygonPoints];
+                        scheduleRedraw();
+                    }
+                } else if (annotationMode === 'point') {
+                    // 포인트 클릭 모드: 마우스 이동 시 미리보기만 업데이트 (점 추가 안 함)
+                    // 현재 점들과 마우스 위치를 연결한 미리보기 표시
+                    previewPolygon = [...currentPolygonPoints, {x: currentX, y: currentY}];
                     scheduleRedraw();
                 }
                 return;
@@ -6851,6 +6859,13 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
             // 폴리곤 드래그 그리기 완료
             if (isDrawingPolygon) {
+                // 포인트 클릭 모드에서는 mouseup으로 종료하지 않음 (클릭으로만 점 추가)
+                if (annotationMode === 'point') {
+                    console.log('[POLYGON] Point mode: mouseup ignored, use Enter or click first point to finish');
+                    return;
+                }
+
+                // 드래그 모드: mouseup 시 폴리곤 종료
                 isDrawingPolygon = false;
                 previewPolygon = null;  // 프리뷰 초기화
                 previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);  // 프리뷰 캔버스 초기화

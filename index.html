@@ -6012,6 +6012,54 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
         }
 
+        // Finish polygon annotation (for point click mode)
+        async function finishPolygonAnnotation() {
+            if (currentPolygonPoints.length < 3) {
+                alert('폴리곤을 완성하려면 최소 3개의 점이 필요합니다.');
+                return;
+            }
+
+            isDrawingPolygon = false;
+            previewPolygon = null;
+            previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+            const polygon = [...currentPolygonPoints];
+
+            // 바운딩 박스 계산
+            let minX = Infinity, minY = Infinity;
+            let maxX = -Infinity, maxY = -Infinity;
+            polygon.forEach(point => {
+                minX = Math.min(minX, point.x);
+                minY = Math.min(minY, point.y);
+                maxX = Math.max(maxX, point.x);
+                maxY = Math.max(maxY, point.y);
+            });
+
+            const box = {
+                x: Math.floor(minX),
+                y: Math.floor(minY),
+                width: Math.ceil(maxX - minX),
+                height: Math.ceil(maxY - minY)
+            };
+
+            // 라벨 선택 프롬프트
+            await promptForLabel(polygon, box, window.innerWidth / 2, window.innerHeight / 2);
+
+            currentPolygonPoints = [];
+        }
+
+        // Cancel polygon annotation (for point click mode)
+        function cancelPolygonAnnotation() {
+            if (isDrawingPolygon) {
+                currentPolygonPoints = [];
+                isDrawingPolygon = false;
+                previewPolygon = null;
+                previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+                renderCanvas();
+                console.log('[POLYGON] Annotation cancelled');
+            }
+        }
+
         function toggleAutoInference() {
             const checkbox = document.getElementById('autoInferenceToggle');
 
@@ -6210,10 +6258,29 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
             // ESC 키로 컨텍스트 메뉴 닫기
             document.addEventListener('keydown', function(e) {
+                // ESC: Cancel context menu or polygon annotation
                 if (e.key === 'Escape' || e.key === 'Esc') {
                     const menu = document.getElementById('annotationContextMenu');
                     if (menu && menu.style.display === 'block') {
                         hideContextMenu();
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+
+                    // Cancel polygon annotation in point click mode
+                    if (annotationMode === 'point' && isDrawingPolygon && currentPolygonPoints.length > 0) {
+                        cancelPolygonAnnotation();
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+                }
+
+                // ENTER: Finish polygon annotation in point click mode
+                if (e.key === 'Enter') {
+                    if (annotationMode === 'point' && isDrawingPolygon && currentPolygonPoints.length >= 3) {
+                        finishPolygonAnnotation();
                         e.preventDefault();
                         e.stopPropagation();
                     }
@@ -6280,12 +6347,39 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             const clickX = (e.clientX - rect.left) * scaleX;
             const clickY = (e.clientY - rect.top) * scaleY;
 
-            // 폴리곤 그리기 모드: 드래그 시작
+            // 폴리곤 그리기 모드
             if (isPolygonDrawMode) {
-                isDrawingPolygon = true;
-                currentPolygonPoints = [{x: clickX, y: clickY}];
-                console.log('[POLYGON] Start drawing polygon');
-                return;
+                if (annotationMode === 'polygon') {
+                    // 드래그 모드: 드래그 시작
+                    isDrawingPolygon = true;
+                    currentPolygonPoints = [{x: clickX, y: clickY}];
+                    console.log('[POLYGON] Start drawing polygon (drag mode)');
+                    return;
+                } else if (annotationMode === 'point') {
+                    // 포인트 클릭 모드: 점 추가
+                    if (!isDrawingPolygon) {
+                        // 첫 번째 클릭: 폴리곤 시작
+                        isDrawingPolygon = true;
+                        currentPolygonPoints = [{x: clickX, y: clickY}];
+                        console.log('[POLYGON] Start drawing polygon (point click mode)');
+                    } else {
+                        // 첫 번째 점 근처를 클릭하면 폴리곤 완성
+                        const firstPoint = currentPolygonPoints[0];
+                        const dist = Math.sqrt(Math.pow(clickX - firstPoint.x, 2) + Math.pow(clickY - firstPoint.y, 2));
+
+                        if (dist < 15 && currentPolygonPoints.length >= 3) {
+                            // 폴리곤 완성
+                            finishPolygonAnnotation();
+                            console.log('[POLYGON] Finished polygon by clicking first point');
+                        } else {
+                            // 새로운 점 추가
+                            currentPolygonPoints.push({x: clickX, y: clickY});
+                            console.log('[POLYGON] Added point', currentPolygonPoints.length);
+                            renderCanvas();
+                        }
+                    }
+                    return;
+                }
             }
 
             // 기존 어노테이션 클릭 확인

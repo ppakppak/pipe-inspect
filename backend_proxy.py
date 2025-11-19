@@ -2859,7 +2859,7 @@ def get_annotation_summary(project_id: str):
             project_data = json.load(f)
 
         videos = project_data.get('videos', [])
-        video_summary = []
+        video_summary = {}  # Changed to dict for easier lookup by video_id
 
         # 프로젝트 전체 통계
         total_annotations = 0
@@ -2876,6 +2876,7 @@ def get_annotation_summary(project_id: str):
             # 비디오의 모든 어노테이션 파일 스캔
             annotated_frames = set()
             video_annotations = 0
+            video_by_class = {}  # Per-video class statistics
 
             # annotations 폴더의 모든 사용자 JSON 파일 스캔
             annotations_dir = project_dir / 'annotations' / video_id
@@ -2918,6 +2919,7 @@ def get_annotation_summary(project_id: str):
                                     # 클래스별 집계
                                     label = anno.get('label', '알 수 없음')
                                     by_class[label] = by_class.get(label, 0) + 1
+                                    video_by_class[label] = video_by_class.get(label, 0) + 1
 
                                     # 작업자별 집계
                                     created_by_name = anno.get('created_by_name', worker_name)
@@ -2927,13 +2929,12 @@ def get_annotation_summary(project_id: str):
                         logger.warning(f"[ANNOTATION_SUMMARY] Error reading {json_file}: {e}")
                         continue
 
-            video_summary.append({
-                'video_id': video_id,
-                'video_name': video_name,
-                'total_frames': total_frames,
-                'annotated_frames': len(annotated_frames),
-                'total_annotations': video_annotations
-            })
+            video_summary[video_id] = {
+                'name': video_name,
+                'frames': len(annotated_frames),
+                'total_annotations': video_annotations,
+                'by_class': video_by_class
+            }
 
         logger.info(f"[ANNOTATION_SUMMARY] Project {project_id}: {len(video_summary)} videos, {total_annotations} annotations")
         return jsonify({

@@ -970,9 +970,24 @@
                             </div>
                         </div>
 
+                        <!-- Annotation Mode Selection -->
+                        <div style="margin-bottom: 15px;">
+                            <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px; font-size: 14px;">🎯 어노테이션 모드</h4>
+                            <div style="display: flex; gap: 8px;">
+                                <label style="display: flex; align-items: center; justify-content: center; padding: 10px; background: #2d2d2d; border: 2px solid #4a9eff; border-radius: 4px; cursor: pointer; flex: 1; transition: all 0.2s;" id="polygonModeLabel">
+                                    <input type="radio" name="annotationMode" value="polygon" checked onclick="setAnnotationMode('polygon')" style="margin-right: 8px; cursor: pointer;">
+                                    <span style="font-size: 12px; font-weight: bold;">🔷 폴리곤 (드래그)</span>
+                                </label>
+                                <label style="display: flex; align-items: center; justify-content: center; padding: 10px; background: #2d2d2d; border: 2px solid #404040; border-radius: 4px; cursor: pointer; flex: 1; transition: all 0.2s;" id="pointModeLabel">
+                                    <input type="radio" name="annotationMode" value="point" onclick="setAnnotationMode('point')" style="margin-right: 8px; cursor: pointer;">
+                                    <span style="font-size: 12px; font-weight: bold;">📍 포인트 (클릭)</span>
+                                </label>
+                            </div>
+                        </div>
+
                         <!-- Drawing Mode Toggle -->
                         <div style="margin-bottom: 0;">
-                            <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px; font-size: 14px;" data-i18n="annotation.drawingMode">Drawing Mode</h4>
+                            <h4 style="color: #e0e0e0; margin-top: 0; margin-bottom: 10px; font-size: 14px;" data-i18n="annotation.drawingMode">Drawing Options</h4>
                             <div style="display: flex; gap: 8px;">
                                 <label style="display: flex; align-items: center; padding: 8px; background: #2d2d2d; border: 2px solid #404040; border-radius: 4px; cursor: pointer; flex: 1;">
                                     <input type="checkbox" id="autoInferenceToggle" onclick="toggleAutoInference()" style="margin-right: 8px; cursor: pointer;">
@@ -1124,7 +1139,7 @@
         </div>
 
         <div id="dataset-tab" class="tab-content">
-            <h2 data-i18n="dataset.title">Dataset Builder</h2>
+            <h2 data-i18n="dataset.title">🎯 Dataset Builder</h2>
 
             <!-- Admin Dashboard (관리자 전용) -->
             <div id="adminDashboardSection" style="display: none; margin-bottom: 30px;">
@@ -1173,64 +1188,130 @@
                 </div>
             </div>
 
-            <!-- 관리자 대시보드에서 선택한 프로젝트 정보 표시 영역 -->
-            <div id="datasetBuilderInfo" style="margin-bottom: 20px;">
-                <!-- Populated by admin dashboard selection -->
+            <!-- 3단계 워크플로우 -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px;">
+
+                <!-- STEP 1: 프로젝트 & 클래스 선택 -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                        <div style="background: #4a9eff; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">1</div>
+                        <h3 style="margin: 0; color: #4a9eff;">프로젝트 & 클래스</h3>
+                    </div>
+
+                    <!-- 프로젝트 선택 -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #aaa;">📁 프로젝트 선택</label>
+                        <select id="datasetProjectSelector" onchange="onDatasetProjectChange()" style="width: 100%; padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">-- 프로젝트를 선택하세요 --</option>
+                        </select>
+                    </div>
+
+                    <!-- 클래스 필터 -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #aaa;">🏷️ 클래스 필터</label>
+                        <div id="datasetClassFilter" style="max-height: 300px; overflow-y: auto; padding: 10px; background: #1e1e1e; border: 1px solid #555; border-radius: 4px;">
+                            <div style="color: #999; text-align: center; padding: 20px;">프로젝트를 먼저 선택하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- 전체 선택/해제 -->
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="selectAllClasses()" style="flex: 1; padding: 6px; background: #4a9eff; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">전체 선택</button>
+                        <button onclick="deselectAllClasses()" style="flex: 1; padding: 6px; background: #555; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">전체 해제</button>
+                    </div>
+                </div>
+
+                <!-- STEP 2: 비디오 선택 & 통계 -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #9b59b6;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                        <div style="background: #9b59b6; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">2</div>
+                        <h3 style="margin: 0; color: #9b59b6;">비디오 & 통계</h3>
+                    </div>
+
+                    <!-- 실시간 통계 -->
+                    <div id="datasetStats" style="margin-bottom: 15px; padding: 12px; background: #1e1e1e; border-radius: 4px; border: 1px solid #555;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                            <div>
+                                <div style="color: #aaa;">총 프레임</div>
+                                <div style="color: #4a9eff; font-weight: bold; font-size: 18px;" id="statTotalFrames">0</div>
+                            </div>
+                            <div>
+                                <div style="color: #aaa;">총 어노테이션</div>
+                                <div style="color: #9b59b6; font-weight: bold; font-size: 18px;" id="statTotalAnnotations">0</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #404040;">
+                            <div style="color: #aaa; font-size: 12px; margin-bottom: 5px;">클래스별 분포</div>
+                            <div id="statClassBreakdown" style="font-size: 12px; color: #ccc;">
+                                <span style="color: #666;">클래스를 선택하세요</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 비디오 목록 -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #aaa;">🎥 비디오 선택</label>
+                        <div id="datasetVideosList" style="max-height: 250px; overflow-y: auto; padding: 10px; background: #1e1e1e; border: 1px solid #555; border-radius: 4px;">
+                            <div style="color: #999; text-align: center; padding: 20px;">프로젝트와 클래스를 먼저 선택하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- 전체 선택/해제 -->
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="selectAllVideos()" style="flex: 1; padding: 6px; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">전체 선택</button>
+                        <button onclick="deselectAllVideos()" style="flex: 1; padding: 6px; background: #555; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">전체 해제</button>
+                    </div>
+                </div>
+
+                <!-- STEP 3: 빌드 설정 & 실행 -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #28a745;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                        <div style="background: #28a745; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">3</div>
+                        <h3 style="margin: 0; color: #28a745;">빌드 설정</h3>
+                    </div>
+
+                    <!-- 설정 -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">출력 디렉토리</label>
+                        <input type="text" id="datasetOutputPath" value="pipe_dataset" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                    </div>
+
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">Train/Val/Test 비율</label>
+                        <input type="text" id="datasetSplit" value="0.7,0.15,0.15" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                    </div>
+
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">데이터셋 형식</label>
+                        <select id="datasetFormat" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                            <option value="yolo">YOLO Segmentation</option>
+                        </select>
+                    </div>
+
+                    <!-- 진행률 -->
+                    <div style="margin-bottom: 15px;">
+                        <div style="background: #1e1e1e; height: 20px; border-radius: 4px; overflow: hidden; margin-bottom: 5px;">
+                            <div id="datasetProgressBar" style="background: #28a745; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                        </div>
+                        <div id="datasetProgressText" style="font-size: 11px; color: #aaa; text-align: center;">준비됨</div>
+                    </div>
+
+                    <!-- 빌드 버튼 -->
+                    <button onclick="buildDataset()" id="buildDatasetBtn" style="width: 100%; padding: 12px; font-size: 14px; font-weight: bold; background: #28a745; border: none; color: white; border-radius: 4px; cursor: pointer; margin-bottom: 10px;">
+                        🚀 데이터셋 빌드
+                    </button>
+
+                    <!-- 빌드 요약 -->
+                    <div id="buildSummary" style="padding: 10px; background: #1e1e1e; border-radius: 4px; border: 1px solid #555; font-size: 11px; max-height: 150px; overflow-y: auto;">
+                        <div style="color: #999; text-align: center;">빌드 설정을 확인하고 시작하세요</div>
+                    </div>
+                </div>
             </div>
 
-            <div style="margin-bottom: 20px;">
-                <h3 data-i18n="dataset.projectInfo">프로젝트 정보</h3>
-                <div id="datasetProjectInfo" style="color: #999;">
-                    <span data-i18n="dataset.noProject">프로젝트가 선택되지 않았습니다.</span>
-                </div>
-            </div>
-
-            <div style="margin-bottom: 20px;">
-                <h3 data-i18n="dataset.selectVideos">비디오 선택</h3>
-                <div id="datasetVideosList" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 150px; background: #1e1e1e;">
-                    <span data-i18n="dataset.selectProjectFirst">프로젝트를 먼저 선택하세요.</span>
-                </div>
-                <div style="margin-top: 10px;">
-                    <button onclick="selectAllVideos()" data-i18n="dataset.selectAll">전체 선택</button>
-                    <button onclick="deselectAllVideos()" data-i18n="dataset.deselectAll">전체 해제</button>
-                </div>
-            </div>
-
-            <div style="margin-bottom: 20px;">
-                <h3 data-i18n="dataset.settings">데이터셋 설정</h3>
-                <div style="margin-bottom: 10px;">
-                    <label data-i18n="dataset.outputDir">출력 디렉토리:</label>
-                    <input type="text" id="datasetOutputPath" value="pipe_dataset" style="width: 300px; margin-left: 10px;">
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <label data-i18n="dataset.splitRatio">Train/Val/Test 비율:</label>
-                    <input type="text" id="datasetSplit" value="0.7,0.15,0.15" style="width: 200px; margin-left: 10px;">
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <label data-i18n="dataset.augmentation">Augmentation 배수:</label>
-                    <input type="number" id="datasetAugment" value="3" min="0" max="10" style="width: 100px; margin-left: 10px;">
-                </div>
-                <div style="margin-bottom: 10px;">
-                    <label data-i18n="dataset.format">데이터셋 형식:</label>
-                    <select id="datasetFormat" style="margin-left: 10px;">
-                        <option value="yolo">YOLO Segmentation</option>
-                    </select>
-                </div>
-            </div>
-
-            <div style="margin-bottom: 20px;">
-                <button onclick="buildDataset()" style="padding: 10px 20px; font-size: 14px; font-weight: bold; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer;" data-i18n="dataset.build">🚀 데이터셋 빌드</button>
-            </div>
-
-            <div style="margin-bottom: 10px;">
-                <div id="datasetProgress" style="background: #1e1e1e; height: 20px; border-radius: 4px; overflow: hidden;">
-                    <div id="datasetProgressBar" style="background: #4a9eff; height: 100%; width: 0%; transition: width 0.3s;"></div>
-                </div>
-            </div>
-
-            <div>
-                <h3 data-i18n="dataset.buildLog">빌드 로그</h3>
-                <div id="datasetLog" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 200px; background: #1e1e1e; font-family: monospace; font-size: 12px; overflow-y: auto;">
+            <!-- 빌드 로그 (전체 너비) -->
+            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                <h3 style="margin: 0 0 15px 0; color: #ccc;">📋 빌드 로그</h3>
+                <div id="datasetLog" style="padding: 15px; border-radius: 4px; min-height: 200px; max-height: 400px; background: #1e1e1e; font-family: monospace; font-size: 12px; overflow-y: auto; border: 1px solid #555; color: #aaa;">
                     <span data-i18n="dataset.ready">Ready to build dataset...</span>
                 </div>
             </div>
@@ -2264,6 +2345,11 @@
                 loadGlobalAnnotationDashboard();
             }
 
+            // 데이터셋 탭 클릭 시 프로젝트 목록 로드
+            if (tabName === 'dataset') {
+                initializeDatasetTab();
+            }
+
             // 관리자 사용자가 프로젝트/어노테이션 탭 클릭 시 관리자용 데이터 로드
             const user = getCurrentUser();
             if (user && user.role === 'admin') {
@@ -2271,6 +2357,8 @@
                     loadAdminCompletedVideos();
                 } else if (tabName === 'annotation') {
                     loadAdminAnnotationStats();
+                } else if (tabName === 'dataset') {
+                    loadAdminDashboard();
                 }
             }
 
@@ -5420,6 +5508,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         let isDraggingPolygonPoint = false;  // 폴리곤 포인트 드래그 중 프리뷰
         let draggedPolygon = null;      // 드래그 중인 폴리곤
 
+        // Annotation Mode: 'polygon' or 'point'
+        let annotationMode = 'polygon'; // Default to polygon mode
+        let pointAnnotations = [];      // Point annotations for current frame
+
         // 프로젝트 설정 모달 임시 클래스 목록
         let tempClassList = [];
 
@@ -5887,6 +5979,36 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 // 십자선이 꺼지면 커서 표시
                 videoCanvas.classList.remove('hide-cursor');
                 console.log('[CROSSHAIR] Disabled');
+            }
+        }
+
+        // Annotation mode toggle function
+        function setAnnotationMode(mode) {
+            annotationMode = mode;
+
+            // Update UI styling
+            const polygonLabel = document.getElementById('polygonModeLabel');
+            const pointLabel = document.getElementById('pointModeLabel');
+
+            if (mode === 'polygon') {
+                polygonLabel.style.borderColor = '#4a9eff';
+                polygonLabel.style.background = '#2d2d2d';
+                pointLabel.style.borderColor = '#404040';
+                pointLabel.style.background = '#2d2d2d';
+                console.log('[ANNOTATION] 모드 변경: 폴리곤 드래그');
+            } else if (mode === 'point') {
+                pointLabel.style.borderColor = '#4a9eff';
+                pointLabel.style.background = '#2d2d2d';
+                polygonLabel.style.borderColor = '#404040';
+                polygonLabel.style.background = '#2d2d2d';
+                console.log('[ANNOTATION] 모드 변경: 포인트 클릭');
+            }
+
+            // Reset current drawing state
+            if (currentPolygonPoints.length > 0) {
+                currentPolygonPoints = [];
+                isDrawingPolygon = false;
+                renderCanvas();
             }
         }
 
@@ -8526,6 +8648,313 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         let selectedVideosForDataset = new Set();
         let datasetProjectVideos = []; // 선택 가능한 비디오 목록
 
+        // New workflow variables
+        let datasetSelectedProject = null;
+        let datasetSelectedClasses = new Set();
+        let datasetSelectedVideos = new Set();
+        let datasetAnnotationSummary = null;
+
+        // Initialize dataset tab (load available projects)
+        async function initializeDatasetTab() {
+            await loadDatasetProjects();
+        }
+
+        // Load available projects into selector
+        async function loadDatasetProjects() {
+            try {
+                const response = await authFetch('/api/projects');
+                const data = await response.json();
+
+                if (data.success) {
+                    const selector = document.getElementById('datasetProjectSelector');
+                    selector.innerHTML = '<option value="">-- 프로젝트를 선택하세요 --</option>';
+
+                    // Projects (the API returns "projects" key, not "my_projects")
+                    if (data.projects && data.projects.length > 0) {
+                        data.projects.forEach(project => {
+                            const option = document.createElement('option');
+                            option.value = project.id;
+                            option.textContent = project.name;
+                            selector.appendChild(option);
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('[DATASET] Failed to load projects:', error);
+            }
+        }
+
+        // Project selection changed
+        async function onDatasetProjectChange() {
+            const selector = document.getElementById('datasetProjectSelector');
+            const projectId = selector.value;
+
+            // Reset selections
+            datasetSelectedClasses.clear();
+            datasetSelectedVideos.clear();
+            datasetSelectedProject = null;
+            datasetAnnotationSummary = null;
+
+            if (!projectId) {
+                updateDatasetClassFilter();
+                updateDatasetVideosList();
+                updateDatasetStats();
+                return;
+            }
+
+            try {
+                // Load annotation summary for this project
+                const response = await authFetch(`/api/projects/${encodeURIComponent(projectId)}/annotations/summary`);
+                const data = await response.json();
+
+                if (data.success) {
+                    datasetSelectedProject = projectId;
+                    datasetAnnotationSummary = data.summary;
+
+                    // Update UI components
+                    updateDatasetClassFilter();
+                    updateDatasetStats();
+                } else {
+                    alert('프로젝트 어노테이션 정보를 불러올 수 없습니다.');
+                }
+            } catch (error) {
+                console.error('[DATASET] Failed to load project annotations:', error);
+                alert('프로젝트 정보 로딩 실패: ' + error.message);
+            }
+        }
+
+        // Update class filter checkboxes
+        function updateDatasetClassFilter() {
+            const container = document.getElementById('datasetClassFilter');
+
+            if (!datasetAnnotationSummary || !datasetAnnotationSummary.by_class) {
+                container.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">프로젝트를 먼저 선택하세요</div>';
+                return;
+            }
+
+            const classes = Object.keys(datasetAnnotationSummary.by_class);
+
+            if (classes.length === 0) {
+                container.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">어노테이션 클래스가 없습니다</div>';
+                return;
+            }
+
+            let html = '';
+            classes.forEach(className => {
+                const count = datasetAnnotationSummary.by_class[className];
+                const isChecked = datasetSelectedClasses.has(className);
+
+                html += `
+                    <label style="display: flex; align-items: center; padding: 6px; cursor: pointer; border-radius: 4px; transition: background 0.2s;"
+                           onmouseover="this.style.background='#333'"
+                           onmouseout="this.style.background='transparent'">
+                        <input type="checkbox"
+                               ${isChecked ? 'checked' : ''}
+                               onchange="toggleDatasetClass('${className}')"
+                               style="margin-right: 8px; cursor: pointer;">
+                        <span style="flex: 1; color: #ccc;">${className}</span>
+                        <span style="color: #4a9eff; font-size: 11px;">${count}개</span>
+                    </label>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        // Toggle class selection
+        function toggleDatasetClass(className) {
+            if (datasetSelectedClasses.has(className)) {
+                datasetSelectedClasses.delete(className);
+            } else {
+                datasetSelectedClasses.add(className);
+            }
+
+            // Update video list and stats
+            updateDatasetVideosList();
+            updateDatasetStats();
+            updateBuildSummary();
+        }
+
+        // Select all classes
+        function selectAllClasses() {
+            if (!datasetAnnotationSummary || !datasetAnnotationSummary.by_class) return;
+
+            datasetSelectedClasses.clear();
+            Object.keys(datasetAnnotationSummary.by_class).forEach(className => {
+                datasetSelectedClasses.add(className);
+            });
+
+            updateDatasetClassFilter();
+            updateDatasetVideosList();
+            updateDatasetStats();
+            updateBuildSummary();
+        }
+
+        // Deselect all classes
+        function deselectAllClasses() {
+            datasetSelectedClasses.clear();
+            updateDatasetClassFilter();
+            updateDatasetVideosList();
+            updateDatasetStats();
+            updateBuildSummary();
+        }
+
+        // Update videos list based on selected classes
+        function updateDatasetVideosList() {
+            const container = document.getElementById('datasetVideosList');
+
+            if (!datasetAnnotationSummary || datasetSelectedClasses.size === 0) {
+                container.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">프로젝트와 클래스를 먼저 선택하세요</div>';
+                return;
+            }
+
+            // Get videos that have annotations for selected classes
+            const videoMap = {};
+            const selectedClassArray = Array.from(datasetSelectedClasses);
+
+            if (datasetAnnotationSummary.videos) {
+                Object.keys(datasetAnnotationSummary.videos).forEach(videoId => {
+                    const videoInfo = datasetAnnotationSummary.videos[videoId];
+                    let hasSelectedClass = false;
+                    let annotationCount = 0;
+
+                    if (videoInfo.by_class) {
+                        selectedClassArray.forEach(className => {
+                            if (videoInfo.by_class[className]) {
+                                hasSelectedClass = true;
+                                annotationCount += videoInfo.by_class[className];
+                            }
+                        });
+                    }
+
+                    if (hasSelectedClass) {
+                        videoMap[videoId] = {
+                            id: videoId,
+                            name: videoInfo.name || videoId,
+                            frames: videoInfo.frames || 0,
+                            annotations: annotationCount
+                        };
+                    }
+                });
+            }
+
+            const videos = Object.values(videoMap);
+
+            if (videos.length === 0) {
+                container.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">선택한 클래스의 어노테이션이 있는 비디오가 없습니다</div>';
+                return;
+            }
+
+            let html = '';
+            videos.forEach(video => {
+                const isSelected = datasetSelectedVideos.has(video.id);
+
+                html += `
+                    <label style="display: flex; align-items: center; padding: 6px; cursor: pointer; border-radius: 4px; transition: background 0.2s;"
+                           onmouseover="this.style.background='#333'"
+                           onmouseout="this.style.background='transparent'">
+                        <input type="checkbox"
+                               ${isSelected ? 'checked' : ''}
+                               onchange="toggleDatasetVideo('${video.id}')"
+                               style="margin-right: 8px; cursor: pointer;">
+                        <span style="flex: 1; color: #ccc; font-size: 12px;">${video.name}</span>
+                        <span style="color: #9b59b6; font-size: 11px; margin-left: 5px;">${video.frames}프레임, ${video.annotations}개</span>
+                    </label>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        // Toggle video selection
+        function toggleDatasetVideo(videoId) {
+            if (datasetSelectedVideos.has(videoId)) {
+                datasetSelectedVideos.delete(videoId);
+            } else {
+                datasetSelectedVideos.add(videoId);
+            }
+
+            updateDatasetStats();
+            updateBuildSummary();
+        }
+
+        // Update real-time statistics
+        function updateDatasetStats() {
+            const totalFramesEl = document.getElementById('statTotalFrames');
+            const totalAnnotationsEl = document.getElementById('statTotalAnnotations');
+            const classBreakdownEl = document.getElementById('statClassBreakdown');
+
+            if (!datasetAnnotationSummary || datasetSelectedClasses.size === 0 || datasetSelectedVideos.size === 0) {
+                totalFramesEl.textContent = '0';
+                totalAnnotationsEl.textContent = '0';
+                classBreakdownEl.innerHTML = '<span style="color: #666;">클래스와 비디오를 선택하세요</span>';
+                return;
+            }
+
+            let totalFrames = 0;
+            let totalAnnotations = 0;
+            const classCount = {};
+
+            // Count from selected videos and classes
+            datasetSelectedVideos.forEach(videoId => {
+                const videoInfo = datasetAnnotationSummary.videos?.[videoId];
+                if (videoInfo) {
+                    let videoHasAnnotations = false;
+
+                    datasetSelectedClasses.forEach(className => {
+                        const count = videoInfo.by_class?.[className] || 0;
+                        if (count > 0) {
+                            videoHasAnnotations = true;
+                            totalAnnotations += count;
+                            classCount[className] = (classCount[className] || 0) + count;
+                        }
+                    });
+
+                    if (videoHasAnnotations) {
+                        totalFrames += videoInfo.frames || 0;
+                    }
+                }
+            });
+
+            totalFramesEl.textContent = totalFrames.toLocaleString();
+            totalAnnotationsEl.textContent = totalAnnotations.toLocaleString();
+
+            // Class breakdown
+            if (Object.keys(classCount).length > 0) {
+                let breakdown = '';
+                Object.entries(classCount).forEach(([className, count]) => {
+                    breakdown += `<div style="margin-bottom: 3px;"><span style="color: #aaa;">${className}:</span> <span style="color: #4a9eff;">${count}개</span></div>`;
+                });
+                classBreakdownEl.innerHTML = breakdown;
+            } else {
+                classBreakdownEl.innerHTML = '<span style="color: #666;">데이터가 없습니다</span>';
+            }
+        }
+
+        // Update build summary
+        function updateBuildSummary() {
+            const summaryEl = document.getElementById('buildSummary');
+
+            if (datasetSelectedClasses.size === 0 || datasetSelectedVideos.size === 0) {
+                summaryEl.innerHTML = '<div style="color: #999; text-align: center;">빌드 설정을 확인하고 시작하세요</div>';
+                return;
+            }
+
+            const splitRatio = document.getElementById('datasetSplit').value.trim();
+            const outputDir = document.getElementById('datasetOutputPath').value.trim();
+
+            summaryEl.innerHTML = `
+                <div style="color: #28a745; font-weight: bold; margin-bottom: 8px;">✓ 빌드 준비 완료</div>
+                <div style="color: #aaa; font-size: 11px; line-height: 1.6;">
+                    <div>• 프로젝트: ${datasetSelectedProject ? '선택됨' : '미선택'}</div>
+                    <div>• 클래스: ${datasetSelectedClasses.size}개 선택</div>
+                    <div>• 비디오: ${datasetSelectedVideos.size}개 선택</div>
+                    <div>• 분할 비율: ${splitRatio}</div>
+                    <div>• 출력 위치: ${outputDir}</div>
+                </div>
+            `;
+        }
+
         async function loadVideosForDataset() {
             // Admin 대시보드에서 선택한 프로젝트가 있는지 확인
             if (!window.adminSelectedProjects || window.adminSelectedProjects.length === 0) {
@@ -8640,17 +9069,54 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         }
 
         function selectAllVideos() {
-            const videosWithAnnotations = datasetProjectVideos.filter(v => v.annotations > 0);
-            videosWithAnnotations.forEach(video => {
-                const videoKey = `${video.user_id}/${video.project_id}/${video.video_id}`;
-                selectedVideosForDataset.add(videoKey);
+            // New workflow: select all videos filtered by selected classes
+            if (!datasetAnnotationSummary || !datasetAnnotationSummary.videos) {
+                // Fall back to old behavior for admin dashboard compatibility
+                const videosWithAnnotations = datasetProjectVideos.filter(v => v.annotations > 0);
+                videosWithAnnotations.forEach(video => {
+                    const videoKey = `${video.user_id}/${video.project_id}/${video.video_id}`;
+                    selectedVideosForDataset.add(videoKey);
+                });
+                renderDatasetVideos();
+                return;
+            }
+
+            // Get all videos that have selected classes
+            const selectedClassArray = Array.from(datasetSelectedClasses);
+            Object.keys(datasetAnnotationSummary.videos).forEach(videoId => {
+                const videoInfo = datasetAnnotationSummary.videos[videoId];
+                let hasSelectedClass = false;
+
+                if (videoInfo.by_class) {
+                    selectedClassArray.forEach(className => {
+                        if (videoInfo.by_class[className]) {
+                            hasSelectedClass = true;
+                        }
+                    });
+                }
+
+                if (hasSelectedClass) {
+                    datasetSelectedVideos.add(videoId);
+                }
             });
-            renderDatasetVideos();
+
+            updateDatasetVideosList();
+            updateDatasetStats();
+            updateBuildSummary();
         }
 
         function deselectAllVideos() {
-            selectedVideosForDataset.clear();
-            renderDatasetVideos();
+            // New workflow: clear video selection
+            if (datasetSelectedVideos) {
+                datasetSelectedVideos.clear();
+                updateDatasetVideosList();
+                updateDatasetStats();
+                updateBuildSummary();
+            } else {
+                // Fall back to old behavior for admin dashboard compatibility
+                selectedVideosForDataset.clear();
+                renderDatasetVideos();
+            }
         }
 
         async function buildDataset() {

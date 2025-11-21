@@ -96,6 +96,39 @@ class VideoCacheManager:
 
         return metadata
 
+    def _find_metadata_directory(self, video_path: Path, nas_folder: str) -> str:
+        """비디오 파일의 의미 있는 메타데이터 디렉토리를 찾음
+
+        상위 디렉토리를 순회하면서 '번호-지역-크기-방법' 패턴을 가진 디렉토리를 찾음
+        예: /SAHARA/329-광역-700MM-SP/2/VTS_01_4.VOB -> '329-광역-700MM-SP'
+        """
+        import re
+        # 번호-지역-크기-방법 패턴 (예: 329-광역-700MM-SP, 13-지방-300MM-DCIP)
+        metadata_pattern = re.compile(r'^\d+-[가-힣]+-\d+MM-[A-Z0-9]+$')
+
+        # 비디오 파일의 상위 디렉토리들을 순회
+        current = video_path.parent
+
+        # NAS 폴더(SAHARA, 관내시경영상 등)까지만 탐색
+        while current.name and current.name != nas_folder:
+            dir_name = current.name
+
+            # 패턴 매칭 확인
+            if metadata_pattern.match(dir_name):
+                return dir_name
+
+            # 하이픈이 3개 이상 포함된 디렉토리도 메타데이터일 가능성이 높음
+            if dir_name.count('-') >= 3:
+                parts = dir_name.split('-')
+                # 첫 번째 파트가 숫자이고, MM이 포함되어 있으면 메타데이터 디렉토리로 간주
+                if parts[0].isdigit() and any('MM' in p for p in parts):
+                    return dir_name
+
+            current = current.parent
+
+        # 패턴을 찾지 못한 경우 직접 부모 디렉토리 반환
+        return video_path.parent.name
+
     def _generate_thumbnail(self, video_path: str, thumbnail_path: str, frame_number: int = 100) -> bool:
         """비디오 썸네일 생성"""
         try:
@@ -154,8 +187,8 @@ class VideoCacheManager:
             duration = total_frames / fps if fps > 0 else 0
             cap.release()
 
-            # 부모 디렉토리
-            parent_dir = video_path_obj.parent.name
+            # 의미 있는 메타데이터 디렉토리 찾기 (번호-지역-크기-방법 패턴)
+            parent_dir = self._find_metadata_directory(video_path_obj, nas_folder)
             dir_metadata = self._parse_directory_metadata(parent_dir)
 
             # 썸네일 생성

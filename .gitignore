@@ -52,3 +52,14 @@ segformer_best_org.pth
 # OS
 .DS_Store
 Thumbs.db
+
+# Additional ignores
+.models/
+gpu-server/pipe_dataset*/
+gpu-server/*.pth
+gpu-server/*.pt
+*.pth
+*.pt
+inference_results/
+cache_rebuild.log
+video_conversion*.log

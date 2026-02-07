@@ -12,6 +12,7 @@ import os
 import json
 import logging
 import time
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,166 @@ BASE_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 사용자 관리자 초기화
 user_manager = UserManager()
+
+# 코멘트 캐시 (성능 최적화)
+_comments_cache = {
+    'data': None,
+    'last_updated': 0,
+    'cache_ttl': 300,  # 5분 캐시 유지 (NAS 파일 스캔이 느리므로)
+    'building': False  # 캐시 빌드 중 플래그
+}
+
+# 어노테이션 글로벌 서머리 캐시
+_global_summary_cache = {
+    'data': None,
+    'last_updated': 0,
+    'cache_ttl': 300,  # 5분 캐시 유지
+    'building': False
+}
+
+# 캐시 빌드 락
+_cache_build_lock = threading.Lock()
+
+
+def _build_global_summary_cache_background():
+    """백그라운드에서 글로벌 서머리 캐시 빌드 (관리자용)"""
+    global _global_summary_cache
+
+    if _global_summary_cache['building']:
+        logger.info("[CACHE] Global summary cache build already in progress, skipping")
+        return
+
+    with _cache_build_lock:
+        _global_summary_cache['building'] = True
+
+    try:
+        logger.info("[CACHE] Building global summary cache in background...")
+        start_time = time.time()
+
+        all_project_dirs = []
+
+        # 모든 프로젝트 수집 (관리자 모드)
+        for owner_dir in BASE_PROJECTS_DIR.iterdir():
+            if owner_dir.is_dir():
+                for project_dir in owner_dir.iterdir():
+                    if project_dir.is_dir() and (project_dir / 'project.json').exists():
+                        all_project_dirs.append(project_dir)
+
+        # 통계 집계
+        total_projects = len(all_project_dirs)
+        total_annotations = 0
+        total_frames = set()
+        by_class = {}
+        by_worker = {}
+
+        for project_dir in all_project_dirs:
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                for json_file in video_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        worker_name = json_file.stem
+
+                        if isinstance(data, dict) and 'annotations' in data:
+                            user_annotations = data['annotations']
+                            worker_name = data.get('user_name', worker_name)
+                        else:
+                            user_annotations = data
+
+                        for frame_key, frame_annos in user_annotations.items():
+                            if not isinstance(frame_annos, list):
+                                continue
+
+                            if frame_annos and len(frame_annos) > 0:
+                                frame_id = f"{project_dir.name}/{video_dir.name}/{frame_key}"
+                                total_frames.add(frame_id)
+
+                                for anno in frame_annos:
+                                    if not isinstance(anno, dict):
+                                        continue
+
+                                    total_annotations += 1
+                                    label = anno.get('label', '알 수 없음')
+                                    by_class[label] = by_class.get(label, 0) + 1
+
+                                    created_by_name = anno.get('created_by_name', worker_name)
+                                    by_worker[created_by_name] = by_worker.get(created_by_name, 0) + 1
+
+                    except Exception as e:
+                        pass  # 조용히 무시
+
+        # 캐시 업데이트
+        _global_summary_cache['data'] = {
+            'total_projects': total_projects,
+            'total_annotations': total_annotations,
+            'total_frames': len(total_frames),
+            'by_class': by_class,
+            'by_worker': by_worker
+        }
+        _global_summary_cache['last_updated'] = time.time()
+        _global_summary_cache['cache_key'] = 'admin'
+
+        elapsed = time.time() - start_time
+        logger.info(f"[CACHE] Global summary cache built in {elapsed:.1f}s - {total_projects} projects, {total_annotations} annotations")
+
+    except Exception as e:
+        logger.error(f"[CACHE] Error building global summary cache: {e}")
+    finally:
+        _global_summary_cache['building'] = False
+
+
+def _build_comments_cache_background():
+    """백그라운드에서 코멘트 캐시 빌드"""
+    global _comments_cache
+
+    if _comments_cache['building']:
+        logger.info("[CACHE] Comments cache build already in progress, skipping")
+        return
+
+    with _cache_build_lock:
+        _comments_cache['building'] = True
+
+    try:
+        logger.info("[CACHE] Building comments cache in background...")
+        start_time = time.time()
+
+        # 기존 _build_comments_cache 함수 호출
+        commented_annotations = _build_comments_cache()
+
+        # 캐시 업데이트
+        _comments_cache['data'] = commented_annotations
+        _comments_cache['last_updated'] = time.time()
+
+        elapsed = time.time() - start_time
+        logger.info(f"[CACHE] Comments cache built in {elapsed:.1f}s - {len(commented_annotations)} comments")
+
+    except Exception as e:
+        logger.error(f"[CACHE] Error building comments cache: {e}")
+    finally:
+        _comments_cache['building'] = False
+
+
+def warmup_caches():
+    """서버 시작 시 캐시 워밍업 (백그라운드 스레드에서 실행)"""
+    logger.info("[CACHE] Starting cache warmup...")
+
+    # 글로벌 서머리 캐시 빌드
+    t1 = threading.Thread(target=_build_global_summary_cache_background, daemon=True)
+    t1.start()
+
+    # 코멘트 캐시 빌드 (글로벌 서머리 완료 후 시작하려면 join 사용)
+    t2 = threading.Thread(target=_build_comments_cache_background, daemon=True)
+    t2.start()
+
+    logger.info("[CACHE] Cache warmup threads started")
 
 
 def require_auth(f):
@@ -122,6 +283,7 @@ def find_project_dir(project_id: str, user_id: str):
     - 먼저 자신의 프로젝트 폴더에서 검색
     - 없으면 모든 사용자 폴더에서 검색 (공유 프로젝트 접근)
     - 프로젝트 디렉토리 이름은 "이름_project_id" 형식이므로 endswith로 검색
+    - project.json이 있는 유효한 프로젝트만 반환
 
     Returns:
         Path or None
@@ -132,13 +294,20 @@ def find_project_dir(project_id: str, user_id: str):
 
     logger.info(f"[PROJECT] Searching for project_id={project_id} for user={user_id}")
 
+    def is_valid_project(project_dir):
+        """project.json이 있는 유효한 프로젝트인지 확인"""
+        return (project_dir / 'project.json').exists()
+
     # 1. 먼저 자신의 프로젝트에서 찾기
     user_dir = base_dir / user_id
     if user_dir.exists() and user_dir.is_dir():
         for project_dir in user_dir.iterdir():
             if project_dir.is_dir() and (project_dir.name.endswith(f"_{project_id}") or project_dir.name == project_id):
-                logger.info(f"[PROJECT] Found project: {project_dir}")
-                return project_dir
+                if is_valid_project(project_dir):
+                    logger.info(f"[PROJECT] Found project: {project_dir}")
+                    return project_dir
+                else:
+                    logger.debug(f"[PROJECT] Skipping invalid project (no project.json): {project_dir}")
 
     # 2. 자신의 프로젝트에 없으면 다른 사용자 폴더에서 검색
     for other_user_dir in base_dir.iterdir():
@@ -151,8 +320,11 @@ def find_project_dir(project_id: str, user_id: str):
 
         for project_dir in other_user_dir.iterdir():
             if project_dir.is_dir() and (project_dir.name.endswith(f"_{project_id}") or project_dir.name == project_id):
-                logger.info(f"[PROJECT] User {user_id} accessing shared project {project_id} from user {other_user_dir.name}: {project_dir}")
-                return project_dir
+                if is_valid_project(project_dir):
+                    logger.info(f"[PROJECT] User {user_id} accessing shared project {project_id} from user {other_user_dir.name}: {project_dir}")
+                    return project_dir
+                else:
+                    logger.debug(f"[PROJECT] Skipping invalid shared project (no project.json): {project_dir}")
 
     logger.warning(f"[PROJECT] Project {project_id} not found for user {user_id}")
     return None
@@ -554,16 +726,80 @@ def get_stats():
         }), 503
 
 
+def _count_annotation_files_fast(video_annotations_dir: 'Path') -> int:
+    """어노테이션 파일 개수만 빠르게 세기 (파일 내용 읽지 않음)"""
+    if not video_annotations_dir.exists():
+        return 0
+    count = 0
+    for f in video_annotations_dir.iterdir():
+        if f.suffix == '.json' and not f.stem.endswith('.backup') and 'before_fix' not in f.name:
+            count += 1
+    return count
+
+
 @app.route('/api/projects', methods=['GET'])
 @require_auth
 def list_projects():
-    """프로젝트 목록 조회 (사용자별)"""
+    """프로젝트 목록 조회 (사용자별, admin은 모든 프로젝트)
+
+    성능 최적화: 어노테이션 파일을 열지 않고 파일 개수만 센다.
+    상세 어노테이션 통계는 /api/projects/<id>/stats API를 사용.
+    """
     import json
     from pathlib import Path
 
     try:
         # 사용자 정보 조회
         user_info = user_manager.get_user_info(request.user_id)
+        is_admin = user_info and user_info.get('role') == 'admin'
+
+        # admin은 모든 사용자의 프로젝트를 볼 수 있음
+        if is_admin:
+            projects_base = Path(BASE_PROJECTS_DIR)
+            if not projects_base.exists():
+                return jsonify({
+                    'success': True,
+                    'projects': []
+                })
+
+            # 모든 사용자 디렉토리 순회
+            all_project_dirs = []
+            for user_dir in projects_base.iterdir():
+                if user_dir.is_dir():
+                    for project_dir in user_dir.iterdir():
+                        if project_dir.is_dir():
+                            all_project_dirs.append((user_dir.name, project_dir))
+
+            projects = []
+            for owner_id, project_dir in all_project_dirs:
+                project_file = project_dir / 'project.json'
+                if project_file.exists():
+                    with open(project_file, 'r', encoding='utf-8') as f:
+                        project_data = json.load(f)
+                        # 소유자 정보 추가
+                        project_data['owner'] = owner_id
+
+                        # 각 비디오의 어노테이션 파일 개수만 빠르게 계산 (파일 내용 읽지 않음)
+                        annotations_dir = project_dir / 'annotations'
+                        if 'videos' in project_data and annotations_dir.exists():
+                            for video in project_data['videos']:
+                                video_id = video.get('video_id')
+                                if video_id:
+                                    video_annotations_dir = annotations_dir / video_id
+                                    file_count = _count_annotation_files_fast(video_annotations_dir)
+                                    # 파일 개수 = 어노테이션 작업자 수 (대략적인 지표)
+                                    video['annotation_files'] = file_count
+                                    video['has_annotations'] = file_count > 0
+
+                        projects.append(project_data)
+
+            logger.info(f"[PROJECT] Admin {request.user_id} listed all {len(projects)} projects")
+            return jsonify({
+                'success': True,
+                'projects': projects
+            })
+
+        # 일반 사용자: 자신의 프로젝트만
         projects_dir = Path(BASE_PROJECTS_DIR) / request.user_id
 
         if not projects_dir.exists():
@@ -581,55 +817,16 @@ def list_projects():
                     with open(project_file, 'r', encoding='utf-8') as f:
                         project_data = json.load(f)
 
-                        # 각 비디오의 어노테이션 수 계산
+                        # 각 비디오의 어노테이션 파일 개수만 빠르게 계산 (파일 내용 읽지 않음)
                         annotations_dir = project_dir / 'annotations'
                         if 'videos' in project_data and annotations_dir.exists():
                             for video in project_data['videos']:
                                 video_id = video.get('video_id')
                                 if video_id:
                                     video_annotations_dir = annotations_dir / video_id
-
-                                    # 모든 사용자의 어노테이션을 합산
-                                    total_annotation_count = 0
-                                    all_annotated_frames = set()
-
-                                    if video_annotations_dir.exists():
-                                        try:
-                                            # 디렉토리 내의 모든 JSON 파일 찾기 (사용자별 어노테이션)
-                                            for json_file in video_annotations_dir.glob('*.json'):
-                                                # .backup 파일은 제외
-                                                if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
-                                                    continue
-
-                                                try:
-                                                    with open(json_file, 'r', encoding='utf-8') as vf:
-                                                        video_data = json.load(vf)
-
-                                                        # 어노테이션 딕셔너리 가져오기
-                                                        annotations = video_data.get('annotations', {})
-
-                                                        # 프레임 번호 추가
-                                                        all_annotated_frames.update(annotations.keys())
-
-                                                        # 어노테이션 개수 계산
-                                                        for frame_annotations in annotations.values():
-                                                            total_annotation_count += len(frame_annotations)
-                                                except Exception as e:
-                                                    logger.warning(f"[PROJECT] Failed to load annotation file {json_file}: {e}")
-
-                                            # 어노테이션된 프레임 수 (중복 제거)
-                                            video['annotated_frames'] = len(all_annotated_frames)
-
-                                            # 총 어노테이션 수
-                                            video['annotations'] = total_annotation_count
-
-                                        except Exception as e:
-                                            logger.warning(f"[PROJECT] Failed to process annotations for {video_id}: {e}")
-                                            video['annotated_frames'] = 0
-                                            video['annotations'] = 0
-                                    else:
-                                        video['annotated_frames'] = 0
-                                        video['annotations'] = 0
+                                    file_count = _count_annotation_files_fast(video_annotations_dir)
+                                    video['annotation_files'] = file_count
+                                    video['has_annotations'] = file_count > 0
 
                         projects.append(project_data)
 
@@ -1178,28 +1375,74 @@ def admin_get_project(project_id):
                     project_data['owner_name'] = user_info.get('full_name') if user_info else None
                     project_data['path'] = str(project_dir.resolve())
 
-                    # 비디오 및 어노테이션 개수 계산
+                    # 각 비디오의 어노테이션 수 계산
                     annotations_dir = project_dir / 'annotations'
-                    if annotations_dir.exists():
-                        video_dirs = [d for d in annotations_dir.iterdir() if d.is_dir() and d.name.startswith('video_')]
-                        video_count = len(video_dirs)
-                        project_data['video_count'] = video_count
+                    if 'videos' in project_data and annotations_dir.exists():
+                        for video in project_data['videos']:
+                            video_id = video.get('video_id')
+                            if video_id:
+                                video_annotations_dir = annotations_dir / video_id
 
-                        annotation_count = 0
-                        for video_dir in video_dirs:
-                            annotations_file = video_dir / 'annotations.json'
-                            if annotations_file.exists():
-                                try:
-                                    with open(annotations_file, 'r', encoding='utf-8') as vf:
-                                        video_data = json.load(vf)
-                                        annotations = video_data.get('annotations', {})
-                                        annotation_count += sum(len(frame_annotations) for frame_annotations in annotations.values())
-                                except:
-                                    pass
-                        project_data['annotation_count'] = annotation_count
-                    else:
-                        project_data['video_count'] = 0
-                        project_data['annotation_count'] = 0
+                                # 모든 사용자의 어노테이션을 합산
+                                total_annotation_count = 0
+                                all_annotated_frames = set()
+
+                                if video_annotations_dir.exists():
+                                    try:
+                                        # 디렉토리 내의 모든 JSON 파일 찾기 (사용자별 어노테이션)
+                                        for json_file in video_annotations_dir.glob('*.json'):
+                                            # .backup 파일은 제외
+                                            if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                                                continue
+
+                                            try:
+                                                with open(json_file, 'r', encoding='utf-8') as vf:
+                                                    video_data = json.load(vf)
+
+                                                    # 어노테이션 딕셔너리 가져오기
+                                                    annotations = video_data.get('annotations', {})
+
+                                                    # 프레임 번호 추가
+                                                    all_annotated_frames.update(annotations.keys())
+
+                                                    # 어노테이션 개수 계산
+                                                    for frame_annotations in annotations.values():
+                                                        total_annotation_count += len(frame_annotations)
+                                            except Exception as e:
+                                                logger.warning(f"[ADMIN] Failed to load annotation file {json_file}: {e}")
+
+                                        # 어노테이션된 프레임 수 (중복 제거)
+                                        video['annotated_frames'] = len(all_annotated_frames)
+
+                                        # 총 어노테이션 수
+                                        video['annotations'] = total_annotation_count
+
+                                    except Exception as e:
+                                        logger.warning(f"[ADMIN] Failed to process annotations for {video_id}: {e}")
+                                        video['annotated_frames'] = 0
+                                        video['annotations'] = 0
+                                else:
+                                    video['annotated_frames'] = 0
+                                    video['annotations'] = 0
+
+                    # 프로젝트 통계 계산
+                    videos = project_data.get('videos', [])
+                    total_videos = len(videos)
+                    annotated_videos = sum(1 for v in videos if v.get('status') == 'completed')
+                    total_annotations = sum(v.get('annotations', 0) for v in videos)
+                    annotated_frames = sum(v.get('annotated_frames', 0) for v in videos)
+
+                    project_data['video_count'] = total_videos
+                    project_data['annotation_count'] = total_annotations
+
+                    stats = {
+                        'total_videos': total_videos,
+                        'annotated_videos': annotated_videos,
+                        'total_annotations': total_annotations,
+                        'annotated_frames': annotated_frames,
+                        'datasets': 0
+                    }
+                    project_data['stats'] = stats
 
                     logger.info(f"[ADMIN] User {request.user_id} viewed project {project_id} (owner: {user_id})")
 
@@ -1330,32 +1573,23 @@ def admin_get_completed_videos():
                         if not video_id:
                             continue
 
-                        # 어노테이션 파일 확인
-                        annotation_file = project_dir / 'annotations' / video_id / 'annotations.json'
-                        annotation_count = 0
-                        frame_count_with_annotations = 0
+                        # ⚡ 최적화: 어노테이션 파일 개수만 세기 (파일 내용 읽지 않음)
+                        video_annotations_dir = project_dir / 'annotations' / video_id
+                        annotation_file_count = 0
 
-                        if annotation_file.exists():
-                            try:
-                                with open(annotation_file, 'r', encoding='utf-8') as f:
-                                    annotation_data = json.load(f)
-                                    annotations = annotation_data.get('annotations', {})
-                                    # 프레임별 어노테이션 개수 계산
-                                    frame_count_with_annotations = len(annotations)
-                                    for frame_annotations in annotations.values():
-                                        annotation_count += len(frame_annotations)
-                            except Exception as e:
-                                logger.warning(f"Error reading annotations for {video_id}: {e}")
+                        if video_annotations_dir.exists():
+                            for f in video_annotations_dir.iterdir():
+                                if f.suffix == '.json' and not f.stem.endswith('.backup') and 'before_fix' not in f.name:
+                                    annotation_file_count += 1
 
-                        # 어노테이션이 있는 비디오만 포함
-                        if annotation_count > 0 or video.get('complete', False):
+                        # 어노테이션 파일이 있거나 complete 상태인 비디오만 포함
+                        if annotation_file_count > 0 or video.get('complete', False):
                             user_completed_videos.append({
                                 'video_id': video_id,
                                 'video_name': video.get('filename', video_id),
                                 'project_id': project_id,
                                 'project_name': project_name,
-                                'annotations': annotation_count,
-                                'frame_count': frame_count_with_annotations,
+                                'annotation_files': annotation_file_count,
                                 'complete': video.get('complete', False),
                                 'total_frames': video.get('total_frames', 0)
                             })
@@ -1607,7 +1841,9 @@ def add_video(project_id):
                 # 보안: 허용된 NAS 경로인지 확인
                 NAS_ALLOWED_PATHS = [
                     '/home/intu/nas2_kwater/Videos/SAHARA',
-                    '/home/intu/nas2_kwater/Videos/관내시경영상'
+                    '/home/intu/nas2_kwater/Videos/관내시경영상',
+                    '/mnt/kwater_data/Videos_web/SAHARA',
+                    '/mnt/kwater_data/Videos_web/관내시경영상'
                 ]
 
                 is_allowed = any(nas_video_path.startswith(allowed_path)
@@ -2053,6 +2289,7 @@ def list_nas_videos():
                 if os.path.exists(web_path):
                     video['has_web_version'] = True
                     video['web_path'] = web_path
+                    video['original_path'] = video_path  # 썸네일용 원본 경로 보존
                     web_compatible_videos.append(video)
 
         # 필터링된 전체 개수
@@ -2201,8 +2438,16 @@ def get_nas_video_thumbnail():
             return jsonify({'error': 'path parameter required'}), 400
 
         # 보안: 허용된 NAS 경로인지 확인
-        if not (video_path.startswith('/home/intu/nas2_kwater/Videos/SAHARA') or
-                video_path.startswith('/home/intu/nas2_kwater/Videos/관내시경영상')):
+        allowed_paths = [
+            '/home/intu/nas2_kwater/Videos/SAHARA',
+            '/home/intu/nas2_kwater/Videos/관내시경영상',
+            '/mnt/kwater_data/Videos/SAHARA',
+            '/mnt/kwater_data/Videos/관내시경영상',
+            '/mnt/kwater_data/Videos_web/SAHARA',
+            '/mnt/kwater_data/Videos_web/관내시경영상'
+        ]
+
+        if not any(video_path.startswith(allowed) for allowed in allowed_paths):
             logger.warning(f"[NAS] Unauthorized thumbnail request: {video_path}")
             return jsonify({'error': 'Forbidden'}), 403
 
@@ -2374,6 +2619,142 @@ def build_dataset():
         }), 500
 
 
+@app.route('/api/dataset/build-multi', methods=['POST'])
+@require_auth
+def build_dataset_multi():
+    """다중 프로젝트 통합 데이터셋 빌드"""
+    import json
+    from pathlib import Path
+
+    try:
+        data = request.get_json()
+        projects = data.get('projects', {})  # { projectId: [videos] }
+        classes = data.get('classes', [])
+        output_dir = data.get('output_dir', 'pipe_dataset')
+        split_ratio = data.get('split_ratio', '0.7,0.15,0.15')
+        format_type = data.get('format', 'yolo')
+
+        if not projects:
+            return jsonify({
+                'success': False,
+                'error': 'No projects selected'
+            }), 400
+
+        if not classes:
+            return jsonify({
+                'success': False,
+                'error': 'No classes selected'
+            }), 400
+
+        if format_type != 'yolo':
+            return jsonify({
+                'success': False,
+                'error': 'Only YOLO format is supported'
+            }), 400
+
+        total_videos = sum(len(v) for v in projects.values())
+        logger.info(f"[DATASET BUILD-MULTI] Building from {len(projects)} projects, {total_videos} videos")
+        logger.info(f"[DATASET BUILD-MULTI] Classes: {classes}")
+        logger.info(f"[DATASET BUILD-MULTI] Output: {output_dir}, Split: {split_ratio}")
+
+        # 각 프로젝트에서 어노테이션 수집
+        annotations_data = []
+        base_dir = Path(BASE_PROJECTS_DIR)
+
+        for project_id, videos in projects.items():
+            # 프로젝트 디렉토리 찾기 (모든 사용자 디렉토리 검색)
+            project_dir = None
+            user_id = None
+
+            for user_dir in base_dir.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                possible_project_dir = user_dir / project_id
+                if possible_project_dir.exists():
+                    project_dir = possible_project_dir
+                    user_id = user_dir.name
+                    break
+
+            if not project_dir:
+                logger.warning(f"[DATASET BUILD-MULTI] Project not found: {project_id}")
+                continue
+
+            # 어노테이션 디렉토리
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                logger.warning(f"[DATASET BUILD-MULTI] No annotations dir for: {project_id}")
+                continue
+
+            # 비디오별 어노테이션 수집
+            for video_info in videos:
+                video_id = video_info.get('video_id')
+                if not video_id:
+                    continue
+
+                video_annotations_dir = annotations_dir / video_id
+                if not video_annotations_dir.exists():
+                    logger.warning(f"[DATASET BUILD-MULTI] No annotations for video: {video_id}")
+                    continue
+
+                # 모든 사용자의 어노테이션 JSON 파일 읽기
+                for json_file in video_annotations_dir.glob('*.json'):
+                    if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                        continue
+
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            anno_data = json.load(f)
+
+                        annotations_data.append({
+                            'user_id': user_id,
+                            'project_id': project_id,
+                            'video_id': video_id,
+                            'annotations': anno_data.get('annotations', {}),
+                            'video_name': video_info.get('name', video_id),
+                            'project_dir': str(project_dir)
+                        })
+
+                    except Exception as e:
+                        logger.error(f"[DATASET BUILD-MULTI] Error reading {json_file}: {e}")
+
+        if not annotations_data:
+            return jsonify({
+                'success': False,
+                'error': 'No annotations found in selected projects'
+            }), 400
+
+        logger.info(f"[DATASET BUILD-MULTI] Collected {len(annotations_data)} annotation files")
+
+        # GPU 서버로 전달하여 실제 빌드 수행
+        build_request = {
+            'annotations_data': annotations_data,
+            'classes': classes,
+            'output_dir': output_dir,
+            'split_ratio': split_ratio,
+            'format': format_type,
+            'base_projects_dir': str(BASE_PROJECTS_DIR)
+        }
+
+        # GPU 서버에 빌드 요청
+        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo', method='POST', json=build_request)
+
+        if status_code == 200 and gpu_response.get('success'):
+            logger.info(f"[DATASET BUILD-MULTI] Success: {gpu_response.get('output_dir')}")
+        else:
+            logger.error(f"[DATASET BUILD-MULTI] Failed: {gpu_response.get('error')}")
+
+        return jsonify(gpu_response), status_code
+
+    except Exception as e:
+        logger.error(f"[DATASET BUILD-MULTI] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/polygon/generate_mask', methods=['POST'])
 def generate_mask_from_polygon():
     """폴리곤에서 마스크 생성"""
@@ -2483,6 +2864,9 @@ def save_annotations(project_id: str, video_id: str):
 
             logger.info(f"[ANNOTATION] Updated {owner_id}'s file by {request.user_id} ({user_name}) for {project_id}/{video_id}")
 
+        # 코멘트 캐시 무효화 (코멘트가 변경되었을 수 있음)
+        invalidate_comments_cache()
+
         # 빈 프레임 처리: 현재 사용자가 자신의 어노테이션을 모두 삭제한 경우
         if request.user_id not in annotations_by_owner:
             annotation_file = annotation_dir / f'{request.user_id}.json'
@@ -2547,9 +2931,11 @@ def load_annotations(project_id: str, video_id: str):
             })
 
         # 모든 사용자의 어노테이션 파일 병합
-        merged_annotations = {}
+        # 어노테이션 ID별로 저장 (중복 방지, 수정된 버전 우선)
+        annotations_by_id = {}  # {frame_key: {anno_id: annotation}}
         contributors = []
         latest_update = None
+        legacy_counts = {}  # 레거시 ID 생성용 카운터 (요청별 리셋)
 
         # 디렉토리 내의 모든 JSON 파일 읽기
         for annotation_file in annotation_dir.glob('*.json'):
@@ -2570,27 +2956,55 @@ def load_annotations(project_id: str, video_id: str):
 
                 # 어노테이션 병합 (레거시 데이터 필터링 포함)
                 for frame_key, frame_annotations in user_annotations.items():
-                    if frame_key not in merged_annotations:
-                        merged_annotations[frame_key] = []
+                    if frame_key not in annotations_by_id:
+                        annotations_by_id[frame_key] = {}
                     if isinstance(frame_annotations, list):
                         # 각 어노테이션을 필터링하여 추가
                         for ann in frame_annotations:
                             if isinstance(ann, dict):
                                 created_by = ann.get('created_by')
-                                # 필터링: created_by가 없거나 파일 소유자와 일치하는 경우만 포함
-                                # (레거시 데이터 오염 방지: kwater2.json에 created_by="kwater1"인 경우 제외)
-                                if created_by is None or created_by == file_owner:
+                                modified_by = ann.get('modified_by')
+                                # 필터링 로직:
+                                # 1. created_by가 없는 경우 (레거시 데이터) - 허용
+                                # 2. created_by가 파일 소유자와 일치하는 경우 - 허용 (원본 데이터)
+                                # 3. modified_by가 파일 소유자와 일치하는 경우 - 허용 (다른 사용자가 수정한 경우)
+                                # (레거시 데이터 오염 방지: 위 조건에 해당하지 않으면 제외)
+                                if created_by is None or created_by == file_owner or modified_by == file_owner:
                                     # 어노테이션 복사본 생성하여 created_by_name 추가
                                     ann_with_name = ann.copy()
                                     ann_with_name['created_by_name'] = user_name
-                                    merged_annotations[frame_key].append(ann_with_name)
+
+                                    # 어노테이션 ID로 중복 체크 (수정된 버전 우선)
+                                    anno_id = ann.get('id')
+
+                                    # ID가 없는 레거시 어노테이션은 created_by + label + 인덱스 기반 ID 생성
+                                    if not anno_id:
+                                        # 같은 frame, 같은 created_by, 같은 label의 어노테이션 개수로 인덱스 결정
+                                        label = ann.get('label', '')
+                                        same_key = f"{frame_key}_{created_by}_{label}"
+                                        if same_key not in legacy_counts:
+                                            legacy_counts[same_key] = 0
+                                        idx = legacy_counts[same_key]
+                                        legacy_counts[same_key] = idx + 1
+                                        anno_id = f"legacy_{created_by}_{label}_{idx}"
+                                        ann_with_name['id'] = anno_id
+
+                                    existing = annotations_by_id[frame_key].get(anno_id)
+                                    if existing:
+                                        # 이미 있는 경우: modified_at 비교하여 최신 것 사용
+                                        existing_modified = existing.get('modified_at', existing.get('created_at', ''))
+                                        new_modified = ann_with_name.get('modified_at', ann_with_name.get('created_at', ''))
+                                        if new_modified > existing_modified:
+                                            annotations_by_id[frame_key][anno_id] = ann_with_name
+                                    else:
+                                        annotations_by_id[frame_key][anno_id] = ann_with_name
+
                                     user_annotation_count += 1
                                 else:
-                                    logger.debug(f"[ANNOTATION] Filtered out mismatched annotation: created_by={created_by}, file_owner={file_owner}")
+                                    logger.debug(f"[ANNOTATION] Filtered out mismatched annotation: created_by={created_by}, modified_by={modified_by}, file_owner={file_owner}")
                             else:
-                                # dict가 아닌 경우 그대로 추가 (호환성)
-                                merged_annotations[frame_key].append(ann)
-                                user_annotation_count += 1
+                                # dict가 아닌 경우 - 스킵 (잘못된 형식)
+                                logger.warning(f"[ANNOTATION] Skipping non-dict annotation in {frame_key}")
 
                 # 기여자 목록에 추가 (실제 어노테이션이 있는 경우만)
                 if user_id and user_annotation_count > 0:
@@ -2608,6 +3022,11 @@ def load_annotations(project_id: str, video_id: str):
                 logger.error(f"[ANNOTATION] Error loading file {annotation_file}: {e}")
                 continue
 
+        # annotations_by_id를 리스트 형태의 merged_annotations로 변환
+        merged_annotations = {}
+        for frame_key, annos_dict in annotations_by_id.items():
+            merged_annotations[frame_key] = list(annos_dict.values())
+
         logger.info(f"[ANNOTATION] User {request.user_id} loaded merged annotations for {project_id}/{video_id} from {len(contributors)} contributor(s)")
 
         return jsonify({
@@ -2624,139 +3043,173 @@ def load_annotations(project_id: str, video_id: str):
         }), 500
 
 
+def _build_comments_cache():
+    """코멘트 캐시 빌드 (내부 함수)"""
+    commented_annotations = []
+
+    for user_dir in BASE_PROJECTS_DIR.iterdir():
+        if not user_dir.is_dir():
+            continue
+
+        user_owner = user_dir.name
+
+        # 각 프로젝트 스캔
+        for project_dir in user_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+
+            project_name = project_dir.name
+            # project_id 추출 (마지막 underscore 뒤의 숫자)
+            project_id = project_name.split('_')[-1] if '_' in project_name else project_name
+
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            # ⚡ 최적화: 프로젝트당 한 번만 discussions.json 로드
+            discussions_data = load_discussions(user_owner, project_name)
+
+            # 각 비디오 스캔
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                video_id = video_dir.name
+
+                # 각 어노테이션 파일 스캔
+                for json_file in video_dir.glob('*.json'):
+                    if json_file.name.endswith('.backup') or json_file.name.endswith('_fix') or json_file.name.endswith('.before_fix'):
+                        continue
+
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    except Exception as e:
+                        logger.warning(f"Error reading {json_file}: {e}")
+                        continue
+
+                    file_owner = json_file.stem
+
+                    # JSON 파일의 user_id를 가져옴 (file_owner보다 우선)
+                    json_user_id = data.get('user_id', file_owner)
+
+                    # Handle both new and old JSON formats
+                    if 'annotations' in data:
+                        annotations_dict = data['annotations']
+                    else:
+                        annotations_dict = data
+
+                    # Check each annotation for comments
+                    for frame_key, frame_annotations in annotations_dict.items():
+                        if frame_key in ['project_id', 'video_id', 'user_id']:
+                            continue
+
+                        if not isinstance(frame_annotations, list):
+                            continue
+
+                        for ann in frame_annotations:
+                            if not isinstance(ann, dict):
+                                continue
+
+                            comment = ann.get('comment', '').strip()
+                            if comment:
+                                # created_by 결정: 어노테이션 > JSON user_id > file_owner
+                                created_by = ann.get('created_by') or json_user_id
+
+                                # 코멘트 고유 ID 생성 (json_user_id 사용)
+                                comment_id = generate_comment_id(
+                                    user_owner,
+                                    project_id,
+                                    video_id,
+                                    frame_key,
+                                    json_user_id
+                                )
+
+                                # ⚡ 최적화: 이미 로드된 discussions_data 재사용
+                                replies_count = 0
+                                discussion_status = 'open'
+                                if comment_id in discussions_data['discussions']:
+                                    replies_count = len(discussions_data['discussions'][comment_id]['replies'])
+                                    discussion_status = discussions_data['discussions'][comment_id].get('status', 'open')
+
+                                # 프레임 이미지 URL 생성
+                                frame_url = f"/api/projects/{project_id}/videos/{video_id}/frame/{int(frame_key) if frame_key.isdigit() else frame_key}"
+
+                                # 댓글 작성자 정보
+                                comment_author = ann.get('modified_by') or created_by
+                                comment_author_name = ann.get('modified_by_name') or ann.get('created_by_name', comment_author)
+
+                                commented_annotations.append({
+                                    'comment_id': comment_id,
+                                    'project_owner': user_owner,
+                                    'project_id': project_id,
+                                    'project_name': project_name.rsplit('_', 1)[0],
+                                    'project_name_full': project_name,
+                                    'video_id': video_id,
+                                    'frame': int(frame_key) if frame_key.isdigit() else frame_key,
+                                    'file_owner': file_owner,
+                                    'created_by': comment_author,
+                                    'created_by_name': comment_author_name,
+                                    'annotation_owner': created_by,
+                                    'annotation_owner_name': ann.get('created_by_name', created_by),
+                                    'label': ann.get('label', 'N/A'),
+                                    'comment': comment,
+                                    'bbox': ann.get('bbox'),
+                                    'box': ann.get('box'),
+                                    'polygon': ann.get('polygon'),
+                                    'mask': ann.get('mask'),
+                                    'frame_url': frame_url,
+                                    'created_at': ann.get('created_at'),
+                                    'modified_at': ann.get('modified_at'),
+                                    'replies_count': replies_count,
+                                    'discussion_status': discussion_status
+                                })
+
+    return commented_annotations
+
+
+def invalidate_comments_cache():
+    """코멘트 캐시 무효화"""
+    global _comments_cache
+    _comments_cache['data'] = None
+    _comments_cache['last_updated'] = 0
+
+
 @app.route('/api/comments/all', methods=['GET'])
 @require_auth
 def get_all_commented_annotations():
-    """시스템 내 모든 코멘트가 달린 어노테이션 조회"""
+    """시스템 내 모든 코멘트가 달린 어노테이션 조회 (캐싱 적용)"""
+    global _comments_cache
+
     try:
         user_id = request.user_id
-        commented_annotations = []
+        current_time = time.time()
 
-        # 모든 사용자의 프로젝트 스캔
-        for user_dir in BASE_PROJECTS_DIR.iterdir():
-            if not user_dir.is_dir():
-                continue
+        # 캐시 유효성 확인
+        if (_comments_cache['data'] is not None and
+            current_time - _comments_cache['last_updated'] < _comments_cache['cache_ttl']):
+            logger.info(f"[COMMENTS] Returning cached data ({len(_comments_cache['data'])} comments) for user {user_id}")
+            return jsonify({
+                'success': True,
+                'comments': _comments_cache['data'],
+                'total': len(_comments_cache['data']),
+                'cached': True
+            })
 
-            user_owner = user_dir.name
+        # 캐시 빌드
+        logger.info(f"[COMMENTS] Building comments cache for user {user_id}")
+        commented_annotations = _build_comments_cache()
 
-            # 각 프로젝트 스캔
-            for project_dir in user_dir.iterdir():
-                if not project_dir.is_dir():
-                    continue
-
-                project_name = project_dir.name
-                # project_id 추출 (마지막 underscore 뒤의 숫자)
-                project_id = project_name.split('_')[-1] if '_' in project_name else project_name
-
-                annotations_dir = project_dir / 'annotations'
-                if not annotations_dir.exists():
-                    continue
-
-                # ⚡ 최적화: 프로젝트당 한 번만 discussions.json 로드
-                discussions_data = load_discussions(user_owner, project_name)
-
-                # 각 비디오 스캔
-                for video_dir in annotations_dir.iterdir():
-                    if not video_dir.is_dir():
-                        continue
-
-                    video_id = video_dir.name
-
-                    # 각 어노테이션 파일 스캔
-                    for json_file in video_dir.glob('*.json'):
-                        if json_file.name.endswith('.backup') or json_file.name.endswith('_fix') or json_file.name.endswith('.before_fix'):
-                            continue
-
-                        try:
-                            with open(json_file, 'r', encoding='utf-8') as f:
-                                data = json.load(f)
-                        except Exception as e:
-                            logger.warning(f"Error reading {json_file}: {e}")
-                            continue
-
-                        file_owner = json_file.stem
-
-                        # JSON 파일의 user_id를 가져옴 (file_owner보다 우선)
-                        json_user_id = data.get('user_id', file_owner)
-
-                        # Handle both new and old JSON formats
-                        if 'annotations' in data:
-                            annotations_dict = data['annotations']
-                        else:
-                            annotations_dict = data
-
-                        # Check each annotation for comments
-                        for frame_key, frame_annotations in annotations_dict.items():
-                            if frame_key in ['project_id', 'video_id', 'user_id']:
-                                continue
-
-                            if not isinstance(frame_annotations, list):
-                                continue
-
-                            for ann in frame_annotations:
-                                if not isinstance(ann, dict):
-                                    continue
-
-                                comment = ann.get('comment', '').strip()
-                                if comment:
-                                    # created_by 결정: 어노테이션 > JSON user_id > file_owner
-                                    # 이렇게 하면 annotation.json 같은 잘못된 파일명의 영향을 최소화
-                                    created_by = ann.get('created_by') or json_user_id
-
-                                    # 코멘트 고유 ID 생성 (json_user_id 사용)
-                                    comment_id = generate_comment_id(
-                                        user_owner,
-                                        project_id,
-                                        video_id,
-                                        frame_key,
-                                        json_user_id  # file_owner 대신 json_user_id 사용
-                                    )
-
-                                    # ⚡ 최적화: 이미 로드된 discussions_data 재사용
-                                    replies_count = 0
-                                    discussion_status = 'open'
-                                    if comment_id in discussions_data['discussions']:
-                                        replies_count = len(discussions_data['discussions'][comment_id]['replies'])
-                                        discussion_status = discussions_data['discussions'][comment_id].get('status', 'open')
-
-                                    # 프레임 이미지 URL 생성
-                                    frame_url = f"/api/projects/{project_id}/videos/{video_id}/frame/{int(frame_key) if frame_key.isdigit() else frame_key}"
-
-                                    # 댓글 작성자 정보 (modified_by가 있으면 그것을 사용, 없으면 어노테이션 작성자)
-                                    comment_author = ann.get('modified_by') or created_by
-                                    comment_author_name = ann.get('modified_by_name') or ann.get('created_by_name', comment_author)
-
-                                    commented_annotations.append({
-                                        'comment_id': comment_id,
-                                        'project_owner': user_owner,
-                                        'project_id': project_id,
-                                        'project_name': project_name.rsplit('_', 1)[0],  # Remove timestamp
-                                        'project_name_full': project_name,  # Full name with timestamp
-                                        'video_id': video_id,
-                                        'frame': int(frame_key) if frame_key.isdigit() else frame_key,
-                                        'file_owner': file_owner,
-                                        'created_by': comment_author,  # 댓글 작성자 (modified_by 우선)
-                                        'created_by_name': comment_author_name,  # 댓글 작성자 이름
-                                        'annotation_owner': created_by,  # 어노테이션 원 작성자
-                                        'annotation_owner_name': ann.get('created_by_name', created_by),
-                                        'label': ann.get('label', 'N/A'),
-                                        'comment': comment,
-                                        'bbox': ann.get('bbox'),
-                                        'box': ann.get('box'),  # 바운딩 박스 데이터 추가
-                                        'polygon': ann.get('polygon'),  # 다각형 데이터 추가
-                                        'mask': ann.get('mask'),  # 마스크 데이터 추가
-                                        'frame_url': frame_url,  # 프레임 이미지 URL 추가
-                                        'created_at': ann.get('created_at'),
-                                        'modified_at': ann.get('modified_at'),  # 댓글 수정 시간
-                                        'replies_count': replies_count,
-                                        'discussion_status': discussion_status
-                                    })
+        # 캐시 업데이트
+        _comments_cache['data'] = commented_annotations
+        _comments_cache['last_updated'] = current_time
 
         logger.info(f"[COMMENTS] Found {len(commented_annotations)} commented annotations for user {user_id}")
         return jsonify({
             'success': True,
             'comments': commented_annotations,
-            'total': len(commented_annotations)
+            'total': len(commented_annotations),
+            'cached': False
         })
     except Exception as e:
         logger.error(f"[COMMENTS] Error fetching commented annotations: {e}")
@@ -2960,32 +3413,62 @@ def get_annotation_summary(project_id: str):
 @app.route('/api/annotations/global-summary', methods=['GET'])
 @require_auth
 def get_global_annotation_summary():
-    """전체 어노테이션 요약 정보 조회 (모든 프로젝트)"""
+    """전체 어노테이션 요약 정보 조회 (모든 프로젝트) - 캐싱 적용"""
+    global _global_summary_cache
+
     try:
         user_id = request.user_id
+        current_time = time.time()
 
-        # 사용자의 모든 프로젝트 찾기
-        user_projects_dir = BASE_PROJECTS_DIR / user_id
+        # 사용자 정보 조회하여 관리자 여부 확인
+        user_info = user_manager.get_user_info(user_id)
+        is_admin = user_info and user_info.get('role') == 'admin'
+
+        # 캐시 키 (관리자/일반 사용자 구분)
+        cache_key = 'admin' if is_admin else user_id
+
+        # 캐시 유효성 확인
+        if (_global_summary_cache['data'] is not None and
+            _global_summary_cache.get('cache_key') == cache_key and
+            current_time - _global_summary_cache['last_updated'] < _global_summary_cache['cache_ttl']):
+            logger.info(f"[GLOBAL_SUMMARY] Returning cached data for user {user_id}")
+            return jsonify({
+                'success': True,
+                'summary': _global_summary_cache['data'],
+                'cached': True
+            })
+
         all_project_dirs = []
 
-        # 본인 프로젝트
-        if user_projects_dir.exists():
-            all_project_dirs.extend([d for d in user_projects_dir.iterdir() if d.is_dir()])
+        if is_admin:
+            # 관리자: 모든 프로젝트 접근
+            for owner_dir in BASE_PROJECTS_DIR.iterdir():
+                if owner_dir.is_dir():
+                    for project_dir in owner_dir.iterdir():
+                        if project_dir.is_dir() and (project_dir / 'project.json').exists():
+                            all_project_dirs.append(project_dir)
+        else:
+            # 일반 사용자: 본인 프로젝트 + 공유 프로젝트
+            user_projects_dir = BASE_PROJECTS_DIR / user_id
 
-        # 공유 프로젝트
-        for owner_dir in BASE_PROJECTS_DIR.iterdir():
-            if owner_dir.is_dir() and owner_dir.name != user_id:
-                for project_dir in owner_dir.iterdir():
-                    if project_dir.is_dir():
-                        project_json = project_dir / 'project.json'
-                        if project_json.exists():
-                            try:
-                                with open(project_json, 'r', encoding='utf-8') as f:
-                                    project_data = json.load(f)
-                                    if user_id in project_data.get('shared_with', []):
-                                        all_project_dirs.append(project_dir)
-                            except Exception as e:
-                                logger.warning(f"[GLOBAL_SUMMARY] Error reading {project_json}: {e}")
+            # 본인 프로젝트
+            if user_projects_dir.exists():
+                all_project_dirs.extend([d for d in user_projects_dir.iterdir() if d.is_dir()])
+
+            # 공유 프로젝트
+            for owner_dir in BASE_PROJECTS_DIR.iterdir():
+                if owner_dir.is_dir() and owner_dir.name != user_id:
+                    for project_dir in owner_dir.iterdir():
+                        if project_dir.is_dir():
+                            project_json = project_dir / 'project.json'
+                            if project_json.exists():
+                                try:
+                                    with open(project_json, 'r', encoding='utf-8') as f:
+                                        project_data = json.load(f)
+                                        if user_id in project_data.get('shared_with', []):
+                                            all_project_dirs.append(project_dir)
+                                except Exception as e:
+                                    logger.warning(f"[GLOBAL_SUMMARY] Error reading {project_json}: {e}")
 
         # 통계 집계
         total_projects = len(all_project_dirs)
@@ -3050,15 +3533,22 @@ def get_global_annotation_summary():
                         continue
 
         logger.info(f"[GLOBAL_SUMMARY] User {user_id}: {total_projects} projects, {total_annotations} annotations")
+
+        # 캐시 업데이트
+        summary_data = {
+            'total_projects': total_projects,
+            'total_annotations': total_annotations,
+            'total_frames': len(total_frames),
+            'by_class': by_class,
+            'by_worker': by_worker
+        }
+        _global_summary_cache['data'] = summary_data
+        _global_summary_cache['last_updated'] = current_time
+        _global_summary_cache['cache_key'] = cache_key
+
         return jsonify({
             'success': True,
-            'summary': {
-                'total_projects': total_projects,
-                'total_annotations': total_annotations,
-                'total_frames': len(total_frames),
-                'by_class': by_class,
-                'by_worker': by_worker
-            }
+            'summary': summary_data
         })
 
     except Exception as e:
@@ -3067,6 +3557,422 @@ def get_global_annotation_summary():
             'success': False,
             'error': str(e)
         }), 500
+
+
+# ============================================
+# 클래스 관리 기능
+# ============================================
+
+@app.route('/api/projects/<path:project_id>/annotations/by-classes', methods=['POST'])
+@require_auth
+def get_annotations_by_classes(project_id):
+    """특정 클래스들의 어노테이션 목록 조회 (중복 제거 포함)"""
+    try:
+        data = request.get_json()
+        classes = data.get('classes', [])
+        limit = data.get('limit', 50)
+
+        project_dir = find_project_dir(project_id, request.user_id)
+        if not project_dir:
+            return jsonify({'success': False, 'error': 'Project not found'}), 404
+
+        annotations_dir = project_dir / 'annotations'
+        if not annotations_dir.exists():
+            return jsonify({'success': True, 'annotations': []})
+
+        # 비디오별, 프레임별로 어노테이션을 수집 (중복 제거용)
+        # { (video_id, frame_key): { anno_id: annotation } }
+        annotations_by_key = {}
+        legacy_counts = {}
+
+        for video_dir in annotations_dir.iterdir():
+            if not video_dir.is_dir():
+                continue
+
+            video_id = video_dir.name
+
+            for json_file in video_dir.glob('*.json'):
+                try:
+                    file_owner = json_file.stem  # 파일명에서 소유자 추출
+
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        file_data = json.load(f)
+
+                    # 어노테이션 데이터 추출 (두 가지 형식 지원)
+                    anno_data = file_data.get('annotations', file_data)
+
+                    for frame_key, frame_annotations in anno_data.items():
+                        if not isinstance(frame_annotations, list):
+                            continue
+
+                        key = (video_id, frame_key)
+                        if key not in annotations_by_key:
+                            annotations_by_key[key] = {}
+
+                        for anno in frame_annotations:
+                            if not isinstance(anno, dict):
+                                continue
+
+                            label = anno.get('label', '')
+                            if label not in classes:
+                                continue
+
+                            created_by = anno.get('created_by') or file_data.get('user_id')
+                            modified_by = anno.get('modified_by')
+
+                            # 필터링: 파일 소유자와 일치하는 경우만
+                            if created_by is None or created_by == file_owner or modified_by == file_owner:
+                                # 어노테이션 ID 생성/추출
+                                anno_id = anno.get('id')
+                                if not anno_id:
+                                    same_key = f"{video_id}_{frame_key}_{created_by}_{label}"
+                                    if same_key not in legacy_counts:
+                                        legacy_counts[same_key] = 0
+                                    idx = legacy_counts[same_key]
+                                    legacy_counts[same_key] = idx + 1
+                                    anno_id = f"legacy_{created_by}_{label}_{idx}"
+
+                                # 중복 체크: modified_at이 최신인 것만 유지
+                                existing = annotations_by_key[key].get(anno_id)
+                                if existing:
+                                    existing_modified = existing.get('modified_at', existing.get('created_at', ''))
+                                    new_modified = anno.get('modified_at', anno.get('created_at', ''))
+                                    if new_modified <= existing_modified:
+                                        continue  # 기존 것이 더 최신
+
+                                annotations_by_key[key][anno_id] = {
+                                    'projectId': project_id,
+                                    'videoId': video_id,
+                                    'frame': int(frame_key) if frame_key.isdigit() else frame_key,
+                                    'label': label,
+                                    'polygon': anno.get('polygon'),
+                                    'bbox': anno.get('bbox'),
+                                    'box': anno.get('box'),
+                                    'created_by': created_by,
+                                    'created_at': anno.get('created_at'),
+                                    'modified_at': anno.get('modified_at'),
+                                    'id': anno_id
+                                }
+
+                except Exception as e:
+                    logger.warning(f"[BY_CLASSES] Error reading {json_file}: {e}")
+                    continue
+
+        # 결과 리스트로 변환 (limit 적용)
+        annotations = []
+        for key, annos_dict in annotations_by_key.items():
+            for anno in annos_dict.values():
+                annotations.append(anno)
+                if len(annotations) >= limit:
+                    break
+            if len(annotations) >= limit:
+                break
+
+        return jsonify({
+            'success': True,
+            'annotations': annotations,
+            'total': len(annotations)
+        })
+
+    except Exception as e:
+        logger.error(f"[BY_CLASSES] Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/annotations/rename-class', methods=['POST'])
+@require_auth
+def rename_class():
+    """클래스 이름 변경"""
+    try:
+        data = request.get_json()
+        projects = data.get('projects', [])
+        rename_map = data.get('renameMap', {})  # { old_name: new_name }
+
+        if not projects or not rename_map:
+            return jsonify({'success': False, 'error': 'Missing projects or renameMap'}), 400
+
+        updated_count = 0
+
+        for project_id in projects:
+            project_dir = find_project_dir(project_id, request.user_id)
+            if not project_dir:
+                continue
+
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                for json_file in video_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            file_data = json.load(f)
+
+                        modified = False
+
+                        for frame_key, frame_annotations in file_data.items():
+                            if not isinstance(frame_annotations, list):
+                                continue
+
+                            for anno in frame_annotations:
+                                if not isinstance(anno, dict):
+                                    continue
+
+                                old_label = anno.get('label', '')
+                                if old_label in rename_map:
+                                    anno['label'] = rename_map[old_label]
+                                    modified = True
+                                    updated_count += 1
+
+                        if modified:
+                            with open(json_file, 'w', encoding='utf-8') as f:
+                                json.dump(file_data, f, ensure_ascii=False, indent=2)
+
+                    except Exception as e:
+                        logger.warning(f"[RENAME] Error processing {json_file}: {e}")
+                        continue
+
+        logger.info(f"[RENAME] Renamed {updated_count} annotations")
+        return jsonify({
+            'success': True,
+            'updatedCount': updated_count
+        })
+
+    except Exception as e:
+        logger.error(f"[RENAME] Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/annotations/merge-classes', methods=['POST'])
+@require_auth
+def merge_classes():
+    """여러 클래스를 하나로 병합"""
+    try:
+        data = request.get_json()
+        projects = data.get('projects', [])
+        source_classes = data.get('sourceClasses', [])
+        target_class = data.get('targetClass', '')
+
+        if not projects or not source_classes or not target_class:
+            return jsonify({'success': False, 'error': 'Missing required parameters'}), 400
+
+        updated_count = 0
+
+        for project_id in projects:
+            project_dir = find_project_dir(project_id, request.user_id)
+            if not project_dir:
+                continue
+
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                for json_file in video_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            file_data = json.load(f)
+
+                        modified = False
+
+                        for frame_key, frame_annotations in file_data.items():
+                            if not isinstance(frame_annotations, list):
+                                continue
+
+                            for anno in frame_annotations:
+                                if not isinstance(anno, dict):
+                                    continue
+
+                                label = anno.get('label', '')
+                                if label in source_classes:
+                                    anno['label'] = target_class
+                                    modified = True
+                                    updated_count += 1
+
+                        if modified:
+                            with open(json_file, 'w', encoding='utf-8') as f:
+                                json.dump(file_data, f, ensure_ascii=False, indent=2)
+
+                    except Exception as e:
+                        logger.warning(f"[MERGE] Error processing {json_file}: {e}")
+                        continue
+
+        logger.info(f"[MERGE] Merged {updated_count} annotations into '{target_class}'")
+        return jsonify({
+            'success': True,
+            'updatedCount': updated_count
+        })
+
+    except Exception as e:
+        logger.error(f"[MERGE] Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/annotations/delete-classes', methods=['POST'])
+@require_auth
+def delete_classes():
+    """특정 클래스의 모든 어노테이션 삭제"""
+    try:
+        data = request.get_json()
+        projects = data.get('projects', [])
+        classes = data.get('classes', [])
+
+        if not projects or not classes:
+            return jsonify({'success': False, 'error': 'Missing projects or classes'}), 400
+
+        deleted_count = 0
+
+        for project_id in projects:
+            project_dir = find_project_dir(project_id, request.user_id)
+            if not project_dir:
+                continue
+
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                continue
+
+            for video_dir in annotations_dir.iterdir():
+                if not video_dir.is_dir():
+                    continue
+
+                for json_file in video_dir.glob('*.json'):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            file_data = json.load(f)
+
+                        modified = False
+
+                        for frame_key in list(file_data.keys()):
+                            frame_annotations = file_data[frame_key]
+                            if not isinstance(frame_annotations, list):
+                                continue
+
+                            original_count = len(frame_annotations)
+                            file_data[frame_key] = [
+                                anno for anno in frame_annotations
+                                if isinstance(anno, dict) and anno.get('label', '') not in classes
+                            ]
+
+                            removed = original_count - len(file_data[frame_key])
+                            if removed > 0:
+                                deleted_count += removed
+                                modified = True
+
+                            # 빈 프레임 제거
+                            if len(file_data[frame_key]) == 0:
+                                del file_data[frame_key]
+
+                        if modified:
+                            with open(json_file, 'w', encoding='utf-8') as f:
+                                json.dump(file_data, f, ensure_ascii=False, indent=2)
+
+                    except Exception as e:
+                        logger.warning(f"[DELETE] Error processing {json_file}: {e}")
+                        continue
+
+        logger.info(f"[DELETE] Deleted {deleted_count} annotations")
+        return jsonify({
+            'success': True,
+            'deletedCount': deleted_count
+        })
+
+    except Exception as e:
+        logger.error(f"[DELETE] Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/projects/<path:project_id>/videos/<video_id>/annotations/<int:frame_number>', methods=['PUT'])
+@require_auth
+def update_frame_annotations(project_id, video_id, frame_number):
+    """특정 프레임의 어노테이션 업데이트"""
+    try:
+        from datetime import datetime
+
+        data = request.get_json()
+        new_annotations = data.get('annotations', [])
+
+        project_dir = find_project_dir(project_id, request.user_id)
+        if not project_dir:
+            return jsonify({'success': False, 'error': 'Project not found'}), 404
+
+        annotations_dir = project_dir / 'annotations' / video_id
+        if not annotations_dir.exists():
+            annotations_dir.mkdir(parents=True, exist_ok=True)
+
+        # 사용자의 어노테이션 파일 찾기
+        user_id = request.user_id
+        user_file = annotations_dir / f'{user_id}.json'
+
+        # 기존 데이터 로드 또는 새로 생성 (기존 파일 형식 유지)
+        if user_file.exists():
+            with open(user_file, 'r', encoding='utf-8') as f:
+                file_data = json.load(f)
+        else:
+            # 새 파일 생성 시 기존 형식에 맞게 초기화
+            file_data = {
+                'project_id': project_id,
+                'video_id': video_id,
+                'user_id': user_id,
+                'annotations': {}
+            }
+
+        # annotations 키가 없으면 추가
+        if 'annotations' not in file_data:
+            # 기존 데이터를 annotations로 이동
+            old_data = {k: v for k, v in file_data.items() if k not in ['project_id', 'video_id', 'user_id', 'user_name', 'updated_at']}
+            file_data = {
+                'project_id': file_data.get('project_id', project_id),
+                'video_id': file_data.get('video_id', video_id),
+                'user_id': file_data.get('user_id', user_id),
+                'annotations': old_data
+            }
+
+        frame_key = str(frame_number)
+
+        # 어노테이션이 있으면 업데이트, 없으면 삭제
+        if new_annotations:
+            # 수정 시간 및 작성자 추가
+            for anno in new_annotations:
+                anno['modified_at'] = datetime.now().isoformat()
+                anno['modified_by'] = user_id
+                if 'created_by' not in anno:
+                    anno['created_by'] = user_id
+                # 폴리곤이 수정되면 기존 마스크는 더 이상 유효하지 않으므로 제거
+                if 'mask' in anno:
+                    del anno['mask']
+                if 'has_segmentation' in anno:
+                    anno['has_segmentation'] = False
+
+            file_data['annotations'][frame_key] = new_annotations
+        else:
+            # 빈 어노테이션 - 프레임 삭제
+            if frame_key in file_data['annotations']:
+                del file_data['annotations'][frame_key]
+
+        # 업데이트 시간 기록
+        file_data['updated_at'] = datetime.now().isoformat()
+
+        # 파일 저장
+        with open(user_file, 'w', encoding='utf-8') as f:
+            json.dump(file_data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"[UPDATE] Frame {frame_number} updated with {len(new_annotations)} annotations in {user_file}")
+        return jsonify({
+            'success': True,
+            'updatedCount': len(new_annotations)
+        })
+
+    except Exception as e:
+        logger.error(f"[UPDATE] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ============================================
@@ -3516,10 +4422,86 @@ def check_inference_results():
     """추론 결과 존재 여부 확인 (GPU 서버로 전달)"""
     try:
         data = request.get_json()
-        response = requests.post(f"{GPU_SERVER_URL}/api/inference/check", json=data, timeout=5)
+        response = requests.post(f"{GPU_SERVER_URL}/api/inference/check", json=data, timeout=30)
         return jsonify(response.json()), response.status_code
     except Exception as e:
         logger.error(f"[INFERENCE] Check error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inference/results', methods=['POST'])
+def get_inference_results():
+    """추론 결과 JSON 가져오기 (GPU 서버로 전달)"""
+    try:
+        data = request.get_json()
+        response = requests.post(
+            f"{GPU_SERVER_URL}/api/inference/results",
+            json=data,
+            timeout=60  # 큰 JSON 파일 로드에 시간이 걸릴 수 있음
+        )
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        logger.error(f"[INFERENCE] Results error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inference/analyze-motion', methods=['POST'])
+def analyze_motion():
+    """움직임 분석 (GPU 서버로 전달)"""
+    try:
+        data = request.get_json()
+        response = requests.post(
+            f"{GPU_SERVER_URL}/api/inference/analyze-motion",
+            json=data,
+            timeout=300  # 비디오 분석에 시간이 걸릴 수 있음
+        )
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        logger.error(f"[INFERENCE] Analyze motion error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inference/extract-representatives', methods=['POST'])
+def extract_representatives():
+    """대표 프레임 추출 (GPU 서버로 전달)"""
+    try:
+        data = request.get_json()
+        response = requests.post(
+            f"{GPU_SERVER_URL}/api/inference/extract-representatives",
+            json=data,
+            timeout=60
+        )
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        logger.error(f"[INFERENCE] Extract representatives error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inference/export-dataset', methods=['POST'])
+def export_dataset_from_inference():
+    """대표 프레임을 데이터셋으로 내보내기 (GPU 서버로 전달)"""
+    try:
+        data = request.get_json()
+        response = requests.post(
+            f"{GPU_SERVER_URL}/api/inference/export-dataset",
+            json=data,
+            timeout=600  # 대용량 데이터셋 생성에 시간이 걸릴 수 있음
+        )
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        logger.error(f"[INFERENCE] Export dataset error: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -3618,6 +4600,317 @@ def run_video_inference():
 # def serve_static(path):
 #     """정적 파일 서빙"""
 #     return send_from_directory('.', path)
+
+
+@app.route('/api/files/browse', methods=['GET'])
+@require_auth
+def browse_files():
+    """디렉토리 내용 탐색 API"""
+    from pathlib import Path
+
+    try:
+        # 요청된 경로 (기본값: 프로젝트 루트)
+        requested_path = request.args.get('path', '')
+        file_filter = request.args.get('filter', '')  # 예: '.pt,.pth'
+
+        # 기본 디렉토리 (프로젝트 루트)
+        base_dir = Path(__file__).parent.resolve()
+
+        # 요청된 경로 처리
+        if requested_path:
+            if requested_path.startswith('/'):
+                # 절대 경로
+                target_path = Path(requested_path)
+            else:
+                # 상대 경로 (.models 등)
+                target_path = base_dir / requested_path
+        else:
+            target_path = base_dir
+
+        # 경로 정규화
+        target_path = target_path.resolve()
+
+        # 디렉토리 존재 확인
+        if not target_path.exists():
+            return jsonify({
+                'success': False,
+                'error': f'Path does not exist: {target_path}'
+            }), 404
+
+        if not target_path.is_dir():
+            return jsonify({
+                'success': False,
+                'error': 'Path is not a directory'
+            }), 400
+
+        # 파일 필터 파싱
+        extensions = []
+        if file_filter:
+            extensions = [ext.strip().lower() for ext in file_filter.split(',')]
+
+        # 디렉토리 내용 수집
+        items = []
+
+        # 상위 디렉토리 (루트가 아닌 경우)
+        if target_path != Path('/'):
+            items.append({
+                'name': '..',
+                'type': 'directory',
+                'path': str(target_path.parent)
+            })
+
+        # 디렉토리 먼저, 그 다음 파일 (알파벳 순)
+        dirs = []
+        files = []
+
+        for item in sorted(target_path.iterdir(), key=lambda x: x.name.lower()):
+            if item.name.startswith('.') and item.name != '..':
+                continue  # 숨김 파일 제외 (..는 예외)
+
+            if item.is_dir():
+                dirs.append({
+                    'name': item.name,
+                    'type': 'directory',
+                    'path': str(item)
+                })
+            elif item.is_file():
+                # 필터 적용
+                if extensions:
+                    if not any(item.name.lower().endswith(ext) for ext in extensions):
+                        continue
+
+                # 파일 크기
+                try:
+                    size = item.stat().st_size
+                    if size < 1024:
+                        size_str = f'{size} B'
+                    elif size < 1024 * 1024:
+                        size_str = f'{size / 1024:.1f} KB'
+                    elif size < 1024 * 1024 * 1024:
+                        size_str = f'{size / (1024 * 1024):.1f} MB'
+                    else:
+                        size_str = f'{size / (1024 * 1024 * 1024):.1f} GB'
+                except:
+                    size_str = ''
+
+                files.append({
+                    'name': item.name,
+                    'type': 'file',
+                    'path': str(item),
+                    'size': size_str
+                })
+
+        items.extend(dirs)
+        items.extend(files)
+
+        return jsonify({
+            'success': True,
+            'current_path': str(target_path),
+            'items': items
+        })
+
+    except PermissionError:
+        return jsonify({
+            'success': False,
+            'error': 'Permission denied'
+        }), 403
+    except Exception as e:
+        logger.error(f"[FILES] Browse error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/inference/save-annotations', methods=['POST'])
+@require_auth
+def save_inference_as_annotations():
+    """추론 결과를 어노테이션으로 저장"""
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    try:
+        data = request.get_json()
+        job_id = data.get('job_id')
+        project_id = data.get('project_id')
+        video_id = data.get('video_id')
+        request_output_path = data.get('output_path')  # 프론트엔드에서 전달받은 output_path
+        user_id = request.user_id
+
+        logger.info(f"[INFERENCE SAVE] Request - job_id: {job_id}, project: {project_id}, video: {video_id}, output_path: {request_output_path}, user: {user_id}")
+
+        if not all([job_id, project_id, video_id]):
+            return jsonify({
+                'success': False,
+                'error': 'Missing required parameters: job_id, project_id, video_id'
+            }), 400
+
+        # 추론 결과 파일 경로 결정
+        result_file = None
+
+        # 1. GPU 서버에서 추론 결과 파일 경로 가져오기 시도
+        try:
+            status_response = requests.get(
+                f"{GPU_SERVER_URL}/api/inference/status/{job_id}",
+                timeout=10
+            )
+            if status_response.status_code == 200:
+                job_status = status_response.json()
+                if job_status.get('status') == 'completed':
+                    result_file = job_status.get('result_file')
+                    if not result_file:
+                        output_path = job_status.get('output_path')
+                        if output_path:
+                            result_file = os.path.join(output_path, 'inference_results.json')
+                            logger.info(f"[INFERENCE SAVE] Constructed result_file from GPU server output_path: {result_file}")
+                else:
+                    logger.warning(f"[INFERENCE SAVE] Job status: {job_status.get('status')}")
+            else:
+                logger.warning(f"[INFERENCE SAVE] GPU server returned status {status_response.status_code}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"[INFERENCE SAVE] Failed to get job status from GPU server: {e}")
+
+        # 2. GPU 서버에서 못 찾았으면 프론트엔드에서 전달받은 output_path 사용
+        if not result_file and request_output_path:
+            result_file = os.path.join(request_output_path, 'inference_results.json')
+            logger.info(f"[INFERENCE SAVE] Using result_file from request output_path: {result_file}")
+
+        # 3. 파일 존재 확인
+        if not result_file or not os.path.exists(result_file):
+            logger.error(f"[INFERENCE SAVE] Result file not found: {result_file}")
+            return jsonify({
+                'success': False,
+                'error': f'Inference result file not found: {result_file}'
+            }), 404
+
+        # 추론 결과 파일 읽기
+        with open(result_file, 'r') as f:
+            inference_data = json.load(f)
+
+        model_type = inference_data.get('model_type', 'unknown')
+        results = inference_data.get('results', [])
+        fps = inference_data.get('fps', 30)
+
+        logger.info(f"[INFERENCE SAVE] Loaded results - {len(results)} frames, model: {model_type}")
+
+        # 어노테이션 파일 경로 결정
+        annotation_dir = BASE_PROJECTS_DIR / user_id / project_id / 'annotations' / video_id
+        annotation_dir.mkdir(parents=True, exist_ok=True)
+        annotation_file = annotation_dir / 'admin.json'
+
+        # 기존 어노테이션 로드 또는 새로 생성
+        existing_annotations = {}
+        if annotation_file.exists():
+            with open(annotation_file, 'r') as f:
+                existing_annotations = json.load(f)
+
+        # 추론 결과를 어노테이션 형식으로 변환
+        annotations_by_frame = existing_annotations.get('annotations', {})
+        now = datetime.now().isoformat()
+        total_added = 0
+
+        for frame_result in results:
+            frame_number = frame_result.get('frame_number', 0)
+            frame_key = str(frame_number)
+
+            # 프레임 타임스탬프 계산
+            timestamp = frame_number / fps if fps > 0 else 0
+
+            # 기존 프레임 데이터 가져오기
+            frame_data = annotations_by_frame.get(frame_key, {
+                'timestamp': timestamp,
+                'frame_number': frame_number,
+                'annotations': []
+            })
+
+            if model_type == 'yolo':
+                # YOLO 결과 처리
+                detections = frame_result.get('detections', [])
+                for det in detections:
+                    annotation = {
+                        'id': f'inference_{job_id}_{frame_number}_{len(frame_data["annotations"])}',
+                        'label': det.get('label', 'unknown'),
+                        'category': det.get('label', 'unknown'),
+                        'class_id': det.get('class_id', 0),
+                        'confidence': det.get('confidence', 0),
+                        'box': det.get('box'),  # [x, y, w, h]
+                        'created_by': f'inference_{model_type}',
+                        'created_at': now,
+                        'modified_at': now,
+                        'source': 'inference',
+                        'inference_job_id': job_id
+                    }
+
+                    # 폴리곤이 있으면 추가
+                    if det.get('polygon'):
+                        annotation['polygon'] = det['polygon']
+
+                    frame_data['annotations'].append(annotation)
+                    total_added += 1
+            else:
+                # SegFormer 결과 처리 (클래스별 마스크)
+                classes = frame_result.get('classes', [])
+                class_names = {0: 'background', 1: 'rust', 2: 'scale'}
+
+                for cls_id in classes:
+                    if cls_id == 0:  # 배경 제외
+                        continue
+
+                    annotation = {
+                        'id': f'inference_{job_id}_{frame_number}_{cls_id}',
+                        'label': class_names.get(cls_id, f'class_{cls_id}'),
+                        'category': class_names.get(cls_id, f'class_{cls_id}'),
+                        'class_id': cls_id,
+                        'created_by': f'inference_{model_type}',
+                        'created_at': now,
+                        'modified_at': now,
+                        'source': 'inference',
+                        'inference_job_id': job_id
+                    }
+                    frame_data['annotations'].append(annotation)
+                    total_added += 1
+
+            # 어노테이션이 있는 경우에만 저장
+            if frame_data['annotations']:
+                annotations_by_frame[frame_key] = frame_data
+
+        # 어노테이션 파일 저장
+        output_data = {
+            'video_id': video_id,
+            'project_id': project_id,
+            'created_by': f'inference_{model_type}',
+            'created_at': now,
+            'modified_at': now,
+            'inference_source': {
+                'job_id': job_id,
+                'model_type': model_type,
+                'result_file': result_file
+            },
+            'annotations': annotations_by_frame
+        }
+
+        with open(annotation_file, 'w') as f:
+            json.dump(output_data, f, indent=2)
+
+        logger.info(f"[INFERENCE SAVE] Saved {total_added} annotations to {annotation_file}")
+
+        return jsonify({
+            'success': True,
+            'message': f'Saved {total_added} annotations from inference results',
+            'total_annotations': total_added,
+            'total_frames': len(annotations_by_frame),
+            'annotation_file': str(annotation_file)
+        })
+
+    except Exception as e:
+        logger.error(f"[INFERENCE SAVE] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 if __name__ == '__main__':
@@ -3791,10 +5084,14 @@ if __name__ == '__main__':
     cleanup_thread.start()
 
     logger.info("🚀 Starting Client Backend (Proxy Mode)...")
-    logger.info(f"📡 API Server: http://localhost:5001")
+    logger.info(f"📡 API Server: http://localhost:5003")
     logger.info(f"🔌 GPU Server: {GPU_SERVER_URL}")
     logger.info(f"👥 User Management: Enabled")
     logger.info(f"🔐 Default Admin: admin/admin123")
+
+    # 캐시 워밍업 시작 (백그라운드에서 비동기 실행)
+    logger.info("🔥 Starting cache warmup in background...")
+    warmup_caches()
 
     # 등록된 라우트 목록 출력 (디버깅)
     logger.info("📋 Registered routes:")

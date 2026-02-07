@@ -30,6 +30,10 @@ segformer_processor = None
 segformer_device = None
 ai_initialized = False
 
+# YOLO 모델 전역 변수
+yolo_model = None
+yolo_initialized = False
+
 # 추론 락 (멀티스레드 환경에서 동시 추론 방지)
 inference_lock = threading.Lock()
 inference_stats = {
@@ -634,7 +638,7 @@ def load_ai_model():
             print(f"[AI] Loading custom model from: {model_path}")
 
             # 체크포인트에서 모델 아키텍처 정보 읽기 (pipe_video_inspector.py와 동일)
-            checkpoint = torch.load(model_path, map_location=segformer_device)
+            checkpoint = torch.load(model_path, map_location=segformer_device, weights_only=False)
             if isinstance(checkpoint, dict) and 'model_name' in checkpoint:
                 base_model_name = checkpoint['model_name']
                 print(f"[AI] Using model architecture from checkpoint: {base_model_name}")
@@ -657,7 +661,7 @@ def load_ai_model():
         # 커스텀 가중치 로드
         if model_path:
             try:
-                checkpoint = torch.load(model_path, map_location=segformer_device)
+                checkpoint = torch.load(model_path, map_location=segformer_device, weights_only=False)
 
                 # state_dict 추출
                 if 'model_state_dict' in checkpoint:
@@ -687,6 +691,92 @@ def load_ai_model():
         import traceback
         traceback.print_exc()
         return False
+
+
+def load_yolo_model(model_path=None):
+    """YOLO 모델 로드"""
+    global yolo_model, yolo_initialized, segformer_device
+
+    try:
+        from ultralytics import YOLO
+
+        print("[AI] Initializing YOLO model...")
+
+        # 디바이스 설정 (SegFormer와 공유)
+        if segformer_device is None:
+            if torch.cuda.is_available():
+                segformer_device = torch.device("cuda")
+                print(f"[AI] YOLO using GPU")
+            else:
+                segformer_device = torch.device("cpu")
+                print("[AI] YOLO using CPU")
+
+        # 모델 경로 결정
+        if model_path and os.path.exists(model_path):
+            print(f"[AI] Loading custom YOLO model from: {model_path}")
+            yolo_model = YOLO(model_path)
+        else:
+            # 기본 경로에서 모델 찾기
+            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            default_paths = [
+                os.path.join(script_dir, 'yolo_best.pt'),
+                os.path.join(script_dir, 'best.pt'),
+                os.path.join(script_dir, 'runs', 'segment', 'train', 'weights', 'best.pt'),
+            ]
+
+            model_found = False
+            for path in default_paths:
+                if os.path.exists(path):
+                    print(f"[AI] Loading YOLO model from: {path}")
+                    yolo_model = YOLO(path)
+                    model_found = True
+                    break
+
+            if not model_found:
+                # YOLOv8 사전학습 모델 사용 (세그멘테이션)
+                print("[AI] No custom YOLO model found, using pretrained yolov8n-seg")
+                yolo_model = YOLO('yolov8n-seg.pt')
+
+        yolo_initialized = True
+        print("[AI] YOLO model initialized successfully")
+        return True
+
+    except ImportError:
+        print("[AI] Error: ultralytics package not installed. Run: pip install ultralytics")
+        return False
+    except Exception as e:
+        print(f"[AI] Error initializing YOLO model: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+@app.route('/api/ai/initialize/yolo', methods=['POST'])
+def initialize_yolo():
+    """YOLO 모델 초기화 API 엔드포인트"""
+    global yolo_initialized
+
+    data = request.json or {}
+    model_path = data.get('model_path')
+
+    if yolo_initialized:
+        return jsonify({
+            'success': True,
+            'message': 'YOLO model already initialized'
+        })
+
+    success = load_yolo_model(model_path)
+
+    if success:
+        return jsonify({
+            'success': True,
+            'message': 'YOLO model initialized'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to initialize YOLO model'
+        }), 500
 
 
 @app.route('/api/ai/initialize', methods=['POST'])
@@ -1568,7 +1658,7 @@ def cancel_inference(job_id):
 
 @app.route('/api/inference/preview/<job_id>', methods=['GET'])
 def get_inference_preview(job_id):
-    """추론 작업의 최신 처리된 프레임 이미지 반환"""
+    """추론 작업의 최신 처리된 프레임 이미지 반환 (메모리에서)"""
     with job_lock:
         if job_id not in active_jobs:
             return jsonify({
@@ -1577,17 +1667,21 @@ def get_inference_preview(job_id):
             }), 404
 
         job = active_jobs[job_id]
-        latest_frame_path = job.get('latest_frame_path')
+        latest_frame = job.get('latest_frame')
 
-        if not latest_frame_path or not os.path.exists(latest_frame_path):
+        if not latest_frame:
             return jsonify({
                 'success': False,
                 'error': 'No preview frame available yet'
             }), 404
 
-    # 이미지 파일 반환
+        # 메모리에서 바로 반환
+        frame_data = latest_frame
+
+    # 이미지 데이터 반환
     try:
-        return send_file(latest_frame_path, mimetype='image/jpeg')
+        from io import BytesIO
+        return send_file(BytesIO(frame_data), mimetype='image/jpeg')
     except Exception as e:
         return jsonify({
             'success': False,
@@ -1597,7 +1691,7 @@ def get_inference_preview(job_id):
 
 @app.route('/api/inference/frames/<job_id>', methods=['GET'])
 def get_inference_frames(job_id):
-    """추론 작업의 처리된 프레임 정보 반환 (비디오 플레이어용)"""
+    """추론 작업의 처리된 프레임 정보 반환"""
     with job_lock:
         if job_id not in active_jobs:
             return jsonify({
@@ -1606,14 +1700,13 @@ def get_inference_frames(job_id):
             }), 404
 
         job = active_jobs[job_id]
-        frame_paths = job.get('frame_paths', [])
 
         return jsonify({
             'success': True,
             'job_id': job_id,
             'status': job['status'],
             'total_frames': job.get('total_frames', 0),
-            'processed_frames': len(frame_paths),
+            'processed_frames': job.get('current_frame', 0),
             'fps': job.get('fps', 30),
             'current_frame': job.get('current_frame', 0)
         })
@@ -1621,39 +1714,13 @@ def get_inference_frames(job_id):
 
 @app.route('/api/inference/frame/<job_id>/<int:frame_index>', methods=['GET'])
 def get_inference_frame(job_id, frame_index):
-    """특정 프레임 이미지 반환 (비디오 플레이어용)"""
-    with job_lock:
-        if job_id not in active_jobs:
-            return jsonify({
-                'success': False,
-                'error': 'Job not found'
-            }), 404
-
-        job = active_jobs[job_id]
-        frame_paths = job.get('frame_paths', [])
-
-        if frame_index < 0 or frame_index >= len(frame_paths):
-            return jsonify({
-                'success': False,
-                'error': f'Frame index {frame_index} out of range (0-{len(frame_paths)-1})'
-            }), 404
-
-        frame_path = frame_paths[frame_index]
-
-    # 이미지 파일 반환
-    try:
-        if not os.path.exists(frame_path):
-            return jsonify({
-                'success': False,
-                'error': 'Frame file not found'
-            }), 404
-
-        return send_file(frame_path, mimetype='image/jpeg')
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+    """특정 프레임 이미지 반환 - 현재 미지원 (JSON 결과만 저장)"""
+    # 프레임 이미지는 더 이상 저장하지 않음
+    # 필요 시 원본 비디오에서 추출하여 사용
+    return jsonify({
+        'success': False,
+        'error': 'Individual frame images are not stored. Use inference_results.json and original video.'
+    }), 404
 
 
 @app.route('/api/inference/check', methods=['POST'])
@@ -1686,10 +1753,9 @@ def check_inference_results():
                 with open(result_json_path, 'r') as f:
                     result_data = json.load(f)
 
-                # 프레임 파일들이 실제로 존재하는지 확인
-                frame_count = 0
-                frame_files = sorted([f for f in os.listdir(output_path) if f.startswith('frame_') and f.endswith('.jpg')])
-                frame_count = len(frame_files)
+                # results 키에서 프레임 수 확인 (JSON 기반 결과)
+                results = result_data.get('results', {})
+                frame_count = len(results) if isinstance(results, dict) else result_data.get('total_frames', 0)
 
                 return jsonify({
                     'success': True,
@@ -1698,7 +1764,10 @@ def check_inference_results():
                     'total_frames': result_data.get('total_frames', frame_count),
                     'fps': result_data.get('fps', 30),
                     'video_path': result_data.get('video_path', video_path),
-                    'frame_count': frame_count
+                    'frame_count': frame_count,
+                    'width': result_data.get('width'),
+                    'height': result_data.get('height'),
+                    'model_type': result_data.get('model_type')
                 })
             except Exception as e:
                 return jsonify({
@@ -1721,7 +1790,7 @@ def check_inference_results():
 
 @app.route('/api/inference/completed-frame', methods=['POST'])
 def get_completed_frame():
-    """완료된 추론 결과 프레임 이미지 반환 (파일 경로 기반)"""
+    """완료된 추론 결과 프레임 이미지 반환 (파일 경로 기반) - deprecated"""
     try:
         data = request.get_json()
         frame_path = data.get('frame_path')
@@ -1744,9 +1813,490 @@ def get_completed_frame():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/inference/results', methods=['POST'])
+def get_inference_results():
+    """추론 결과 JSON 반환 (클라이언트 렌더링용)"""
+    try:
+        data = request.get_json()
+        result_path = data.get('result_path')
+
+        if not result_path:
+            return jsonify({'success': False, 'error': 'Result path required'}), 400
+
+        # 상대 경로를 절대 경로로 변환
+        if not os.path.isabs(result_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            result_path = os.path.join(base_dir, result_path)
+
+        result_json_path = os.path.join(result_path, 'inference_results.json')
+
+        if not os.path.exists(result_json_path):
+            return jsonify({'success': False, 'error': 'Result file not found'}), 404
+
+        # JSON 파일 반환
+        with open(result_json_path, 'r') as f:
+            result_data = json.load(f)
+
+        return jsonify({
+            'success': True,
+            'data': result_data
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/inference/analyze-motion', methods=['POST'])
+def analyze_motion():
+    """비디오 움직임 분석 및 정지 구간 탐지 (스트리밍 진행 상황 지원)"""
+    data = request.get_json()
+    result_path = data.get('result_path')
+    motion_threshold = data.get('motion_threshold', 5.0)
+    min_segment_duration = data.get('min_segment_duration', 1.0)
+    stream_progress = data.get('stream_progress', False)
+
+    if not result_path:
+        return jsonify({'success': False, 'error': 'Result path required'}), 400
+
+    # 상대 경로를 절대 경로로 변환
+    if not os.path.isabs(result_path):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        result_path = os.path.join(base_dir, result_path)
+
+    result_json_path = os.path.join(result_path, 'inference_results.json')
+
+    if not os.path.exists(result_json_path):
+        return jsonify({'success': False, 'error': 'Result file not found'}), 404
+
+    def generate():
+        try:
+            # 추론 결과 로드
+            with open(result_json_path, 'r') as f:
+                result_data = json.load(f)
+
+            video_path = result_data.get('video_path')
+            fps = result_data.get('fps', 25)
+            results = result_data.get('results', [])
+
+            if not video_path or not os.path.exists(video_path):
+                yield f"data: {json.dumps({'success': False, 'error': f'Video not found: {video_path}'})}\n\n"
+                return
+
+            print(f"[MOTION] Analyzing video: {video_path}", flush=True)
+
+            # 비디오 열기
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                yield f"data: {json.dumps({'success': False, 'error': 'Failed to open video'})}\n\n"
+                return
+
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            max_frames = min(total_frames, len(results)) if results else total_frames
+
+            # 프레임 간 움직임 계산 (5프레임마다 샘플링)
+            sample_interval = 5
+            motion_scores = []
+            prev_gray = None
+            last_progress = -1
+
+            for frame_idx in range(0, max_frames, sample_interval):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.resize(gray, (320, 180))
+
+                if prev_gray is not None:
+                    diff = cv2.absdiff(gray, prev_gray)
+                    motion = float(diff.mean())
+                    motion_scores.append({'frame': frame_idx, 'motion': motion})
+
+                prev_gray = gray
+
+                # 진행 상황 전송 (5% 단위)
+                progress = int((frame_idx / max_frames) * 100)
+                if progress >= last_progress + 5:
+                    last_progress = progress
+                    yield f"data: {json.dumps({'progress': progress, 'current_frame': frame_idx, 'total_frames': max_frames})}\n\n"
+
+            cap.release()
+
+            # 정지 구간 탐지
+            segments = []
+            segment_start = None
+
+            for item in motion_scores:
+                frame_idx = item['frame']
+                motion = item['motion']
+
+                if motion < motion_threshold:
+                    if segment_start is None:
+                        segment_start = frame_idx
+                else:
+                    if segment_start is not None:
+                        segment_end = frame_idx
+                        duration = (segment_end - segment_start) / fps
+                        if duration >= min_segment_duration:
+                            segments.append({
+                                'start': segment_start,
+                                'end': segment_end,
+                                'duration': round(duration, 1),
+                                'start_time': round(segment_start / fps, 1),
+                                'end_time': round(segment_end / fps, 1)
+                            })
+                        segment_start = None
+
+            # 마지막 구간 처리
+            if segment_start is not None:
+                segment_end = motion_scores[-1]['frame'] if motion_scores else total_frames
+                duration = (segment_end - segment_start) / fps
+                if duration >= min_segment_duration:
+                    segments.append({
+                        'start': segment_start,
+                        'end': segment_end,
+                        'duration': round(duration, 1),
+                        'start_time': round(segment_start / fps, 1),
+                        'end_time': round(segment_end / fps, 1)
+                    })
+
+            print(f"[MOTION] Found {len(segments)} stationary segments", flush=True)
+
+            # 최종 결과 전송
+            yield f"data: {json.dumps({'success': True, 'total_frames': total_frames, 'fps': fps, 'motion_threshold': motion_threshold, 'min_segment_duration': min_segment_duration, 'segments': segments, 'segment_count': len(segments), 'motion_stats': {'min': round(min(m['motion'] for m in motion_scores), 2) if motion_scores else 0, 'max': round(max(m['motion'] for m in motion_scores), 2) if motion_scores else 0, 'avg': round(sum(m['motion'] for m in motion_scores) / len(motion_scores), 2) if motion_scores else 0}})}\n\n"
+
+        except Exception as e:
+            print(f"[MOTION] Error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'success': False, 'error': str(e)})}\n\n"
+
+    if stream_progress:
+        return Response(generate(), mimetype='text/event-stream')
+    else:
+        # 기존 방식 (스트리밍 없이)
+        try:
+            with open(result_json_path, 'r') as f:
+                result_data = json.load(f)
+
+            video_path = result_data.get('video_path')
+            fps = result_data.get('fps', 25)
+            results = result_data.get('results', [])
+
+            if not video_path or not os.path.exists(video_path):
+                return jsonify({'success': False, 'error': f'Video not found: {video_path}'}), 404
+
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return jsonify({'success': False, 'error': 'Failed to open video'}), 500
+
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            max_frames = min(total_frames, len(results)) if results else total_frames
+            sample_interval = 5
+            motion_scores = []
+            prev_gray = None
+
+            for frame_idx in range(0, max_frames, sample_interval):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray = cv2.resize(gray, (320, 180))
+                if prev_gray is not None:
+                    diff = cv2.absdiff(gray, prev_gray)
+                    motion = float(diff.mean())
+                    motion_scores.append({'frame': frame_idx, 'motion': motion})
+                prev_gray = gray
+
+            cap.release()
+
+            segments = []
+            segment_start = None
+            for item in motion_scores:
+                frame_idx = item['frame']
+                motion = item['motion']
+                if motion < motion_threshold:
+                    if segment_start is None:
+                        segment_start = frame_idx
+                else:
+                    if segment_start is not None:
+                        segment_end = frame_idx
+                        duration = (segment_end - segment_start) / fps
+                        if duration >= min_segment_duration:
+                            segments.append({'start': segment_start, 'end': segment_end, 'duration': round(duration, 1), 'start_time': round(segment_start / fps, 1), 'end_time': round(segment_end / fps, 1)})
+                        segment_start = None
+
+            if segment_start is not None:
+                segment_end = motion_scores[-1]['frame'] if motion_scores else total_frames
+                duration = (segment_end - segment_start) / fps
+                if duration >= min_segment_duration:
+                    segments.append({'start': segment_start, 'end': segment_end, 'duration': round(duration, 1), 'start_time': round(segment_start / fps, 1), 'end_time': round(segment_end / fps, 1)})
+
+            return jsonify({'success': True, 'total_frames': total_frames, 'fps': fps, 'motion_threshold': motion_threshold, 'min_segment_duration': min_segment_duration, 'segments': segments, 'segment_count': len(segments), 'motion_stats': {'min': round(min(m['motion'] for m in motion_scores), 2) if motion_scores else 0, 'max': round(max(m['motion'] for m in motion_scores), 2) if motion_scores else 0, 'avg': round(sum(m['motion'] for m in motion_scores) / len(motion_scores), 2) if motion_scores else 0}})
+
+        except Exception as e:
+            print(f"[MOTION] Error: {e}", flush=True)
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/inference/extract-representatives', methods=['POST'])
+def extract_representative_frames():
+    """정지 구간에서 대표 프레임 추출"""
+    try:
+        data = request.get_json()
+        result_path = data.get('result_path')
+        segments = data.get('segments', [])
+        frames_per_segment = data.get('frames_per_segment', 3)
+        min_confidence = data.get('min_confidence', 0.5)
+
+        if not result_path:
+            return jsonify({'success': False, 'error': 'Result path required'}), 400
+
+        if not segments:
+            return jsonify({'success': False, 'error': 'No segments provided'}), 400
+
+        # 상대 경로를 절대 경로로 변환
+        if not os.path.isabs(result_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            result_path = os.path.join(base_dir, result_path)
+
+        result_json_path = os.path.join(result_path, 'inference_results.json')
+
+        if not os.path.exists(result_json_path):
+            return jsonify({'success': False, 'error': 'Result file not found'}), 404
+
+        # 추론 결과 로드
+        with open(result_json_path, 'r') as f:
+            result_data = json.load(f)
+
+        fps = result_data.get('fps', 25)
+        results = result_data.get('results', [])
+
+        # 프레임별 검출 수 계산 (confidence 필터링 적용)
+        frame_detection_counts = {}
+        frame_detections = {}
+        for item in results:
+            frame_num = item['frame_number']
+            detections = [d for d in item.get('detections', []) if d.get('confidence', 0) >= min_confidence]
+            frame_detection_counts[frame_num] = len(detections)
+            frame_detections[frame_num] = detections
+
+        # 각 구간에서 검출이 가장 많은 프레임 선택
+        representative_frames = []
+
+        for seg_idx, segment in enumerate(segments):
+            start = segment['start']
+            end = segment['end']
+
+            # 구간 내 프레임들의 검출 수 확인
+            segment_frames = []
+            for frame_num in range(start, end + 1):
+                if frame_num in frame_detection_counts:
+                    segment_frames.append((frame_num, frame_detection_counts[frame_num]))
+
+            # 검출 수 기준 상위 N개 선택
+            segment_frames.sort(key=lambda x: -x[1])
+            top_frames = segment_frames[:frames_per_segment]
+
+            for frame_num, det_count in top_frames:
+                if det_count > 0:  # 검출이 있는 프레임만
+                    representative_frames.append({
+                        'segment_index': seg_idx,
+                        'frame_number': frame_num,
+                        'time': round(frame_num / fps, 2),
+                        'detection_count': det_count,
+                        'detections': frame_detections.get(frame_num, [])
+                    })
+
+        # 프레임 번호 순으로 정렬
+        representative_frames.sort(key=lambda x: x['frame_number'])
+
+        total_detections = sum(f['detection_count'] for f in representative_frames)
+
+        print(f"[EXTRACT] Selected {len(representative_frames)} representative frames with {total_detections} detections", flush=True)
+
+        return jsonify({
+            'success': True,
+            'frames_per_segment': frames_per_segment,
+            'min_confidence': min_confidence,
+            'total_frames': len(representative_frames),
+            'total_detections': total_detections,
+            'representative_frames': representative_frames
+        })
+
+    except Exception as e:
+        print(f"[EXTRACT] Error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/inference/export-dataset', methods=['POST'])
+def export_dataset_from_inference():
+    """대표 프레임을 데이터셋으로 내보내기"""
+    try:
+        data = request.get_json()
+        result_path = data.get('result_path')
+        representative_frames = data.get('representative_frames', [])
+        output_dir = data.get('output_dir', 'extracted_dataset')
+        format_type = data.get('format', 'yolo')  # 'yolo', 'coco', 'annotation'
+        split_ratio = data.get('split_ratio', [0.8, 0.1, 0.1])  # train, val, test
+
+        if not result_path:
+            return jsonify({'success': False, 'error': 'Result path required'}), 400
+
+        if not representative_frames:
+            return jsonify({'success': False, 'error': 'No frames provided'}), 400
+
+        # 상대 경로를 절대 경로로 변환
+        if not os.path.isabs(result_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            result_path = os.path.join(base_dir, result_path)
+
+        result_json_path = os.path.join(result_path, 'inference_results.json')
+
+        if not os.path.exists(result_json_path):
+            return jsonify({'success': False, 'error': 'Result file not found'}), 404
+
+        # 추론 결과 로드
+        with open(result_json_path, 'r') as f:
+            result_data = json.load(f)
+
+        video_path = result_data.get('video_path')
+        width = result_data.get('width', 1920)
+        height = result_data.get('height', 1080)
+
+        if not video_path or not os.path.exists(video_path):
+            return jsonify({'success': False, 'error': f'Video not found: {video_path}'}), 404
+
+        # 출력 디렉토리 생성
+        if not os.path.isabs(output_dir):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            output_dir = os.path.join(base_dir, output_dir)
+
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_dir = f"{output_dir}_{timestamp}"
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 비디오 열기
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return jsonify({'success': False, 'error': 'Failed to open video'}), 500
+
+        # 클래스 목록 수집
+        class_names = set()
+        for frame_data in representative_frames:
+            for det in frame_data.get('detections', []):
+                class_names.add(det.get('label', 'unknown'))
+        class_names = sorted(list(class_names))
+        class_to_id = {name: idx for idx, name in enumerate(class_names)}
+
+        print(f"[EXPORT] Classes: {class_names}", flush=True)
+
+        # 데이터 분할
+        import random
+        random.shuffle(representative_frames)
+
+        n_total = len(representative_frames)
+        n_train = int(n_total * split_ratio[0])
+        n_val = int(n_total * split_ratio[1])
+
+        splits = {
+            'train': representative_frames[:n_train],
+            'val': representative_frames[n_train:n_train + n_val],
+            'test': representative_frames[n_train + n_val:]
+        }
+
+        stats = {'train': 0, 'val': 0, 'test': 0, 'total_images': 0, 'total_annotations': 0}
+
+        if format_type == 'yolo':
+            # YOLO 형식으로 내보내기
+            for split_name, frames in splits.items():
+                img_dir = os.path.join(output_dir, split_name, 'images')
+                lbl_dir = os.path.join(output_dir, split_name, 'labels')
+                os.makedirs(img_dir, exist_ok=True)
+                os.makedirs(lbl_dir, exist_ok=True)
+
+                for frame_data in frames:
+                    frame_num = frame_data['frame_number']
+                    detections = frame_data.get('detections', [])
+
+                    # 프레임 추출
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+
+                    # 이미지 저장
+                    img_filename = f"frame_{frame_num:06d}.jpg"
+                    img_path = os.path.join(img_dir, img_filename)
+                    cv2.imwrite(img_path, frame)
+
+                    # 라벨 파일 생성 (YOLO 세그멘테이션 형식)
+                    lbl_filename = f"frame_{frame_num:06d}.txt"
+                    lbl_path = os.path.join(lbl_dir, lbl_filename)
+
+                    with open(lbl_path, 'w') as f:
+                        for det in detections:
+                            class_id = class_to_id.get(det.get('label', 'unknown'), 0)
+                            polygon = det.get('polygon', [])
+
+                            if polygon:
+                                # YOLO 세그멘테이션: class_id x1 y1 x2 y2 ... (normalized)
+                                coords = []
+                                for point in polygon:
+                                    x_norm = point[0] / width
+                                    y_norm = point[1] / height
+                                    coords.extend([x_norm, y_norm])
+
+                                coord_str = ' '.join(f"{c:.6f}" for c in coords)
+                                f.write(f"{class_id} {coord_str}\n")
+                                stats['total_annotations'] += 1
+
+                    stats[split_name] += 1
+                    stats['total_images'] += 1
+
+            # data.yaml 생성
+            yaml_content = f"""# Dataset exported from inference results
+# Generated: {timestamp}
+
+path: {output_dir}
+train: train/images
+val: val/images
+test: test/images
+
+nc: {len(class_names)}
+names: {class_names}
+"""
+            with open(os.path.join(output_dir, 'data.yaml'), 'w') as f:
+                f.write(yaml_content)
+
+        cap.release()
+
+        print(f"[EXPORT] Completed: {stats}", flush=True)
+
+        return jsonify({
+            'success': True,
+            'output_dir': output_dir,
+            'format': format_type,
+            'classes': class_names,
+            'stats': stats
+        })
+
+    except Exception as e:
+        print(f"[EXPORT] Error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 def process_video_inference(job_id, video_path, output_path, model_type):
-    """백그라운드에서 비디오 추론 실행"""
-    global segformer_model, segformer_processor, segformer_device
+    """백그라운드에서 비디오 추론 실행 (SegFormer 또는 YOLO)"""
+    global segformer_model, segformer_processor, segformer_device, yolo_model
 
     try:
         # 비디오 열기
@@ -1766,12 +2316,24 @@ def process_video_inference(job_id, video_path, output_path, model_type):
         with job_lock:
             active_jobs[job_id]['total_frames'] = total_frames
             active_jobs[job_id]['fps'] = fps
-            active_jobs[job_id]['frame_paths'] = []  # 모든 프레임 경로 저장
-
+            active_jobs[job_id]['latest_frame'] = None  # 최신 프레임 (메모리, 미리보기용)
 
         # 결과 저장용
         results = []
         frame_count = 0
+        preview_interval = 10  # 미리보기는 10프레임마다 업데이트
+
+        # 클래스별 색상 정의 (YOLO용)
+        yolo_colors = [
+            (255, 0, 0),      # 빨강
+            (255, 255, 0),    # 노랑
+            (0, 255, 0),      # 초록
+            (0, 255, 255),    # 청록
+            (255, 0, 255),    # 마젠타
+            (128, 0, 255),    # 보라
+            (255, 128, 0),    # 주황
+            (0, 128, 255),    # 하늘
+        ]
 
         # 프레임별 추론
         while True:
@@ -1789,62 +2351,146 @@ def process_video_inference(job_id, video_path, output_path, model_type):
             # OpenCV BGR -> RGB 변환
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # 추론 실행
-            inputs = segformer_processor(images=frame_rgb, return_tensors="pt")
-            inputs = {k: v.to(segformer_device) for k, v in inputs.items()}
+            # 미리보기 생성 여부 (N프레임마다)
+            should_generate_preview = (frame_count % preview_interval == 0)
 
-            with torch.no_grad():
-                outputs = segformer_model(**inputs)
-                logits = outputs.logits
+            if model_type == 'yolo':
+                # YOLO 추론 (stream=True로 메모리 효율화)
+                yolo_results = yolo_model(frame_rgb, verbose=False, stream=True)
+                result = next(yolo_results)
 
-            # 결과를 원본 크기로 리사이즈
-            upsampled_logits = torch.nn.functional.interpolate(
-                logits,
-                size=frame.shape[:2],  # (height, width)
-                mode="bilinear",
-                align_corners=False
-            )
+                frame_detections = []
 
-            # 예측 클래스 맵
-            pred_seg = upsampled_logits.argmax(dim=1)[0].cpu().numpy()
+                # 탐지 결과 처리
+                if result.boxes is not None and len(result.boxes) > 0:
+                    boxes = result.boxes.xyxy.cpu().numpy()  # [x1, y1, x2, y2]
+                    classes = result.boxes.cls.cpu().numpy().astype(int)
+                    confs = result.boxes.conf.cpu().numpy()
 
-            # 클래스별 마스크 저장
-            unique_classes = np.unique(pred_seg)
-            frame_results = {
-                'frame_number': frame_count,
-                'classes': unique_classes.tolist()
-            }
+                    # 세그멘테이션 마스크가 있는 경우
+                    masks = result.masks.data.cpu().numpy() if result.masks is not None else None
 
-            # 마스크 이미지 저장 (시각화용)
-            mask_colored = np.zeros((height, width, 3), dtype=np.uint8)
-            # rust: 빨강, scale: 노랑
-            mask_colored[pred_seg == 1] = [255, 0, 0]  # rust
-            mask_colored[pred_seg == 2] = [255, 255, 0]  # scale
+                    # 미리보기용 오버레이 (필요할 때만 생성)
+                    if should_generate_preview:
+                        overlay = frame.copy()
 
-            # 원본 프레임과 마스크 오버레이
-            overlay = cv2.addWeighted(frame, 0.7, mask_colored, 0.3, 0)
+                    for i, (box, cls, conf) in enumerate(zip(boxes, classes, confs)):
+                        x1, y1, x2, y2 = box.astype(int)
+                        class_name = result.names[cls] if cls < len(result.names) else f'class_{cls}'
+                        color = yolo_colors[cls % len(yolo_colors)]
 
-            # 결과 이미지 저장
-            output_frame_path = os.path.join(output_path, f'frame_{frame_count:06d}.jpg')
-            cv2.imwrite(output_frame_path, overlay)
+                        detection = {
+                            'box': [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],  # [x, y, w, h]
+                            'label': class_name,
+                            'class_id': int(cls),
+                            'confidence': round(float(conf), 3)  # 소수점 3자리로 제한
+                        }
+
+                        # 세그멘테이션 마스크가 있으면 폴리곤 추출 (CPU 부하가 크므로 매 프레임 처리)
+                        # 단, 마스크 리사이즈와 컨투어 추출은 최적화
+                        if masks is not None and i < len(masks):
+                            mask = masks[i]
+                            # 마스크를 원본 크기로 리사이즈 (더 작은 크기로 먼저 처리)
+                            mask_h, mask_w = mask.shape
+                            # 작은 스케일로 컨투어 추출 후 스케일업
+                            scale = 0.25  # 1/4 크기로 처리
+                            small_w, small_h = int(width * scale), int(height * scale)
+                            mask_small = cv2.resize(mask, (small_w, small_h))
+                            mask_binary = (mask_small > 0.5).astype(np.uint8) * 255
+
+                            # 컨투어 추출
+                            contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            if contours:
+                                # 가장 큰 컨투어 선택
+                                largest_contour = max(contours, key=cv2.contourArea)
+                                # 폴리곤 단순화 (세밀하게 - 인스턴스 세그멘테이션 학습용)
+                                epsilon = 0.003 * cv2.arcLength(largest_contour, True)  # 0.3% 단순화
+                                approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+                                # 원본 크기로 스케일업, 최대 150포인트로 제한
+                                polygon_points = (approx.reshape(-1, 2) / scale).astype(int)
+                                if len(polygon_points) > 150:
+                                    # 균등하게 샘플링
+                                    indices = np.linspace(0, len(polygon_points) - 1, 150, dtype=int)
+                                    polygon_points = polygon_points[indices]
+                                detection['polygon'] = polygon_points.tolist()
+
+                                # 미리보기용 오버레이 (필요할 때만)
+                                if should_generate_preview:
+                                    approx_scaled = (approx.reshape(-1, 2) / scale).astype(int)
+                                    mask_overlay = np.zeros_like(overlay)
+                                    cv2.fillPoly(mask_overlay, [approx_scaled], color)
+                                    overlay = cv2.addWeighted(overlay, 1.0, mask_overlay, 0.3, 0)
+
+                        frame_detections.append(detection)
+
+                        # 미리보기용 바운딩 박스 (필요할 때만)
+                        if should_generate_preview:
+                            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+                            label_text = f'{class_name} {conf:.2f}'
+                            cv2.putText(overlay, label_text, (x1, y1 - 10),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+                frame_results = {
+                    'frame_number': frame_count,
+                    'detections': frame_detections
+                }
+
+            else:
+                # SegFormer 추론 (기존 로직)
+                inputs = segformer_processor(images=frame_rgb, return_tensors="pt")
+                inputs = {k: v.to(segformer_device) for k, v in inputs.items()}
+
+                with torch.no_grad():
+                    outputs = segformer_model(**inputs)
+                    logits = outputs.logits
+
+                # 결과를 원본 크기로 리사이즈
+                upsampled_logits = torch.nn.functional.interpolate(
+                    logits,
+                    size=frame.shape[:2],  # (height, width)
+                    mode="bilinear",
+                    align_corners=False
+                )
+
+                # 예측 클래스 맵
+                pred_seg = upsampled_logits.argmax(dim=1)[0].cpu().numpy()
+
+                # 클래스별 마스크 저장
+                unique_classes = np.unique(pred_seg)
+                frame_results = {
+                    'frame_number': frame_count,
+                    'classes': unique_classes.tolist()
+                }
+
+                # 미리보기용 오버레이 (필요할 때만)
+                if should_generate_preview:
+                    mask_colored = np.zeros((height, width, 3), dtype=np.uint8)
+                    mask_colored[pred_seg == 1] = [255, 0, 0]  # rust
+                    mask_colored[pred_seg == 2] = [255, 255, 0]  # scale
+                    overlay = cv2.addWeighted(frame, 0.7, mask_colored, 0.3, 0)
 
             results.append(frame_results)
             frame_count += 1
 
             # 진행 상황 업데이트
             progress = (frame_count / total_frames) * 100
-            with job_lock:
-                active_jobs[job_id]['current_frame'] = frame_count
-                active_jobs[job_id]['progress'] = progress
-                # 최신 처리된 프레임 경로 저장 (미리보기용)
-                active_jobs[job_id]['latest_frame_path'] = output_frame_path
-                # 모든 프레임 경로 저장 (비디오 플레이어용)
-                active_jobs[job_id]['frame_paths'].append(output_frame_path)
 
+            # 미리보기 생성 (N프레임마다만)
+            if should_generate_preview:
+                _, encoded_frame = cv2.imencode('.jpg', overlay, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                with job_lock:
+                    active_jobs[job_id]['current_frame'] = frame_count
+                    active_jobs[job_id]['progress'] = progress
+                    active_jobs[job_id]['latest_frame'] = encoded_frame.tobytes()
+            else:
+                # 프레임 카운트만 업데이트 (lock 최소화)
+                with job_lock:
+                    active_jobs[job_id]['current_frame'] = frame_count
+                    active_jobs[job_id]['progress'] = progress
 
         cap.release()
 
-        # 결과 JSON 저장
+        # 결과 JSON 저장 (indent 없이 저장하여 파일 크기 최소화)
         result_json_path = os.path.join(output_path, 'inference_results.json')
         with open(result_json_path, 'w') as f:
             json.dump({
@@ -1855,7 +2501,7 @@ def process_video_inference(job_id, video_path, output_path, model_type):
                 'height': height,
                 'model_type': model_type,
                 'results': results
-            }, f, indent=2)
+            }, f, separators=(',', ':'))  # 공백 없이 저장
 
         # 작업 완료 상태 업데이트
         with job_lock:
@@ -1863,30 +2509,61 @@ def process_video_inference(job_id, video_path, output_path, model_type):
             active_jobs[job_id]['progress'] = 100
             active_jobs[job_id]['result_file'] = result_json_path
 
+            # 임시 비디오 파일 삭제
+            temp_video = active_jobs[job_id].get('temp_video_path')
+            if temp_video and os.path.exists(temp_video):
+                try:
+                    os.remove(temp_video)
+                    print(f"[INFERENCE] Temp video deleted: {temp_video}", flush=True)
+                except Exception as del_err:
+                    print(f"[INFERENCE] Failed to delete temp video: {del_err}", flush=True)
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         with job_lock:
             if job_id in active_jobs:
                 active_jobs[job_id]['status'] = 'failed'
                 active_jobs[job_id]['error'] = str(e)
+
+                # 실패 시에도 임시 파일 삭제
+                temp_video = active_jobs[job_id].get('temp_video_path')
+                if temp_video and os.path.exists(temp_video):
+                    try:
+                        os.remove(temp_video)
+                    except:
+                        pass
 
 
 @app.route('/api/inference', methods=['POST'])
 def run_video_inference():
     """전체 비디오에 대한 추론 실행 (비동기)"""
     global segformer_model, segformer_processor, segformer_device, ai_initialized
+    global yolo_model, yolo_initialized
 
     try:
-        if not ai_initialized or segformer_model is None:
-            return jsonify({
-                'success': False,
-                'error': 'AI model not initialized. Call /api/ai/initialize first.'
-            }), 400
-
         data = request.json
         print(f"[DEBUG] Inference request data: {data}", flush=True)
 
         model_type = data.get('model_type', 'segformer')
         model_path = data.get('model_path')
+
+        # 모델 타입에 따른 초기화 확인
+        if model_type == 'yolo':
+            if not yolo_initialized or yolo_model is None:
+                # YOLO 모델 자동 초기화 시도
+                print("[DEBUG] YOLO model not initialized, attempting to load...")
+                if not load_yolo_model(model_path):
+                    return jsonify({
+                        'success': False,
+                        'error': 'YOLO model not initialized. Call /api/ai/initialize/yolo first.'
+                    }), 400
+        else:
+            if not ai_initialized or segformer_model is None:
+                return jsonify({
+                    'success': False,
+                    'error': 'AI model not initialized. Call /api/ai/initialize first.'
+                }), 400
         video_path = data.get('video_path')
         output_path = data.get('output_path', 'inference_results')
 
@@ -1935,7 +2612,6 @@ def run_video_inference():
                 'output_path': output_path,
                 'cancel_requested': False
             }
-
 
         # 출력 디렉토리 생성
         os.makedirs(output_path, exist_ok=True)

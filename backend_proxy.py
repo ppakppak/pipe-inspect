@@ -1723,6 +1723,206 @@ def admin_get_annotation_stats():
         }), 500
 
 
+@app.route('/api/admin/classes/summary', methods=['GET'])
+@require_admin
+def admin_get_classes_summary():
+    """관리자용: 전체 클래스 목록과 어노테이션 수 조회"""
+    try:
+        base_dir = Path(BASE_PROJECTS_DIR)
+        class_counts = {}
+        class_projects = {}  # 클래스별 프로젝트 목록
+        
+        # 모든 사용자 디렉토리 탐색
+        for user_dir in base_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            
+            user_id = user_dir.name
+            
+            # 해당 사용자의 모든 프로젝트 탐색
+            for project_dir in user_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                
+                annotations_dir = project_dir / 'annotations'
+                if not annotations_dir.exists():
+                    continue
+                
+                project_id = project_dir.name
+                
+                # 어노테이션 파일 탐색
+                for video_dir in annotations_dir.iterdir():
+                    if not video_dir.is_dir():
+                        continue
+                    
+                    for json_file in video_dir.glob('*.json'):
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            
+                            # 어노테이션 데이터 추출
+                            if isinstance(data, dict) and 'annotations' in data:
+                                annotations_data = data['annotations']
+                            else:
+                                annotations_data = data
+                            
+                            for frame_key, frame_annos in annotations_data.items():
+                                if not isinstance(frame_annos, list):
+                                    continue
+                                
+                                for anno in frame_annos:
+                                    if not isinstance(anno, dict):
+                                        continue
+                                    
+                                    label = anno.get('label', '알 수 없음')
+                                    class_counts[label] = class_counts.get(label, 0) + 1
+                                    
+                                    # 클래스별 프로젝트 추적
+                                    if label not in class_projects:
+                                        class_projects[label] = set()
+                                    class_projects[label].add(f"{user_id}/{project_id}")
+                        
+                        except Exception as e:
+                            continue
+        
+        # set을 list로 변환
+        class_projects_list = {k: list(v) for k, v in class_projects.items()}
+        
+        # 정렬 (어노테이션 수 기준 내림차순)
+        sorted_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"[ADMIN] Classes summary: {len(class_counts)} classes found")
+        
+        return jsonify({
+            'success': True,
+            'classes': dict(sorted_classes),
+            'class_projects': class_projects_list,
+            'total_classes': len(class_counts)
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting classes summary: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/admin/annotations/by-class/<class_name>', methods=['GET'])
+@require_admin
+def admin_get_annotations_by_class(class_name):
+    """관리자용: 특정 클래스의 모든 어노테이션 조회"""
+    try:
+        from urllib.parse import unquote
+        class_name = unquote(class_name)
+        
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        project_filter = request.args.get('project', None)
+        
+        base_dir = Path(BASE_PROJECTS_DIR)
+        annotations_list = []
+        total_count = 0
+        
+        # 모든 사용자 디렉토리 탐색
+        for user_dir in base_dir.iterdir():
+            if not user_dir.is_dir():
+                continue
+            
+            user_id = user_dir.name
+            user_info = user_manager.get_user_info(user_id)
+            user_name = user_info.get('full_name') if user_info else user_id
+            
+            # 해당 사용자의 모든 프로젝트 탐색
+            for project_dir in user_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                
+                project_id = project_dir.name
+                
+                # 프로젝트 필터 적용
+                if project_filter and project_id != project_filter:
+                    continue
+                
+                # 프로젝트 이름 가져오기
+                project_name = project_id
+                project_json = project_dir / 'project.json'
+                if project_json.exists():
+                    try:
+                        with open(project_json, 'r', encoding='utf-8') as f:
+                            proj_data = json.load(f)
+                            project_name = proj_data.get('name', project_id)
+                    except:
+                        pass
+                
+                annotations_dir = project_dir / 'annotations'
+                if not annotations_dir.exists():
+                    continue
+                
+                # 어노테이션 파일 탐색
+                for video_dir in annotations_dir.iterdir():
+                    if not video_dir.is_dir():
+                        continue
+                    
+                    video_id = video_dir.name
+                    
+                    for json_file in video_dir.glob('*.json'):
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            
+                            # 어노테이션 데이터 추출
+                            if isinstance(data, dict) and 'annotations' in data:
+                                annotations_data = data['annotations']
+                            else:
+                                annotations_data = data
+                            
+                            for frame_key, frame_annos in annotations_data.items():
+                                if not isinstance(frame_annos, list):
+                                    continue
+                                
+                                for anno in frame_annos:
+                                    if not isinstance(anno, dict):
+                                        continue
+                                    
+                                    if anno.get('label') == class_name:
+                                        total_count += 1
+                                        
+                                        # 페이지네이션 적용
+                                        if total_count > offset and len(annotations_list) < limit:
+                                            annotations_list.append({
+                                                'user_id': user_id,
+                                                'user_name': user_name,
+                                                'project_id': project_id,
+                                                'project_name': project_name,
+                                                'video_id': video_id,
+                                                'frame': frame_key,
+                                                'annotation': anno
+                                            })
+                        
+                        except Exception as e:
+                            continue
+        
+        logger.info(f"[ADMIN] Annotations by class '{class_name}': {total_count} found, returning {len(annotations_list)}")
+        
+        return jsonify({
+            'success': True,
+            'class_name': class_name,
+            'annotations': annotations_list,
+            'total': total_count,
+            'limit': limit,
+            'offset': offset
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting annotations by class: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+
 @app.route('/api/projects/<project_id>/videos', methods=['POST'])
 @require_auth
 def add_video(project_id):

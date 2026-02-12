@@ -1178,7 +1178,7 @@
             <h2 data-i18n="dataset.title">🎯 Dataset Builder</h2>
 
             <!-- Admin Dashboard (관리자 전용) -->
-            <div id="adminDashboardSection" style="display: none; margin-bottom: 30px;">
+            <div id="adminDashboardSection" style="display: block; margin-bottom: 30px;">
                 <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                         <h3 style="margin: 0; color: #4a9eff;">📊 관리자 대시보드 - 전체 프로젝트 현황</h3>
@@ -1201,11 +1201,20 @@
                         <!-- Summary cards will be populated by JavaScript -->
                     </div>
 
-                    <!-- 프로젝트 목록 테이블 -->
-                    <div style="margin-bottom: 10px;">
+                    <!-- 필터 컨트롤 -->
+                    <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                         <input type="text" id="adminProjectFilter" placeholder="프로젝트 또는 사용자 검색..."
-                               style="padding: 8px; width: 300px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                               style="padding: 8px; width: 250px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
                                oninput="filterAdminProjects()">
+                        <select id="adminClassFilter" onchange="filterAdminProjects()"
+                                style="padding: 8px; min-width: 180px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                            <option value="">🏷️ 모든 클래스</option>
+                        </select>
+                        <span id="adminFilterInfo" style="color: #888; font-size: 12px; margin-left: 10px;"></span>
+                        <button onclick="viewClassAnnotations()" id="viewClassAnnotationsBtn" 
+                                style="padding: 8px 12px; background: #9b59b6; border: none; border-radius: 4px; cursor: pointer; color: white; display: none;">
+                            👁️ 클래스 어노테이션 보기
+                        </button>
                     </div>
                     <div id="adminProjectsList" style="max-height: 600px; overflow-y: auto; border: 1px solid #404040; border-radius: 4px; background: #1e1e1e;">
                         <div style="padding: 20px; text-align: center; color: #999;">대시보드를 로드하려면 새로고침 버튼을 클릭하세요.</div>
@@ -13187,7 +13196,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
                 // 관리자인 경우 대시보드 표시
                 const user = getCurrentUser();
-                if (user && user.user_id === 'admin') {
+                if (user && user.role === 'admin') {
                     const adminSection = document.getElementById('adminDashboardSection');
                     if (adminSection) {
                         adminSection.style.display = 'block';
@@ -13198,6 +13207,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
         // ========== 관리자 대시보드 함수 ==========
         let allAdminProjects = [];
+        let allAdminClasses = {};  // 클래스별 어노테이션 수
+        let selectedAdminClass = "";  // 선택된 클래스 필터
         let adminSortColumn = null;
         let adminSortDirection = 'asc';
         let selectedAdminProjects = new Set(); // 선택된 프로젝트 인덱스 저장
@@ -13240,6 +13251,9 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         </div>
                     `;
 
+                    // 클래스 목록 로드
+                    loadAdminClasses();
+                    
                     // 프로젝트 목록 렌더링
                     renderAdminProjects();
                 } else {
@@ -13251,17 +13265,27 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
         }
 
-        function renderAdminProjects(filterText = '') {
+        function renderAdminProjects(filterText = '', classFilter = '') {
             const projectsList = document.getElementById('adminProjectsList');
 
             let filtered = allAdminProjects;
+            
+            // 텍스트 필터
             if (filterText) {
                 const lower = filterText.toLowerCase();
-                filtered = allAdminProjects.filter(p =>
+                filtered = filtered.filter(p =>
                     p.project_name.toLowerCase().includes(lower) ||
                     p.user_name.toLowerCase().includes(lower) ||
                     p.user_id.toLowerCase().includes(lower)
                 );
+            }
+            
+            // 클래스 필터
+            if (classFilter) {
+                filtered = filtered.filter(p => {
+                    const classDist = p.class_distribution || {};
+                    return classDist[classFilter] && classDist[classFilter] > 0;
+                });
             }
 
             if (filtered.length === 0) {
@@ -13389,7 +13413,146 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         function filterAdminProjects() {
             const filterInput = document.getElementById('adminProjectFilter');
             const filterText = filterInput ? filterInput.value : '';
-            renderAdminProjects(filterText);
+            const classFilter = document.getElementById('adminClassFilter');
+            selectedAdminClass = classFilter ? classFilter.value : '';
+            
+            // 클래스 어노테이션 보기 버튼 표시/숨김
+            const viewBtn = document.getElementById('viewClassAnnotationsBtn');
+            if (viewBtn) {
+                viewBtn.style.display = selectedAdminClass ? 'inline-block' : 'none';
+            }
+            
+            // 필터 정보 표시
+            const filterInfo = document.getElementById('adminFilterInfo');
+            if (filterInfo && selectedAdminClass && allAdminClasses[selectedAdminClass]) {
+                filterInfo.textContent = '"' + selectedAdminClass + '" 클래스: ' + allAdminClasses[selectedAdminClass] + '개 어노테이션';
+            } else if (filterInfo) {
+                filterInfo.textContent = '';
+            }
+            
+            renderAdminProjects(filterText, selectedAdminClass);
+        }
+        
+        // 클래스 목록 로드
+        async function loadAdminClasses() {
+            try {
+                const response = await authFetch('/api/admin/classes/summary');
+                const data = await response.json();
+                
+                if (data.success) {
+                    allAdminClasses = data.classes || {};
+                    
+                    // 드롭다운 업데이트
+                    const select = document.getElementById('adminClassFilter');
+                    if (select) {
+                        select.innerHTML = '<option value="">🏷️ 모든 클래스</option>';
+                        
+                        Object.entries(allAdminClasses).forEach(([className, count]) => {
+                            const option = document.createElement('option');
+                            option.value = className;
+                            option.textContent = className + ' (' + count + ')';
+                            select.appendChild(option);
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('[ADMIN] Error loading classes:', error);
+            }
+        }
+        
+        // 클래스 어노테이션 보기
+        async function viewClassAnnotations() {
+            if (!selectedAdminClass) {
+                alert('클래스를 먼저 선택하세요.');
+                return;
+            }
+            
+            try {
+                const response = await authFetch('/api/admin/annotations/by-class/' + encodeURIComponent(selectedAdminClass) + '?limit=50');
+                const data = await response.json();
+                
+                if (data.success) {
+                    showClassAnnotationsModal(data);
+                } else {
+                    alert('어노테이션 조회 실패: ' + data.error);
+                }
+            } catch (error) {
+                console.error('[ADMIN] Error loading class annotations:', error);
+                alert('어노테이션 조회 중 오류: ' + error.message);
+            }
+        }
+        
+        // 클래스 어노테이션 모달 표시
+        function showClassAnnotationsModal(data) {
+            // 기존 모달이 있으면 제거
+            let modal = document.getElementById('classAnnotationsModal');
+            if (modal) {
+                modal.remove();
+            }
+            
+            const annotations = data.annotations || [];
+            const total = data.total || 0;
+            const className = data.class_name || '';
+            
+            // 모달 생성
+            modal = document.createElement('div');
+            modal.id = 'classAnnotationsModal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:10000;display:flex;justify-content:center;align-items:center;';
+            
+            let itemsHtml = '';
+            annotations.forEach((item, idx) => {
+                itemsHtml += '<div style="background:#2d2d2d;padding:12px;border-radius:4px;border-left:4px solid #9b59b6;cursor:pointer;" ' +
+                    'onclick="goToAnnotation(\'' + item.project_id + '\',\'' + item.video_id + '\',\'' + item.frame + '\')">' +
+                    '<div style="color:#4a9eff;font-weight:bold;margin-bottom:5px;">' + item.project_name + '</div>' +
+                    '<div style="color:#aaa;font-size:11px;">👤 ' + item.user_name + ' · 🎬 ' + item.video_id.substring(0,20) + '... · 🖼️ Frame ' + item.frame + '</div>' +
+                    '</div>';
+            });
+            
+            modal.innerHTML = '<div style="background:#1e1e1e;border-radius:8px;padding:25px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">' +
+                '<h3 style="margin:0;color:#9b59b6;">🏷️ "' + className + '" 클래스 어노테이션</h3>' +
+                '<button onclick="document.getElementById(\'classAnnotationsModal\').remove()" style="background:#ff4444;border:none;color:white;padding:8px 16px;border-radius:4px;cursor:pointer;">닫기</button>' +
+                '</div>' +
+                '<div style="color:#888;margin-bottom:15px;">총 ' + total + '개 중 ' + annotations.length + '개 표시 · 클릭하면 해당 위치로 이동</div>' +
+                '<div style="display:flex;flex-direction:column;gap:10px;">' + 
+                (itemsHtml || '<div style="color:#666;text-align:center;padding:30px;">어노테이션이 없습니다.</div>') +
+                '</div></div>';
+            
+            document.body.appendChild(modal);
+            
+            // 모달 외부 클릭 시 닫기
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.remove();
+                }
+            });
+        }
+        
+        // 어노테이션 위치로 이동
+        function goToAnnotation(projectId, videoId, frame) {
+            // 모달 닫기
+            const modal = document.getElementById('classAnnotationsModal');
+            if (modal) modal.remove();
+            
+            // Annotation 탭으로 이동하고 해당 위치 로드
+            showTab('annotation');
+            
+            // URL 업데이트 및 비디오 로드
+            const url = '?tab=annotation&project=' + encodeURIComponent(projectId) + '&video=' + encodeURIComponent(videoId) + '&frame=' + frame;
+            history.pushState({}, '', url);
+            
+            // 프로젝트와 비디오 로드
+            setTimeout(async () => {
+                try {
+                    await openProject(projectId);
+                    await loadVideo(videoId);
+                    if (typeof seekToFrame === 'function') {
+                        seekToFrame(parseInt(frame));
+                    }
+                } catch (error) {
+                    console.error('Error navigating to annotation:', error);
+                }
+            }, 500);
         }
 
         function sortAdminProjects(column) {

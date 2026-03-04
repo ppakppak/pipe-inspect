@@ -2661,8 +2661,14 @@ def build_yolo_dataset():
     from datetime import datetime
 
     try:
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            print(f"[DATASET BUILD] ERROR: Failed to parse JSON. Content-Length: {request.content_length}")
+            return jsonify({'success': False, 'error': 'Failed to parse JSON request'}), 400
+        print(f"[DATASET BUILD] Received data keys: {data.keys() if data else 'None'}")
         annotations_data = data.get('annotations_data', [])
+        print(f"[DATASET BUILD] Received keys: {list(data.keys())}")
+        print(f"[DATASET BUILD] annotations_data length: {len(annotations_data)}")
         output_dir = data.get('output_dir', 'pipe_dataset')
         split_ratio = data.get('split_ratio', '0.7,0.15,0.15')
         augment_multiplier = data.get('augment_multiplier', 0)
@@ -2714,11 +2720,11 @@ def build_yolo_dataset():
         # 모든 어노테이션 프레임 수집
         all_frames = []
         for anno_data in annotations_data:
-            user_id = anno_data['user_id']
-            project_id = anno_data['project_id']
-            video_id = anno_data['video_id']
-            annotations = anno_data['annotations']
-            project_dir = Path(anno_data['project_dir'])
+            user_id = anno_data.get('user_id', 'unknown')
+            project_id = anno_data.get('project_id', '')
+            video_id = anno_data.get('video_id', '')
+            annotations = anno_data.get('annotations', {})
+            project_dir = Path(anno_data.get('project_dir', ''))
 
             # 비디오 정보 및 클래스 정의 찾기
             project_file = project_dir / 'project.json'
@@ -2808,64 +2814,95 @@ def build_yolo_dataset():
 
         # 각 세트별로 이미지 및 라벨 저장
         def process_frames(frames, split_name):
+            """최적화된 프레임 처리 - 비디오별 그룹화 + 병렬 처리"""
+            from collections import defaultdict
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
             saved_count = 0
-            for idx, frame_data in enumerate(frames):
+            
+            # 비디오별로 프레임 그룹화
+            frames_by_video = defaultdict(list)
+            for frame_data in frames:
+                video_path = frame_data['video_path']
+                frames_by_video[video_path].append(frame_data)
+            
+            print(f"[DATASET BUILD] Processing {len(frames)} frames from {len(frames_by_video)} videos for {split_name}")
+            
+            def process_video_frames(video_path, video_frames):
+                """한 비디오의 모든 프레임 처리"""
+                local_saved = 0
+                cap = None
                 try:
-                    video_path = frame_data['video_path']
-                    frame_num = frame_data['frame_num']
-                    annotations = frame_data['annotations']
-
-                    # 비디오에서 프레임 추출
                     cap = cv2.VideoCapture(video_path)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                    ret, frame = cap.read()
-                    cap.release()
-
-                    if not ret:
-                        print(f"[DATASET BUILD] Failed to extract frame {frame_num} from {video_path}")
-                        continue
-
-                    # 이미지 파일명
-                    image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{frame_num}.jpg"
-                    image_path = output_path / split_name / 'images' / image_filename
-                    label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
-
-                    # 이미지 저장
-                    cv2.imwrite(str(image_path), frame)
-
-                    # YOLO 라벨 생성
-                    height, width = frame.shape[:2]
-                    yolo_labels = []
-
-                    for anno in annotations:
-                        if not anno.get('polygon'):
+                    if not cap.isOpened():
+                        print(f"[DATASET BUILD] Cannot open video: {video_path}")
+                        return 0
+                    
+                    # 프레임 번호 순으로 정렬 (시퀀셜 읽기 최적화)
+                    video_frames.sort(key=lambda x: x['frame_num'])
+                    
+                    for frame_data in video_frames:
+                        try:
+                            frame_num = frame_data['frame_num']
+                            annotations = frame_data['annotations']
+                            
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                            ret, frame = cap.read()
+                            
+                            if not ret:
+                                continue
+                            
+                            # 이미지 파일명
+                            image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{frame_num}.jpg"
+                            image_path = output_path / split_name / 'images' / image_filename
+                            label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
+                            
+                            # 이미지 저장
+                            cv2.imwrite(str(image_path), frame)
+                            
+                            # YOLO 라벨 생성
+                            height, width = frame.shape[:2]
+                            yolo_labels = []
+                            
+                            for anno in annotations:
+                                if not anno.get('polygon'):
+                                    continue
+                                class_id = anno.get('class_id', 0)
+                                polygon = anno['polygon']
+                                normalized_coords = []
+                                for point in polygon:
+                                    x_norm = point['x'] / width
+                                    y_norm = point['y'] / height
+                                    normalized_coords.append(f"{x_norm:.6f} {y_norm:.6f}")
+                                yolo_line = f"{class_id} " + " ".join(normalized_coords)
+                                yolo_labels.append(yolo_line)
+                            
+                            if yolo_labels:
+                                with open(label_path, 'w') as f:
+                                    f.write('\n'.join(yolo_labels))
+                                local_saved += 1
+                                
+                        except Exception as e:
+                            print(f"[DATASET BUILD] Error processing frame {frame_num}: {e}")
                             continue
-
-                        # 클래스 ID (label 필드에서 추출, 없으면 0)
-                        class_id = anno.get('class_id', 0)
-
-                        # 폴리곤 좌표 정규화
-                        polygon = anno['polygon']
-                        normalized_coords = []
-                        for point in polygon:
-                            x_norm = point['x'] / width
-                            y_norm = point['y'] / height
-                            normalized_coords.append(f"{x_norm:.6f} {y_norm:.6f}")
-
-                        # YOLO segmentation 형식: class_id x1 y1 x2 y2 ... xn yn
-                        yolo_line = f"{class_id} " + " ".join(normalized_coords)
-                        yolo_labels.append(yolo_line)
-
-                    # 라벨 파일 저장
-                    if yolo_labels:
-                        with open(label_path, 'w') as f:
-                            f.write('\n'.join(yolo_labels))
-                        saved_count += 1
-
-                except Exception as e:
-                    print(f"[DATASET BUILD] Error processing frame: {e}")
-                    continue
-
+                finally:
+                    if cap:
+                        cap.release()
+                
+                return local_saved
+            
+            # 병렬 처리 (최대 4개 비디오 동시 처리)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(process_video_frames, vpath, vframes): vpath 
+                    for vpath, vframes in frames_by_video.items()
+                }
+                for future in as_completed(futures):
+                    try:
+                        saved_count += future.result()
+                    except Exception as e:
+                        print(f"[DATASET BUILD] Video processing error: {e}")
+            
             return saved_count
 
         # 각 세트 처리
@@ -2980,6 +3017,752 @@ names: {class_names_list}
         }), 500
 
 
+
+
+@app.route('/api/dataset/build_yolo_filtered', methods=['POST'])
+def build_yolo_dataset_filtered():
+    """다중 프로젝트 YOLO 데이터셋 빌드 (클래스 필터 + class id 재매핑)"""
+    from pathlib import Path
+    import random
+    from datetime import datetime
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        annotations_data = data.get('annotations_data', [])
+        selected_classes = data.get('classes', []) or []
+        output_dir = data.get('output_dir', 'pipe_dataset')
+        split_ratio = data.get('split_ratio', '0.7,0.15,0.15')
+
+        if not annotations_data:
+            return jsonify({'success': False, 'error': 'No annotations data provided'}), 400
+
+        selected_classes = [c for c in selected_classes if isinstance(c, str) and c.strip()]
+        selected_set = set(selected_classes)
+
+        output_path = Path(output_dir)
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_dir
+        if output_path.exists():
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = output_path.parent / f"{output_path.name}_{timestamp}"
+
+        for split in ['train', 'val', 'test']:
+            (output_path / split / 'images').mkdir(parents=True, exist_ok=True)
+            (output_path / split / 'labels').mkdir(parents=True, exist_ok=True)
+
+        try:
+            tr, vr, ter = map(float, str(split_ratio).split(','))
+            total = tr + vr + ter
+            if total <= 0:
+                raise ValueError('Invalid split ratio')
+            train_ratio, val_ratio, test_ratio = tr / total, vr / total, ter / total
+        except Exception:
+            train_ratio, val_ratio, test_ratio = 0.7, 0.15, 0.15
+
+        korean_to_english = {
+            '정상부': 'normal',
+            '변형': 'deformation',
+            '균열': 'crack',
+            '부식': 'corrosion',
+            '부식(결절)': 'corrosion_nodule',
+            '부식(녹)': 'corrosion_rust',
+            '침전물(흙)': 'sediment_soil',
+            '침전물(모래)': 'sediment_sand',
+            '침전물(부식 생성물)': 'sediment_corrosion',
+            '침전물(탈리, 도장재)': 'sediment_coating',
+            '침전물(기타)': 'sediment_other',
+            '슬라임(물때)': 'slime',
+            '논의필요': 'needs_discussion',
+            '소실점': 'vanishing_point',
+        }
+
+        project_cache = {}
+
+        def resolve_video_path(project_dir: Path, video_id: str):
+            pkey = str(project_dir)
+            if pkey not in project_cache:
+                project_file = project_dir / 'project.json'
+                video_map = {}
+                class_map = {}
+                if project_file.exists():
+                    try:
+                        with open(project_file, 'r', encoding='utf-8') as f:
+                            pj = json.load(f)
+                        for idx, cls in enumerate(pj.get('classes', [])):
+                            class_map[idx] = cls.get('name', f'class_{idx}')
+                        for v in pj.get('videos', []):
+                            vid = v.get('video_id')
+                            if vid:
+                                video_map[vid] = v.get('video_path')
+                    except Exception as e:
+                        print(f"[DATASET BUILD-FILTERED] project.json parse error: {project_file}: {e}")
+                project_cache[pkey] = {'video_map': video_map, 'class_map': class_map}
+
+            meta = project_cache[pkey]
+            src_path = meta['video_map'].get(video_id)
+            if not src_path:
+                return None, meta['class_map']
+
+            src = str(src_path)
+            src_path_obj = Path(src_path)
+            if 'SAHARA' in src:
+                parts = list(src_path_obj.parts)
+                i = parts.index('SAHARA')
+                rel = Path(*parts[i+1:])
+                web_path = Path('/home/intu/nas2_kwater/Videos_web/SAHARA') / rel
+                web_path = web_path.with_suffix('.mp4')
+            elif '관내시경영상' in src:
+                parts = list(src_path_obj.parts)
+                i = parts.index('관내시경영상')
+                rel = Path(*parts[i+1:])
+                web_path = Path('/home/intu/nas2_kwater/Videos_web/관내시경영상') / rel
+                web_path = web_path.with_suffix('.mp4')
+            else:
+                web_path = Path(src.replace('.avi', '.mp4').replace('.AVI', '.mp4'))
+
+            return str(web_path), meta['class_map']
+
+        all_frames = []
+        unique_keys = set()
+        class_order = list(dict.fromkeys(selected_classes)) if selected_classes else []
+
+        for anno_data in annotations_data:
+            project_id = anno_data.get('project_id', '')
+            video_id = anno_data.get('video_id', '')
+            annotations = anno_data.get('annotations', {}) or {}
+            project_dir = Path(anno_data.get('project_dir', ''))
+
+            video_path, class_map = resolve_video_path(project_dir, video_id)
+            if not video_path:
+                continue
+            if not Path(video_path).exists():
+                continue
+
+            for frame_num_str, frame_annos in annotations.items():
+                if not isinstance(frame_annos, list) or not frame_annos:
+                    continue
+
+                try:
+                    frame_num = int(frame_num_str)
+                except Exception:
+                    continue
+
+                filtered_annos = []
+                for anno in frame_annos:
+                    polygon = anno.get('polygon')
+                    if not isinstance(polygon, list) or len(polygon) < 3:
+                        continue
+
+                    label = anno.get('label')
+                    if not label:
+                        class_id = anno.get('class_id')
+                        if isinstance(class_id, int):
+                            label = class_map.get(class_id)
+                        else:
+                            try:
+                                label = class_map.get(int(class_id))
+                            except Exception:
+                                label = None
+
+                    if not label:
+                        continue
+                    if selected_set and label not in selected_set:
+                        continue
+
+                    if not selected_set and label not in class_order:
+                        class_order.append(label)
+
+                    filtered_annos.append({'label': label, 'polygon': polygon})
+
+                if not filtered_annos:
+                    continue
+
+                unique_key = f"{project_id}::{video_id}::{frame_num}"
+                if unique_key in unique_keys:
+                    continue
+                unique_keys.add(unique_key)
+
+                all_frames.append({
+                    'project_id': project_id,
+                    'video_id': video_id,
+                    'video_path': video_path,
+                    'frame_num': frame_num,
+                    'annotations': filtered_annos,
+                })
+
+        if not all_frames:
+            return jsonify({'success': False, 'error': 'No frames with selected annotations found'}), 400
+        if not class_order:
+            return jsonify({'success': False, 'error': 'No classes resolved from annotations'}), 400
+
+        class_to_id = {name: idx for idx, name in enumerate(class_order)}
+        yaml_names = [korean_to_english.get(name, name) for name in class_order]
+
+        print(f"[DATASET BUILD-FILTERED] Frames: {len(all_frames)}")
+        print(f"[DATASET BUILD-FILTERED] Classes: {class_order}")
+
+        random.shuffle(all_frames)
+        train_end = int(len(all_frames) * train_ratio)
+        val_end = train_end + int(len(all_frames) * val_ratio)
+        train_frames = all_frames[:train_end]
+        val_frames = all_frames[train_end:val_end]
+        test_frames = all_frames[val_end:]
+
+        def process_frames(frames, split_name):
+            saved_count = 0
+            frames_by_video = defaultdict(list)
+            for frame_data in frames:
+                frames_by_video[frame_data['video_path']].append(frame_data)
+
+            def process_video(video_path, video_frames):
+                local_count = 0
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    print(f"[DATASET BUILD-FILTERED] Cannot open video: {video_path}")
+                    return 0
+                try:
+                    video_frames.sort(key=lambda x: x['frame_num'])
+                    for frame_data in video_frames:
+                        fnum = frame_data['frame_num']
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, fnum)
+                        ret, frame = cap.read()
+                        if not ret or frame is None:
+                            continue
+
+                        image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{fnum}.jpg"
+                        image_path = output_path / split_name / 'images' / image_filename
+                        label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
+
+                        cv2.imwrite(str(image_path), frame)
+
+                        h, w = frame.shape[:2]
+                        lines = []
+                        for anno in frame_data['annotations']:
+                            cid = class_to_id.get(anno['label'])
+                            if cid is None:
+                                continue
+                            coords = []
+                            for point in anno['polygon']:
+                                try:
+                                    x = float(point['x']) / w
+                                    y = float(point['y']) / h
+                                except Exception:
+                                    x = float(point[0]) / w
+                                    y = float(point[1]) / h
+                                x = max(0.0, min(1.0, x))
+                                y = max(0.0, min(1.0, y))
+                                coords.append(f"{x:.6f} {y:.6f}")
+                            if len(coords) >= 3:
+                                lines.append(f"{cid} " + ' '.join(coords))
+
+                        if lines:
+                            with open(label_path, 'w', encoding='utf-8') as f:
+                                f.write('\\n'.join(lines))
+                            local_count += 1
+                        else:
+                            try:
+                                image_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                finally:
+                    cap.release()
+
+                return local_count
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(process_video, vp, vf) for vp, vf in frames_by_video.items()]
+                for fut in as_completed(futures):
+                    try:
+                        saved_count += fut.result()
+                    except Exception as e:
+                        print(f"[DATASET BUILD-FILTERED] Video worker error: {e}")
+
+            return saved_count
+
+        train_count = process_frames(train_frames, 'train')
+        val_count = process_frames(val_frames, 'val')
+        test_count = process_frames(test_frames, 'test')
+
+        yaml_content = (
+            f"# YOLO Dataset Configuration\\n"
+            f"path: {output_path}\\n"
+            "train: train/images\\n"
+            "val: val/images\\n"
+            "test: test/images\\n\\n"
+            f"# Number of classes\\n"
+            f"nc: {len(yaml_names)}\\n\\n"
+            f"# Class names\\n"
+            f"names: {yaml_names}\\n"
+        )
+        with open(output_path / 'data.yaml', 'w', encoding='utf-8') as f:
+            f.write(yaml_content)
+
+        info = {
+            'created_at': datetime.now().isoformat(),
+            'total_frames': len(all_frames),
+            'train_count': train_count,
+            'val_count': val_count,
+            'test_count': test_count,
+            'split_ratio': split_ratio,
+            'format': 'yolo_segmentation',
+            'num_classes': len(class_order),
+            'class_names': class_order,
+            'class_names_yaml': yaml_names,
+            'selected_classes': selected_classes,
+        }
+        with open(output_path / 'dataset_info.json', 'w', encoding='utf-8') as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+
+        print(f"[DATASET BUILD-FILTERED] ✅ Complete: {output_path}")
+
+        return jsonify({
+            'success': True,
+            'output_dir': str(output_path),
+            'total_images': train_count + val_count + test_count,
+            'train_count': train_count,
+            'val_count': val_count,
+            'test_count': test_count,
+            'classes': class_order,
+            'class_names_yaml': yaml_names,
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================
+# YOLO Training API
+# ============================================================
+
+# 학습 상태 관리
+training_state = {
+    'is_training': False,
+    'job_id': None,
+    'progress': {},
+    'cancel_requested': False,
+    'thread': None
+}
+training_lock = threading.Lock()
+
+
+def _run_yolo_training(job_id, config):
+    """백그라운드 YOLO 학습 실행"""
+    global training_state
+
+    try:
+        from ultralytics import YOLO
+        import time
+
+        dataset_path = config['dataset_path']
+        data_yaml = os.path.join(dataset_path, 'data.yaml')
+
+        if not os.path.exists(data_yaml):
+            with training_lock:
+                training_state['progress'] = {
+                    'status': 'error',
+                    'error': f'data.yaml not found: {data_yaml}'
+                }
+                training_state['is_training'] = False
+            return
+
+        # 모델 선택
+        model_size = config.get('model_size', 'n')  # n, s, m, l, x
+        base_model = config.get('base_model') or f'yolov8{model_size}-seg.pt'
+
+        # 기존 모델에서 이어서 학습 (resume/transfer)
+        resume_from = config.get('resume_from')
+        if resume_from and os.path.exists(resume_from):
+            print(f"[TRAIN] Resuming from: {resume_from}")
+            model = YOLO(resume_from)
+        else:
+            print(f"[TRAIN] Starting from: {base_model}")
+            model = YOLO(base_model)
+
+        # 학습 파라미터
+        epochs = config.get('epochs', 100)
+        batch_size = config.get('batch_size', 8)
+        img_size = config.get('img_size', 640)
+        patience = config.get('patience', 20)
+        lr0 = config.get('lr0', 0.01)
+        project_name = config.get('project_name', 'pipe_defect')
+
+        # 저장 경로
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        runs_dir = os.path.join(script_dir, 'runs')
+
+        with training_lock:
+            training_state['progress'] = {
+                'status': 'starting',
+                'job_id': job_id,
+                'config': {
+                    'base_model': base_model,
+                    'dataset': dataset_path,
+                    'epochs': epochs,
+                    'batch_size': batch_size,
+                    'img_size': img_size,
+                },
+                'epoch': 0,
+                'total_epochs': epochs,
+                'metrics': {}
+            }
+
+        print(f"[TRAIN] Starting training job {job_id}")
+        print(f"[TRAIN] Dataset: {dataset_path}")
+        print(f"[TRAIN] Model: {base_model}, Epochs: {epochs}, Batch: {batch_size}")
+
+        # 콜백으로 진행률 추적
+        def on_train_epoch_end(trainer):
+            if training_state['cancel_requested']:
+                raise KeyboardInterrupt("Training cancelled by user")
+
+            epoch = trainer.epoch + 1
+            metrics = {}
+            if hasattr(trainer, 'metrics'):
+                for k, v in trainer.metrics.items():
+                    try:
+                        metrics[k] = float(v)
+                    except (TypeError, ValueError):
+                        pass
+
+            loss_items = {}
+            if hasattr(trainer, 'loss_items') and trainer.loss_items is not None:
+                loss_names = ['box_loss', 'seg_loss', 'cls_loss', 'dfl_loss']
+                for i, name in enumerate(loss_names):
+                    if i < len(trainer.loss_items):
+                        try:
+                            loss_items[name] = float(trainer.loss_items[i])
+                        except (TypeError, ValueError):
+                            pass
+
+            with training_lock:
+                training_state['progress'].update({
+                    'status': 'training',
+                    'epoch': epoch,
+                    'total_epochs': epochs,
+                    'metrics': metrics,
+                    'loss': loss_items,
+                    'percent': round(epoch / epochs * 100, 1)
+                })
+
+            print(f"[TRAIN] Epoch {epoch}/{epochs} - Loss: {loss_items} - Metrics: {metrics}")
+
+        def on_train_start(trainer):
+            with training_lock:
+                training_state['progress']['status'] = 'training'
+
+        # 콜백 등록
+        model.add_callback('on_train_epoch_end', on_train_epoch_end)
+        model.add_callback('on_train_start', on_train_start)
+
+        # 학습 실행
+        results = model.train(
+            data=data_yaml,
+            epochs=epochs,
+            batch=batch_size,
+            imgsz=img_size,
+            patience=patience,
+            lr0=lr0,
+            project=runs_dir,
+            name=project_name,
+            exist_ok=False,
+            device=0,
+            workers=4,
+            verbose=True,
+            save=True,
+            save_period=10,  # 10 에폭마다 체크포인트
+            plots=True,
+        )
+
+        # 학습 완료 — best.pt 경로 찾기
+        best_model_path = None
+        if hasattr(results, 'save_dir'):
+            best_path = os.path.join(str(results.save_dir), 'weights', 'best.pt')
+            if os.path.exists(best_path):
+                best_model_path = best_path
+
+        # 최종 메트릭
+        final_metrics = {}
+        if results and hasattr(results, 'results_dict'):
+            for k, v in results.results_dict.items():
+                try:
+                    final_metrics[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+
+        with training_lock:
+            training_state['progress'].update({
+                'status': 'completed',
+                'epoch': epochs,
+                'percent': 100.0,
+                'best_model': best_model_path,
+                'final_metrics': final_metrics,
+                'save_dir': str(results.save_dir) if hasattr(results, 'save_dir') else None
+            })
+            training_state['is_training'] = False
+
+        print(f"[TRAIN] ✅ Training complete! Best model: {best_model_path}")
+
+    except KeyboardInterrupt:
+        with training_lock:
+            training_state['progress']['status'] = 'cancelled'
+            training_state['is_training'] = False
+        print(f"[TRAIN] ⚠️ Training cancelled")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        with training_lock:
+            training_state['progress'] = {
+                'status': 'error',
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+            training_state['is_training'] = False
+        print(f"[TRAIN] ❌ Training error: {e}")
+
+
+@app.route('/api/ai/train', methods=['POST'])
+def start_training():
+    """YOLO 학습 시작"""
+    global training_state
+
+    with training_lock:
+        if training_state['is_training']:
+            return jsonify({
+                'success': False,
+                'error': 'Training already in progress',
+                'job_id': training_state['job_id']
+            }), 409
+
+    data = request.json or {}
+    dataset_path = data.get('dataset_path')
+
+    if not dataset_path:
+        return jsonify({
+            'success': False,
+            'error': 'dataset_path is required'
+        }), 400
+
+    if not os.path.exists(dataset_path):
+        return jsonify({
+            'success': False,
+            'error': f'Dataset not found: {dataset_path}'
+        }), 404
+
+    import uuid
+    job_id = str(uuid.uuid4())[:8]
+
+    config = {
+        'dataset_path': dataset_path,
+        'model_size': data.get('model_size', 'n'),
+        'base_model': data.get('base_model'),
+        'resume_from': data.get('resume_from'),
+        'epochs': data.get('epochs', 100),
+        'batch_size': data.get('batch_size', 8),
+        'img_size': data.get('img_size', 640),
+        'patience': data.get('patience', 20),
+        'lr0': data.get('lr0', 0.01),
+        'project_name': data.get('project_name', 'pipe_defect'),
+    }
+
+    with training_lock:
+        training_state['is_training'] = True
+        training_state['job_id'] = job_id
+        training_state['cancel_requested'] = False
+        training_state['progress'] = {'status': 'queued', 'job_id': job_id}
+
+    thread = threading.Thread(target=_run_yolo_training, args=(job_id, config), daemon=True)
+    thread.start()
+
+    with training_lock:
+        training_state['thread'] = thread
+
+    return jsonify({
+        'success': True,
+        'job_id': job_id,
+        'message': 'Training started',
+        'config': config
+    })
+
+
+@app.route('/api/ai/train/status', methods=['GET'])
+def training_status():
+    """학습 진행 상태 조회"""
+    with training_lock:
+        return jsonify({
+            'success': True,
+            'is_training': training_state['is_training'],
+            'progress': training_state['progress']
+        })
+
+
+@app.route('/api/ai/train/stop', methods=['POST'])
+def stop_training():
+    """학습 중단"""
+    with training_lock:
+        if not training_state['is_training']:
+            return jsonify({
+                'success': False,
+                'error': 'No training in progress'
+            }), 400
+
+        training_state['cancel_requested'] = True
+
+    return jsonify({
+        'success': True,
+        'message': 'Cancel requested. Training will stop after current epoch.'
+    })
+
+
+@app.route('/api/ai/models', methods=['GET'])
+def list_models():
+    """학습된 모델 목록"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    runs_dir = os.path.join(script_dir, 'runs')
+    models = []
+
+    # runs/ 하위 디렉토리에서 best.pt 찾기
+    if os.path.exists(runs_dir):
+        for root, dirs, files in os.walk(runs_dir):
+            if 'best.pt' in files:
+                best_path = os.path.join(root, 'best.pt')
+                # 상위 디렉토리에서 args.yaml 읽기
+                train_dir = os.path.dirname(os.path.dirname(best_path))
+                args_file = os.path.join(train_dir, 'args.yaml')
+                info = {
+                    'path': best_path,
+                    'name': os.path.basename(train_dir),
+                    'size_mb': round(os.path.getsize(best_path) / 1024 / 1024, 1),
+                    'created': os.path.getmtime(best_path)
+                }
+                # args.yaml에서 학습 정보 읽기
+                if os.path.exists(args_file):
+                    try:
+                        import yaml
+                        with open(args_file) as f:
+                            args = yaml.safe_load(f)
+                        info['epochs'] = args.get('epochs')
+                        info['imgsz'] = args.get('imgsz')
+                        info['model'] = args.get('model')
+                        info['data'] = args.get('data')
+                    except:
+                        pass
+                models.append(info)
+
+    # pretrained 모델
+    pretrained = os.path.join(script_dir, 'yolov8n-seg.pt')
+    if os.path.exists(pretrained):
+        models.append({
+            'path': pretrained,
+            'name': 'yolov8n-seg (pretrained)',
+            'size_mb': round(os.path.getsize(pretrained) / 1024 / 1024, 1),
+            'created': os.path.getmtime(pretrained),
+            'is_pretrained': True
+        })
+
+    # 현재 활성 모델
+    active_model = None
+    if yolo_initialized and yolo_model:
+        active_model = str(yolo_model.ckpt_path) if hasattr(yolo_model, 'ckpt_path') else 'unknown'
+
+    return jsonify({
+        'success': True,
+        'models': sorted(models, key=lambda x: x.get('created', 0), reverse=True),
+        'active_model': active_model
+    })
+
+
+@app.route('/api/ai/models/activate', methods=['POST'])
+def activate_model():
+    """학습된 모델을 추론 모델로 전환"""
+    global yolo_model, yolo_initialized
+
+    data = request.json or {}
+    model_path = data.get('model_path')
+
+    if not model_path:
+        return jsonify({'success': False, 'error': 'model_path required'}), 400
+
+    if not os.path.exists(model_path):
+        return jsonify({'success': False, 'error': f'Model not found: {model_path}'}), 404
+
+    try:
+        # 기존 모델 해제
+        yolo_model = None
+        yolo_initialized = False
+        torch.cuda.empty_cache()
+
+        success = load_yolo_model(model_path)
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'Model activated: {model_path}'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Failed to load model'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ai/datasets', methods=['GET'])
+def list_datasets():
+    """빌드된 YOLO 데이터셋 목록"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    datasets = []
+
+    for entry in os.scandir(script_dir):
+        if entry.is_dir() and entry.name.startswith('pipe_dataset'):
+            data_yaml = os.path.join(entry.path, 'data.yaml')
+            info_json = os.path.join(entry.path, 'dataset_info.json')
+
+            ds = {
+                'name': entry.name,
+                'path': entry.path,
+            }
+
+            if os.path.exists(info_json):
+                try:
+                    with open(info_json) as f:
+                        info = json.load(f)
+                    ds.update({
+                        'total_frames': info.get('total_frames', 0),
+                        'train_count': info.get('train_count', 0),
+                        'val_count': info.get('val_count', 0),
+                        'test_count': info.get('test_count', 0),
+                        'num_classes': info.get('num_classes', 0),
+                        'class_names': info.get('class_names', []),
+                        'created_at': info.get('created_at', ''),
+                    })
+                except:
+                    pass
+            elif os.path.exists(data_yaml):
+                # data.yaml에서 기본 정보 추출
+                try:
+                    import yaml
+                    with open(data_yaml) as f:
+                        ydata = yaml.safe_load(f)
+                    ds['num_classes'] = ydata.get('nc', 0)
+                    ds['class_names'] = ydata.get('names', [])
+                except:
+                    pass
+
+            # 이미지 수 카운트
+            train_imgs = os.path.join(entry.path, 'train', 'images')
+            if os.path.exists(train_imgs):
+                ds.setdefault('train_count', len(os.listdir(train_imgs)))
+
+            datasets.append(ds)
+
+    return jsonify({
+        'success': True,
+        'datasets': sorted(datasets, key=lambda x: x['name'], reverse=True)
+    })
+
+
 if __name__ == '__main__':
     print("🚀 Starting GPU Server API...")
     print("📡 API Server: http://0.0.0.0:5004")
@@ -2993,4 +3776,4 @@ if __name__ == '__main__':
         print("⚠️  AI model failed to load (will retry on first inference)\n")
 
     # 멀티스레드 활성화로 동시 요청 처리 가능
-    app.run(host='0.0.0.0', port=5004, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5006, debug=False, threaded=True)

@@ -528,6 +528,15 @@
             justify-content: space-between;
             align-items: center;
         }
+
+        /* 반응형 레이아웃 */
+        @media (max-width: 1200px) {
+            .project-grid-3 { grid-template-columns: 1fr 1fr !important; }
+            .project-grid-2 { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 768px) {
+            .project-grid-3, .project-grid-2 { grid-template-columns: 1fr !important; }
+        }
     </style>
 </head>
 <body>
@@ -800,182 +809,192 @@
             <button id="adminTab" class="tab" onclick="showTab('admin')" style="display: none;" data-i18n="tab.admin">👥 Admin</button>
         </div>
 
-        <div id="project-tab" class="tab-content active">
+                <div id="project-tab" class="tab-content active">
             <h2 data-i18n="project.title">프로젝트 관리</h2>
 
-            <!-- Projects List Section (3-column layout) -->
-            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 30px;">
-                <h3 style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">
-                    <span data-i18n="project.list">프로젝트 목록</span>
-                    <button onclick="loadProjects()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px;" data-i18n="common.refresh">🔄 새로고침</button>
-                </h3>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
-                    <!-- 새 프로젝트 생성 (왼쪽) -->
-                    <div>
-                        <h4 data-i18n="project.createNew" style="margin-bottom: 10px; color: #4a9eff;">➕ 새 프로젝트 생성</h4>
-                        <div style="background: #1e1e1e; border: 1px solid #404040; padding: 15px; border-radius: 4px;">
-                            <div style="margin-bottom: 12px;">
-                                <label style="display: block; margin-bottom: 5px; color: #ccc; font-size: 12px;">프로젝트 이름 (필수)</label>
-                                <input type="text" id="projectName" data-i18n-placeholder="project.namePlaceholder" placeholder="프로젝트 이름 (필수)"
-                                       style="padding: 8px; width: 100%; box-sizing: border-box; background: #2a2a2a; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
-                            </div>
-                            <div style="margin-bottom: 15px;">
-                                <label style="display: block; margin-bottom: 5px; color: #ccc; font-size: 12px;">작업자 이름 (선택)</label>
-                                <input type="text" id="projectWorker" data-i18n-placeholder="project.workerPlaceholder" placeholder="작업자 이름 (선택)"
-                                       style="padding: 8px; width: 100%; box-sizing: border-box; background: #2a2a2a; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
-                            </div>
-                            <button onclick="createProject(); return false;" data-i18n="project.create"
-                                    style="width: 100%; padding: 10px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px;">
-                                ➕ 프로젝트 생성
-                            </button>
+            <!-- 사이드바 레이아웃 -->
+            <div class="project-layout" style="display: flex; gap: 20px; min-height: 700px;">
+                
+                <!-- 왼쪽 사이드바 (리사이즈 가능) -->
+                <div class="project-sidebar" id="projectSidebar" style="width: 280px; min-width: 200px; max-width: 500px; flex-shrink: 0; position: relative; display: flex; flex-direction: column;">
+                    
+                    <!-- ➕ 새 프로젝트 생성 -->
+                    <div style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                        <h4 data-i18n="project.createNew" style="margin: 0 0 12px 0; color: #4a9eff; font-size: 14px;">➕ 새 프로젝트 생성</h4>
+                        <div style="margin-bottom: 10px;">
+                            <input type="text" id="projectName" data-i18n-placeholder="project.namePlaceholder" placeholder="프로젝트 이름"
+                                   style="padding: 8px; width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
                         </div>
-                    </div>
-                    <!-- 내 프로젝트 (가운데) -->
-                    <div>
-                        <h4 style="margin-bottom: 10px; color: #4a9eff;">📁 내 프로젝트</h4>
-                        <div id="myProjectList" style="background: #1e1e1e; border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 200px; max-height: 600px; overflow-y: auto;">
-                            <span data-i18n="project.loading">프로젝트 목록을 불러오는 중...</span>
+                        <div style="margin-bottom: 10px;">
+                            <input type="text" id="projectWorker" data-i18n-placeholder="project.workerPlaceholder" placeholder="작업자 이름 (선택)"
+                                   style="padding: 8px; width: 100%; box-sizing: border-box; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
                         </div>
-                    </div>
-                    <!-- 다른 사용자의 프로젝트 (오른쪽) -->
-                    <div>
-                        <h4 style="margin-bottom: 10px; color: #888;">👥 다른 사용자의 프로젝트</h4>
-                        <div id="sharedProjectList" style="background: #1a1a1a; border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 200px; max-height: 600px; overflow-y: auto;">
-                            <span data-i18n="project.loading">프로젝트 목록을 불러오는 중...</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Global/Project Annotation Dashboard -->
-            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 30px;">
-                <h3 id="annotationDashboardTitle" style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">
-                    📊 전체 어노테이션 현황
-                    <button onclick="refreshAnnotationDashboard()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px; background: #555;">🔄 새로고침</button>
-                </h3>
-                <div id="globalAnnotationDashboard" style="background: #1e1e1e; padding: 15px; border-radius: 4px;">
-                    <span style="color: #888;">데이터를 불러오는 중...</span>
-                </div>
-            </div>
-
-            <!-- Current Project Section - 2 Column Layout -->
-            <div id="currentProjectSection" style="margin-bottom: 30px; display: none;">
-                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
-                    <!-- Current Project Info Card -->
-                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
-                        <h3 data-i18n="project.current" style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">현재 프로젝트</h3>
-                        <div style="background: #1e1e1e; padding: 20px; border-radius: 4px; border-left: 4px solid #4a9eff;">
-                            <div style="margin-bottom: 15px;">
-                                <strong id="currentProjectName" style="font-size: 18px; color: #4a9eff; display: block; margin-bottom: 10px;">프로젝트 이름</strong>
-                                <button onclick="openProjectSettings()" style="width: 100%; margin-bottom: 8px; background: #4a9eff;" data-i18n="common.settings">⚙️ 설정</button>
-                                <button onclick="closeProject()" style="width: 100%; background: #dc3545;" data-i18n="common.close">✖ 닫기</button>
-                            </div>
-                            <div id="currentProjectStats" style="font-size: 14px; color: #999; line-height: 1.8;">
-                                통계 정보...
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Project Videos Card -->
-                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
-                        <h3 style="margin-top: 0; margin-bottom: 15px; color: #4a9eff;">
-                            <span data-i18n="project.videos">프로젝트 비디오</span>
-                            <button onclick="showAddVideoDialog()" style="font-size: 12px; padding: 5px 10px; margin-left: 10px;" data-i18n="project.addVideo">➕ 비디오 추가</button>
-                        </h3>
-
-                        <!-- Upload Progress Bar -->
-                        <div id="uploadProgress" style="display: none; margin-bottom: 10px; background: #1e1e1e; border: 1px solid #404040; border-radius: 4px; padding: 10px;">
-                            <div style="margin-bottom: 5px;">
-                                <span id="uploadFileName" style="font-weight: bold; color: #4a9eff;"></span>
-                                <span id="uploadPercent" style="float: right; color: #888;">0%</span>
-                            </div>
-                            <div style="width: 100%; height: 20px; background: #2a2a2a; border-radius: 10px; overflow: hidden;">
-                                <div id="uploadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #4a9eff, #2e7bd4); transition: width 0.3s ease;"></div>
-                            </div>
-                            <div id="uploadStatus" style="margin-top: 5px; font-size: 12px; color: #888;"></div>
-                        </div>
-
-                        <div id="videosList" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 150px; max-height: 400px; overflow-y: auto; background: #1e1e1e;">
-                            <span data-i18n="project.noVideos">비디오가 없습니다.</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Comments Dashboard Card -->
-            <div style="margin-bottom: 30px;">
-                <!-- Comments Dashboard Card -->
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                        <h3 style="margin: 0; color: #4a9eff;">💬 코멘트 대시보드</h3>
-                        <button onclick="loadCommentsDashboard()" style="font-size: 12px; padding: 6px 12px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white;">
-                            🔄 새로고침
+                        <button onclick="createProject(); return false;" data-i18n="project.create"
+                                style="width: 100%; padding: 8px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; color: white;">
+                            ➕ 생성
                         </button>
                     </div>
 
-                    <!-- Filter Controls - Row 1 -->
-                    <div style="margin-bottom: 10px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 8px;">
-                        <select id="commentFilterProject" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                            <option value="">모든 프로젝트</option>
-                        </select>
-                        <select id="commentFilterUser" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                            <option value="">모든 사용자</option>
-                        </select>
-                        <select id="commentFilterLabel" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                            <option value="">모든 라벨</option>
-                        </select>
-                        <select id="commentFilterStatus" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                            <option value="">모든 상태</option>
-                            <option value="open">진행중</option>
-                            <option value="resolved">해결됨</option>
-                            <option value="pending">보류</option>
-                        </select>
-                        <select id="commentSortBy" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                            <option value="recent">최신순</option>
-                            <option value="project">프로젝트순</option>
-                            <option value="user">사용자순</option>
-                        </select>
-                    </div>
-
-                    <!-- Filter Controls - Row 2 -->
-                    <div style="margin-bottom: 10px; display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 8px; align-items: center;">
-                        <input type="date" id="commentFilterDateFrom" onchange="filterComments()"
-                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                        <input type="date" id="commentFilterDateTo" onchange="filterComments()"
-                               style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
-                        <label style="color: #888; font-size: 13px; display: flex; align-items: center; gap: 6px; padding-left: 10px; cursor: pointer;">
-                            <input type="checkbox" id="commentFilterMyOnly" onchange="filterComments()"
-                                   style="width: 16px; height: 16px; cursor: pointer;">
-                            <span>내 코멘트만 보기</span>
-                        </label>
-                        <button onclick="resetCommentFilters()"
-                                style="padding: 8px 16px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px; white-space: nowrap;">
-                            🔄 필터 초기화
-                        </button>
-                        <button id="toggleAnnotationsBtn" onclick="toggleAnnotationsDisplay()"
-                                style="padding: 8px 16px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px; white-space: nowrap;">
-                            👁️ 어노테이션 숨김
-                        </button>
-                    </div>
-
-                    <!-- Filter Results Count and Export -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 5px 10px; background: #252525; border-radius: 4px;">
-                        <div id="commentFilterCount" style="color: #888; font-size: 13px;">
-                            전체: 0개 / 표시: 0개
+                    <!-- 📁 내 프로젝트 -->
+                    <div style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 15px; margin-bottom: 15px; flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <h4 data-i18n="project.myProjects" style="margin: 0; color: #4a9eff; font-size: 14px;">📁 내 프로젝트</h4>
+                            <button onclick="loadProjects()" style="font-size: 11px; padding: 3px 8px; background: #555; border: none; border-radius: 3px; cursor: pointer; color: white;">🔄</button>
                         </div>
-                        <div style="display: flex; gap: 5px;">
-                            <button onclick="exportFilteredCommentsCSV()" style="background: #28a745; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; font-size: 12px;" title="CSV로 내보내기">📊 CSV</button>
-                            <button onclick="exportFilteredCommentsJSON()" style="background: #17a2b8; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; font-size: 12px;" title="JSON으로 내보내기">📄 JSON</button>
+                        <div id="myProjectList" style="background: #1e1e1e; border: 1px solid #404040; padding: 10px; border-radius: 4px; flex: 1; overflow-y: auto; min-height: 100px;">
+                            <span data-i18n="project.loading" style="color: #888; font-size: 13px;">불러오는 중...</span>
                         </div>
                     </div>
 
-                    <!-- Comments List -->
-                    <div id="commentsDashboard" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 600px; max-height: 900px; overflow-y: auto; background: #1e1e1e;">
-                        <span style="color: #888;">코멘트를 불러오는 중...</span>
+                    <!-- 👥 공유 프로젝트 -->
+                    <div style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 15px; flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                        <h4 data-i18n="project.sharedProjects" style="margin: 0 0 10px 0; color: #888; font-size: 14px;">👥 공유 프로젝트</h4>
+                        <div id="sharedProjectList" style="background: #1a1a1a; border: 1px solid #404040; padding: 10px; border-radius: 4px; flex: 1; overflow-y: auto; min-height: 100px;">
+                            <span data-i18n="project.loading" style="color: #666; font-size: 13px;">불러오는 중...</span>
+                        </div>
+                    </div>
+                    <!-- 리사이즈 핸들 -->
+                    <div id="sidebarResizeHandle" style="position: absolute; top: 0; right: -4px; width: 8px; height: 100%; cursor: col-resize; background: transparent; z-index: 10;" onmousedown="startSidebarResize(event)"></div>
+                </div>
+
+                <!-- 오른쪽 메인 영역 -->
+                <div class="project-main" style="flex: 1; min-width: 0;">
+                    
+                    <!-- 프로젝트 미선택 시 플레이스홀더 -->
+                    <div id="projectPlaceholder" style="display: flex; align-items: center; justify-content: center; height: 100%; background: #2d2d2d; border: 2px dashed #404040; border-radius: 8px; min-height: 400px;">
+                        <div style="text-align: center; color: #666;">
+                            <div style="font-size: 48px; margin-bottom: 15px;">📂</div>
+                            <div style="font-size: 18px;" data-i18n="project.selectPrompt">프로젝트를 선택하세요</div>
+                            <div style="font-size: 13px; margin-top: 10px; color: #555;">왼쪽 목록에서 프로젝트를 클릭하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- 프로젝트 선택 시 (display: none → block) -->
+                    <div id="currentProjectSection" style="display: none;">
+                        
+                        <!-- 📊 프로젝트 정보 -->
+                        <div style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 20px; margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                <div style="flex: 1;">
+                                    <h3 id="currentProjectName" style="margin: 0 0 10px 0; color: #4a9eff; font-size: 20px;">프로젝트 이름</h3>
+                                    <div id="currentProjectStats" style="font-size: 13px; color: #999; line-height: 1.6;">
+                                        통계 정보...
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 8px; flex-shrink: 0;">
+                                    <button onclick="openProjectSettings()" style="padding: 8px 15px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px;" data-i18n="common.settings">⚙️ 설정</button>
+                                    <button onclick="closeProject()" style="padding: 8px 15px; background: #dc3545; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 13px;" data-i18n="common.close">✖ 닫기</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 🎬 비디오 -->
+                        <div id="videoCard" style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 20px; margin-bottom: 15px; position: relative;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h3 style="margin: 0; color: #4a9eff; font-size: 16px;">
+                                    <span data-i18n="project.videos">🎬 프로젝트 비디오</span>
+                                </h3>
+                                <button onclick="showAddVideoDialog()" style="font-size: 12px; padding: 6px 12px; background: #28a745; border: none; border-radius: 4px; cursor: pointer; color: white;" data-i18n="project.addVideo">➕ 비디오 추가</button>
+                            </div>
+
+                            <!-- Upload Progress Bar -->
+                            <div id="uploadProgress" style="display: none; margin-bottom: 10px; background: #1e1e1e; border: 1px solid #404040; border-radius: 4px; padding: 10px;">
+                                <div style="margin-bottom: 5px;">
+                                    <span id="uploadFileName" style="font-weight: bold; color: #4a9eff;"></span>
+                                    <span id="uploadPercent" style="float: right; color: #888;">0%</span>
+                                </div>
+                                <div style="width: 100%; height: 20px; background: #2a2a2a; border-radius: 10px; overflow: hidden;">
+                                    <div id="uploadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #4a9eff, #2e7bd4); transition: width 0.3s ease;"></div>
+                                </div>
+                                <div id="uploadStatus" style="margin-top: 5px; font-size: 12px; color: #888;"></div>
+                            </div>
+
+                            <div id="videosList" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 100px; max-height: 300px; overflow-y: auto; background: #1e1e1e;">
+                                <span data-i18n="project.noVideos" style="color: #888;">비디오가 없습니다.</span>
+                            </div>
+                            <div class="card-resize-handle" onmousedown="startCardResize(event, 'videoCard')" style="position: absolute; bottom: 0; left: 0; right: 0; height: 6px; cursor: row-resize; background: linear-gradient(transparent, rgba(74,158,255,0.3));"></div>
+                        </div>
+
+                        <!-- 📊 어노테이션 현황 -->
+                        <div id="annotationCard" style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 20px; margin-bottom: 15px; position: relative;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h3 id="annotationDashboardTitle" style="margin: 0; color: #4a9eff; font-size: 16px;">
+                                    <span data-i18n="project.annotationStatus">📊 어노테이션 현황</span>
+                                </h3>
+                                <button onclick="refreshAnnotationDashboard()" style="font-size: 12px; padding: 6px 12px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white;">🔄 새로고침</button>
+                            </div>
+                            <div id="globalAnnotationDashboard" style="background: #1e1e1e; padding: 15px; border-radius: 4px; min-height: 80px;">
+                                <span style="color: #888;">데이터를 불러오는 중...</span>
+                            </div>
+                            <div class="card-resize-handle" onmousedown="startCardResize(event, 'annotationCard')" style="position: absolute; bottom: 0; left: 0; right: 0; height: 6px; cursor: row-resize; background: linear-gradient(transparent, rgba(74,158,255,0.3));"></div>
+                        </div>
+
+                        <!-- 💬 코멘트 대시보드 -->
+                        <div id="commentCard" style="background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 20px; position: relative;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h3 data-i18n="project.commentsDashboard" style="margin: 0; color: #4a9eff; font-size: 16px;">💬 코멘트 대시보드</h3>
+                                <button onclick="loadCommentsDashboard()" style="font-size: 12px; padding: 6px 12px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white;">🔄 새로고침</button>
+                            </div>
+
+                            <!-- Filter Controls - Row 1 -->
+                            <div style="margin-bottom: 10px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 8px;">
+                                <select id="commentFilterProject" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                    <option value="">모든 프로젝트</option>
+                                </select>
+                                <select id="commentFilterUser" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                    <option value="">모든 사용자</option>
+                                </select>
+                                <select id="commentFilterLabel" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                    <option value="">모든 라벨</option>
+                                </select>
+                                <select id="commentFilterStatus" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                    <option value="">모든 상태</option>
+                                    <option value="open">진행중</option>
+                                    <option value="resolved">해결됨</option>
+                                    <option value="pending">보류</option>
+                                </select>
+                                <select id="commentSortBy" onchange="filterComments()" style="padding: 8px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                    <option value="recent">최신순</option>
+                                    <option value="project">프로젝트순</option>
+                                    <option value="user">사용자순</option>
+                                </select>
+                            </div>
+
+                            <!-- Filter Controls - Row 2 -->
+                            <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                                <label style="color: #888; font-size: 12px;" data-i18n="filter.dateFrom">시작일:</label>
+                                <input type="date" id="commentFilterDateFrom" onchange="filterComments()"
+                                       style="padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                <label style="color: #888; font-size: 12px;" data-i18n="filter.dateTo">종료일:</label>
+                                <input type="date" id="commentFilterDateTo" onchange="filterComments()"
+                                       style="padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
+                                <label style="color: #888; font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="commentFilterMyOnly" onchange="filterComments()" style="width: 14px; height: 14px; cursor: pointer;">
+                                    <span data-i18n="filter.myOnly">내 코멘트만</span>
+                                </label>
+                                <button onclick="resetCommentFilters()" style="padding: 6px 12px; background: #555; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 12px;">🔄 초기화</button>
+                                <button id="toggleAnnotationsBtn" onclick="toggleAnnotationsDisplay()" style="padding: 6px 12px; background: #4a9eff; border: none; border-radius: 4px; cursor: pointer; color: white; font-size: 12px;">👁️ 어노테이션</button>
+                            </div>
+
+                            <!-- Filter Results Count and Export -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 5px 10px; background: #252525; border-radius: 4px;">
+                                <div id="commentFilterCount" style="color: #888; font-size: 12px;">전체: 0개 / 표시: 0개</div>
+                                <div style="display: flex; gap: 5px;">
+                                    <button onclick="exportFilteredCommentsCSV()" style="background: #28a745; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;">📊 CSV</button>
+                                    <button onclick="exportFilteredCommentsJSON()" style="background: #17a2b8; color: white; border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;">📄 JSON</button>
+                                </div>
+                            </div>
+
+                            <!-- Comments List -->
+                            <div id="commentsDashboard" style="border: 1px solid #404040; padding: 15px; border-radius: 4px; min-height: 600px; max-height: 1000px; overflow-y: auto; background: #1e1e1e;">
+                                <span style="color: #888;">코멘트를 불러오는 중...</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
+
 
         <div id="annotation-tab" class="tab-content">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -1174,19 +1193,25 @@
             </div>
         </div>
 
-        <div id="dataset-tab" class="tab-content">
-            <h2 data-i18n="dataset.title">🎯 Dataset Builder</h2>
+                <div id="dataset-tab" class="tab-content">
+            <!-- 서브탭 네비게이션 -->
+            <div style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #404040; padding-bottom: 10px;">
+                <button id="subtab-overview" class="dataset-subtab active" onclick="showDatasetSubtab('overview')" 
+                        style="padding: 12px 24px; font-size: 14px; font-weight: bold; background: #4a9eff; border: none; color: white; border-radius: 8px 8px 0 0; cursor: pointer;">
+                    📊 현황
+                </button>
+                <button id="subtab-builder" class="dataset-subtab" onclick="showDatasetSubtab('builder')"
+                        style="padding: 12px 24px; font-size: 14px; font-weight: bold; background: #2d2d2d; border: none; color: #aaa; border-radius: 8px 8px 0 0; cursor: pointer;">
+                    🛠️ 빌드하기
+                </button>
+            </div>
 
-            <!-- Admin Dashboard (관리자 전용) -->
-            <div id="adminDashboardSection" style="display: block; margin-bottom: 30px;">
+            <!-- ==================== 현황 서브탭 ==================== -->
+            <div id="dataset-overview" class="dataset-subtab-content" style="display: block;">
                 <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                        <h3 style="margin: 0; color: #4a9eff;">📊 관리자 대시보드 - 전체 프로젝트 현황</h3>
+                        <h3 style="margin: 0; color: #4a9eff;">📊 전체 프로젝트 현황</h3>
                         <div style="display: flex; gap: 10px;">
-                            <button id="createDatasetFromAdminBtn" onclick="createDatasetFromSelectedProjects()"
-                                    style="padding: 8px 16px; background: #9b59b6; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold; display: none;">
-                                📦 선택한 프로젝트로 데이터셋 생성 (<span id="selectedProjectCount">0</span>)
-                            </button>
                             <button onclick="exportAdminDashboardCSV()" style="padding: 8px 16px; background: #28a745; border: none; border-radius: 4px; cursor: pointer; color: white; font-weight: bold;">
                                 📥 CSV 내보내기
                             </button>
@@ -1196,205 +1221,229 @@
                         </div>
                     </div>
 
-                    <!-- 전체 통계 요약 -->
-                    <div id="adminSummaryCards" style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 20px;">
-                        <!-- Summary cards will be populated by JavaScript -->
+                    <!-- 전체 통계 요약 카드 -->
+                    <div id="adminSummaryCards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;">
                     </div>
 
-                    <!-- 필터 컨트롤 -->
+                    <!-- 필터 -->
                     <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                        <input type="text" id="adminProjectFilter" placeholder="프로젝트 또는 사용자 검색..."
-                               style="padding: 8px; width: 250px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;"
+                        <input type="text" id="adminProjectFilter" placeholder="🔍 프로젝트 또는 사용자 검색..."
+                               style="padding: 10px 15px; width: 280px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 8px; font-size: 14px;"
                                oninput="filterAdminProjects()">
                         <select id="adminClassFilter" onchange="filterAdminProjects()"
-                                style="padding: 8px; min-width: 180px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                                style="padding: 10px 15px; min-width: 180px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 8px; font-size: 14px;">
                             <option value="">🏷️ 모든 클래스</option>
                         </select>
                         <span id="adminFilterInfo" style="color: #888; font-size: 12px; margin-left: 10px;"></span>
-                        <button onclick="viewClassAnnotations()" id="viewClassAnnotationsBtn" 
-                                style="padding: 8px 12px; background: #9b59b6; border: none; border-radius: 4px; cursor: pointer; color: white; display: none;">
-                            👁️ 클래스 어노테이션 보기
-                        </button>
                     </div>
-                    <div id="adminProjectsList" style="max-height: 600px; overflow-y: auto; border: 1px solid #404040; border-radius: 4px; background: #1e1e1e;">
-                        <div style="padding: 20px; text-align: center; color: #999;">대시보드를 로드하려면 새로고침 버튼을 클릭하세요.</div>
+                    
+                    <!-- 프로젝트 목록 -->
+                    <div id="adminProjectsList" style="max-height: 500px; overflow-y: auto; border: 1px solid #404040; border-radius: 8px; background: #1e1e1e;">
+                        <div style="padding: 40px; text-align: center; color: #888;">
+                            <div style="font-size: 48px; margin-bottom: 15px;">📊</div>
+                            <div style="font-size: 16px;">새로고침 버튼을 클릭하여 현황을 불러오세요</div>
+                        </div>
                     </div>
                 </div>
             </div>
+
+            <!-- ==================== 빌드하기 서브탭 (위저드) ==================== -->
+            <div id="dataset-builder" class="dataset-subtab-content" style="display: none;">
+                
+                <!-- 위저드 진행 표시 -->
+                <div style="display: flex; justify-content: center; align-items: center; margin-bottom: 30px; padding: 20px;">
+                    <div class="wizard-step active" id="wizard-indicator-1" style="display: flex; align-items: center;">
+                        <div style="width: 40px; height: 40px; border-radius: 50%; background: #4a9eff; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">1</div>
+                        <span style="margin-left: 8px; color: #4a9eff; font-weight: bold;">프로젝트</span>
+                    </div>
+                    <div style="width: 60px; height: 3px; background: #404040; margin: 0 10px;" id="wizard-line-1"></div>
+                    <div class="wizard-step" id="wizard-indicator-2" style="display: flex; align-items: center;">
+                        <div style="width: 40px; height: 40px; border-radius: 50%; background: #404040; color: #888; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">2</div>
+                        <span style="margin-left: 8px; color: #888;">클래스</span>
+                    </div>
+                    <div style="width: 60px; height: 3px; background: #404040; margin: 0 10px;" id="wizard-line-2"></div>
+                    <div class="wizard-step" id="wizard-indicator-3" style="display: flex; align-items: center;">
+                        <div style="width: 40px; height: 40px; border-radius: 50%; background: #404040; color: #888; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">3</div>
+                        <span style="margin-left: 8px; color: #888;">설정</span>
+                    </div>
+                    <div style="width: 60px; height: 3px; background: #404040; margin: 0 10px;" id="wizard-line-3"></div>
+                    <div class="wizard-step" id="wizard-indicator-4" style="display: flex; align-items: center;">
+                        <div style="width: 40px; height: 40px; border-radius: 50%; background: #404040; color: #888; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">4</div>
+                        <span style="margin-left: 8px; color: #888;">빌드</span>
+                    </div>
+                </div>
+
+                <!-- Step 1: 프로젝트 선택 -->
+                <div id="wizard-step-1" class="wizard-content" style="display: block;">
+                    <div style="background: #2d2d2d; padding: 30px; border-radius: 12px; border: 2px solid #4a9eff; max-width: 800px; margin: 0 auto;">
+                        <h3 style="margin: 0 0 20px 0; color: #4a9eff; text-align: center;">📁 프로젝트 선택</h3>
+                        <p style="color: #aaa; text-align: center; margin-bottom: 20px;">데이터셋에 포함할 프로젝트를 선택하세요 (다중 선택 가능)</p>
+                        
+                        <div id="datasetProjectList" style="max-height: 350px; overflow-y: auto; padding: 15px; background: #1e1e1e; border: 1px solid #555; border-radius: 8px;">
+                            <div style="color: #888; text-align: center; padding: 40px;">프로젝트 목록 로딩 중...</div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: center;">
+                            <button onclick="selectAllProjects()" style="padding: 8px 20px; background: #4a9eff; border: none; color: white; border-radius: 6px; cursor: pointer;">전체 선택</button>
+                            <button onclick="deselectAllProjects()" style="padding: 8px 20px; background: #555; border: none; color: white; border-radius: 6px; cursor: pointer;">전체 해제</button>
+                        </div>
+                        
+                        <div style="text-align: center; margin-top: 15px; padding: 15px; background: #1a1a1a; border-radius: 8px;">
+                            선택된 프로젝트: <span id="selectedProjectCount" style="color: #4a9eff; font-weight: bold; font-size: 18px;">0</span>개
+                        </div>
+                        
+                        <div style="display: flex; justify-content: flex-end; margin-top: 25px;">
+                            <button onclick="wizardNext()" id="wizard-next-1" style="padding: 12px 40px; background: #4a9eff; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: bold;" disabled>
+                                다음 →
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: 클래스 선택 -->
+                <div id="wizard-step-2" class="wizard-content" style="display: none;">
+                    <div style="background: #2d2d2d; padding: 30px; border-radius: 12px; border: 2px solid #9b59b6; max-width: 800px; margin: 0 auto;">
+                        <h3 style="margin: 0 0 20px 0; color: #9b59b6; text-align: center;">🏷️ 클래스 선택</h3>
+                        <p style="color: #aaa; text-align: center; margin-bottom: 20px;">데이터셋에 포함할 클래스를 선택하세요</p>
+                        
+                        <div id="datasetClassFilter" style="max-height: 300px; overflow-y: auto; padding: 15px; background: #1e1e1e; border: 1px solid #555; border-radius: 8px;">
+                            <div style="color: #888; text-align: center; padding: 40px;">클래스 목록 로딩 중...</div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: center; flex-wrap: wrap;">
+                            <button onclick="selectAllClasses()" style="padding: 8px 20px; background: #9b59b6; border: none; color: white; border-radius: 6px; cursor: pointer;">전체 선택</button>
+                            <button onclick="deselectAllClasses()" style="padding: 8px 20px; background: #555; border: none; color: white; border-radius: 6px; cursor: pointer;">전체 해제</button>
+                            <button onclick="selectCorrosion2Preset()" style="padding: 8px 20px; background: #e67e22; border: none; color: white; border-radius: 6px; cursor: pointer; font-weight: bold;">🧪 부식 2클래스(결절/녹) 프리셋</button>
+                        </div>
+
+                        <!-- 고급: 클래스 관리 (접히는 패널) -->
+                        <details style="margin-top: 20px;">
+                            <summary style="cursor: pointer; color: #888; padding: 10px;">⚙️ 고급: 클래스 관리</summary>
+                            <div style="display: flex; gap: 8px; margin-top: 10px; padding: 15px; background: #1a1a1a; border-radius: 8px;">
+                                <button onclick="openClassManager(\"rename\")" style="flex: 1; padding: 8px; background: #e67e22; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">✏️ 이름변경</button>
+                                <button onclick="openClassManager(\"merge\")" style="flex: 1; padding: 8px; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">🔗 병합</button>
+                                <button onclick="openClassManager(\"delete\")" style="flex: 1; padding: 8px; background: #e74c3c; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">🗑️ 삭제</button>
+                                <button onclick="openClassManager(\"preview\")" style="flex: 1; padding: 8px; background: #3498db; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 12px;">👁️ 미리보기</button>
+                            </div>
+                        </details>
+                        
+                        <div style="display: flex; justify-content: space-between; margin-top: 25px;">
+                            <button onclick="wizardPrev()" style="padding: 12px 40px; background: #555; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px;">
+                                ← 이전
+                            </button>
+                            <button onclick="wizardNext()" style="padding: 12px 40px; background: #9b59b6; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: bold;">
+                                다음 →
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3: 설정 -->
+                <div id="wizard-step-3" class="wizard-content" style="display: none;">
+                    <div style="background: #2d2d2d; padding: 30px; border-radius: 12px; border: 2px solid #f39c12; max-width: 600px; margin: 0 auto;">
+                        <h3 style="margin: 0 0 20px 0; color: #f39c12; text-align: center;">⚙️ 빌드 설정</h3>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 20px;">
+                            <div>
+                                <label style="display: block; margin-bottom: 8px; color: #ccc; font-weight: bold;">📂 출력 디렉토리</label>
+                                <input type="text" id="datasetOutputPath" value="pipe_dataset" 
+                                       style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 8px; font-size: 14px;">
+                            </div>
+                            
+                            <div>
+                                <label style="display: block; margin-bottom: 8px; color: #ccc; font-weight: bold;">📊 Train / Val / Test 비율</label>
+                                <input type="text" id="datasetSplit" value="0.7,0.15,0.15" 
+                                       style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 8px; font-size: 14px;">
+                                <div style="color: #888; font-size: 12px; margin-top: 5px;">예: 0.7,0.15,0.15 (합이 1.0)</div>
+                            </div>
+                            
+                            <div>
+                                <label style="display: block; margin-bottom: 8px; color: #ccc; font-weight: bold;">📦 데이터셋 형식</label>
+                                <select id="datasetFormat" style="width: 100%; padding: 12px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 8px; font-size: 14px;">
+                                    <option value="yolo">YOLO Segmentation</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; justify-content: space-between; margin-top: 30px;">
+                            <button onclick="wizardPrev()" style="padding: 12px 40px; background: #555; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px;">
+                                ← 이전
+                            </button>
+                            <button onclick="wizardNext()" style="padding: 12px 40px; background: #f39c12; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: bold;">
+                                다음 →
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 4: 빌드 -->
+                <div id="wizard-step-4" class="wizard-content" style="display: none;">
+                    <div style="background: #2d2d2d; padding: 30px; border-radius: 12px; border: 2px solid #28a745; max-width: 700px; margin: 0 auto;">
+                        <h3 style="margin: 0 0 20px 0; color: #28a745; text-align: center;">🚀 빌드 준비 완료!</h3>
+                        
+                        <!-- 요약 -->
+                        <div id="datasetStats" style="padding: 20px; background: #1e1e1e; border-radius: 8px; margin-bottom: 20px;">
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; text-align: center;">
+                                <div style="padding: 15px; background: #252525; border-radius: 8px;">
+                                    <div style="color: #888; font-size: 13px; margin-bottom: 5px;">프레임</div>
+                                    <div style="color: #4a9eff; font-weight: bold; font-size: 24px;" id="statTotalFrames">0</div>
+                                </div>
+                                <div style="padding: 15px; background: #252525; border-radius: 8px;">
+                                    <div style="color: #888; font-size: 13px; margin-bottom: 5px;">어노테이션</div>
+                                    <div style="color: #9b59b6; font-weight: bold; font-size: 24px;" id="statTotalAnnotations">0</div>
+                                </div>
+                                <div style="padding: 15px; background: #252525; border-radius: 8px;">
+                                    <div style="color: #888; font-size: 13px; margin-bottom: 5px;">비디오</div>
+                                    <div style="color: #28a745; font-weight: bold; font-size: 24px;" id="statTotalVideos">0</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 진행률 -->
+                        <div style="margin-bottom: 20px;">
+                            <div style="background: #1e1e1e; height: 24px; border-radius: 12px; overflow: hidden; margin-bottom: 8px;">
+                                <div id="datasetProgressBar" style="background: linear-gradient(90deg, #28a745, #20c997); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                            </div>
+                            <div id="datasetProgressText" style="font-size: 13px; color: #aaa; text-align: center;">준비됨</div>
+                        </div>
+                        
+                        <!-- 버튼 -->
+                        <div style="display: flex; gap: 15px; justify-content: center;">
+                            <button onclick="wizardPrev()" style="padding: 12px 30px; background: #555; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px;">
+                                ← 이전
+                            </button>
+                            <button onclick="openLabelingInspector()" style="padding: 12px 30px; background: #9b59b6; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 15px;">
+                                🔍 라벨링 점검
+                            </button>
+                            <button onclick="buildDataset()" id="buildDatasetBtn" style="padding: 12px 40px; background: #28a745; border: none; color: white; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold;">
+                                🚀 데이터셋 빌드
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 빌드 결과 -->
+                    <div id="datasetResultPanel" style="display: none; background: #1a3a1a; padding: 20px; border-radius: 12px; border: 2px solid #28a745; margin-top: 20px; max-width: 700px; margin-left: auto; margin-right: auto;">
+                        <h3 style="margin: 0 0 15px 0; color: #28a745;">✅ 데이터셋 빌드 완료</h3>
+                        <div id="datasetResultContent" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;"></div>
+                    </div>
+                    
+                    <!-- 빌드 로그 -->
+                    <div style="background: #2d2d2d; padding: 20px; border-radius: 12px; margin-top: 20px; max-width: 700px; margin-left: auto; margin-right: auto;">
+                        <h4 style="margin: 0 0 10px 0; color: #888;">📋 빌드 로그</h4>
+                        <div id="datasetLog" style="padding: 15px; border-radius: 8px; min-height: 100px; max-height: 200px; background: #1e1e1e; font-family: monospace; font-size: 12px; overflow-y: auto; color: #aaa;">
+                            Ready to build dataset...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 기존 모달들 유지 -->
 
             <!-- 프로젝트 상세 모달 -->
             <div id="projectDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; overflow: auto;">
                 <div style="position: relative; background: #2d2d2d; margin: 50px auto; padding: 30px; max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
                     <button onclick="closeProjectDetail()" style="position: absolute; top: 15px; right: 15px; background: #ff4444; border: none; color: white; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold;">✕ 닫기</button>
-
-                    <div id="projectDetailContent">
-                        <!-- Content will be populated by JavaScript -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- 2단계 워크플로우 -->
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
-
-                <!-- STEP 1: 프로젝트 & 클래스 선택 -->
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #4a9eff;">
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-                        <div style="background: #4a9eff; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">1</div>
-                        <h3 style="margin: 0; color: #4a9eff;">프로젝트 & 클래스 선택</h3>
-                    </div>
-
-                    <!-- 프로젝트 다중 선택 -->
-                    <div style="margin-bottom: 15px;">
-                        <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #aaa;">📁 프로젝트 (다중 선택 가능)</label>
-                        <div id="datasetProjectList" style="max-height: 180px; overflow-y: auto; padding: 10px; background: #1e1e1e; border: 1px solid #555; border-radius: 4px;">
-                            <div style="color: #999; text-align: center; padding: 20px;">프로젝트 목록 로딩 중...</div>
-                        </div>
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <button onclick="selectAllProjects()" style="flex: 1; padding: 5px; background: #4a9eff; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;">전체 선택</button>
-                            <button onclick="deselectAllProjects()" style="flex: 1; padding: 5px; background: #555; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;">전체 해제</button>
-                        </div>
-                        <div style="margin-top: 5px; font-size: 11px; color: #888;">
-                            선택된 프로젝트: <span id="selectedProjectCount" style="color: #4a9eff; font-weight: bold;">0</span>개
-                        </div>
-                    </div>
-
-                    <!-- 클래스 필터 -->
-                    <div style="margin-bottom: 15px;">
-                        <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #aaa;">🏷️ 클래스 선택</label>
-                        <div id="datasetClassFilter" style="max-height: 200px; overflow-y: auto; padding: 10px; background: #1e1e1e; border: 1px solid #555; border-radius: 4px;">
-                            <div style="color: #999; text-align: center; padding: 20px;">프로젝트를 먼저 선택하세요</div>
-                        </div>
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <button onclick="selectAllClasses()" style="flex: 1; padding: 5px; background: #4a9eff; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;">전체 선택</button>
-                            <button onclick="deselectAllClasses()" style="flex: 1; padding: 5px; background: #555; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;">전체 해제</button>
-                        </div>
-                        <!-- 클래스 관리 버튼 -->
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <button onclick="openClassManager('rename')" style="flex: 1; padding: 5px; background: #e67e22; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;" title="선택한 클래스 이름 변경">✏️ 이름변경</button>
-                            <button onclick="openClassManager('merge')" style="flex: 1; padding: 5px; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;" title="선택한 클래스들을 하나로 병합">🔗 병합</button>
-                            <button onclick="openClassManager('delete')" style="flex: 1; padding: 5px; background: #e74c3c; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;" title="선택한 클래스 삭제">🗑️ 삭제</button>
-                            <button onclick="openClassManager('preview')" style="flex: 1; padding: 5px; background: #3498db; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 11px;" title="선택한 클래스 어노테이션 미리보기">👁️ 미리보기</button>
-                        </div>
-                    </div>
-
-                    <!-- 통계 요약 -->
-                    <div id="datasetStats" style="padding: 12px; background: #1e1e1e; border-radius: 4px; border: 1px solid #555;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; font-size: 12px; text-align: center;">
-                            <div>
-                                <div style="color: #aaa;">프레임</div>
-                                <div style="color: #4a9eff; font-weight: bold; font-size: 16px;" id="statTotalFrames">0</div>
-                            </div>
-                            <div>
-                                <div style="color: #aaa;">어노테이션</div>
-                                <div style="color: #9b59b6; font-weight: bold; font-size: 16px;" id="statTotalAnnotations">0</div>
-                            </div>
-                            <div>
-                                <div style="color: #aaa;">비디오</div>
-                                <div style="color: #28a745; font-weight: bold; font-size: 16px;" id="statTotalVideos">0</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- STEP 2: 빌드 설정 & 실행 -->
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #28a745;">
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-                        <div style="background: #28a745; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px;">2</div>
-                        <h3 style="margin: 0; color: #28a745;">빌드 설정</h3>
-                    </div>
-
-                    <!-- 설정 -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
-                        <div>
-                            <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">출력 디렉토리</label>
-                            <input type="text" id="datasetOutputPath" value="pipe_dataset" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
-                        </div>
-                        <div>
-                            <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">Train/Val/Test 비율</label>
-                            <input type="text" id="datasetSplit" value="0.7,0.15,0.15" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 15px;">
-                        <label style="display: block; margin-bottom: 3px; font-size: 12px; color: #aaa;">데이터셋 형식</label>
-                        <select id="datasetFormat" style="width: 100%; padding: 6px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 12px;">
-                            <option value="yolo">YOLO Segmentation</option>
-                        </select>
-                    </div>
-
-                    <!-- 진행률 -->
-                    <div style="margin-bottom: 15px;">
-                        <div style="background: #1e1e1e; height: 20px; border-radius: 4px; overflow: hidden; margin-bottom: 5px;">
-                            <div id="datasetProgressBar" style="background: #28a745; height: 100%; width: 0%; transition: width 0.3s;"></div>
-                        </div>
-                        <div id="datasetProgressText" style="font-size: 11px; color: #aaa; text-align: center;">준비됨</div>
-                    </div>
-
-                    <!-- 버튼들 -->
-                    <div style="display: flex; gap: 10px;">
-                        <button onclick="openLabelingInspector()" id="inspectLabelingBtn" style="flex: 1; padding: 10px; font-size: 13px; font-weight: bold; background: #9b59b6; border: none; color: white; border-radius: 4px; cursor: pointer;">
-                            🔍 라벨링 점검
-                        </button>
-                        <button onclick="buildDataset()" id="buildDatasetBtn" style="flex: 1; padding: 10px; font-size: 13px; font-weight: bold; background: #28a745; border: none; color: white; border-radius: 4px; cursor: pointer;">
-                            🚀 데이터셋 빌드
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 라벨링 점검 패널 (숨김 상태) -->
-            <div id="labelingInspectorPanel" style="display: none; background: #2d2d2d; padding: 20px; border-radius: 8px; border: 2px solid #9b59b6; margin-bottom: 20px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h3 style="margin: 0; color: #9b59b6;">🔍 라벨링 점검</h3>
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="inspectorVideoSelector" onchange="loadInspectorFrames()" style="padding: 6px 12px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; min-width: 200px;">
-                            <option value="">-- 비디오 선택 --</option>
-                        </select>
-                        <button onclick="closeLabelingInspector()" style="padding: 6px 12px; background: #555; border: none; color: white; border-radius: 4px; cursor: pointer;">닫기</button>
-                    </div>
-                </div>
-
-                <!-- 필터 옵션 -->
-                <div style="display: flex; gap: 15px; margin-bottom: 15px; padding: 10px; background: #1e1e1e; border-radius: 4px;">
-                    <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc; font-size: 13px;">
-                        <input type="radio" name="inspectorFilter" value="all" checked onchange="filterInspectorFrames()"> 작업된 프레임
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc; font-size: 13px;">
-                        <input type="radio" name="inspectorFilter" value="annotated" onchange="filterInspectorFrames()"> 선택 클래스 있음
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc; font-size: 13px;">
-                        <input type="radio" name="inspectorFilter" value="empty" onchange="filterInspectorFrames()"> 선택 클래스 없음
-                    </label>
-                    <div style="margin-left: auto; color: #aaa; font-size: 13px;">
-                        표시: <span id="inspectorFrameCount" style="color: #4a9eff; font-weight: bold;">0</span>개 프레임
-                    </div>
-                </div>
-
-                <!-- 프레임 그리드 -->
-                <div id="inspectorFrameGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 500px; overflow-y: auto; padding: 10px; background: #1e1e1e; border-radius: 4px;">
-                    <div style="color: #999; text-align: center; padding: 40px; grid-column: 1/-1;">비디오를 선택하면 프레임이 표시됩니다</div>
-                </div>
-            </div>
-
-            <!-- 어노테이션 미리보기 모달 -->
-            <div id="annotationPreviewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; justify-content: center; align-items: center;">
-                <div style="position: relative; max-width: 90%; max-height: 90%;">
-                    <button onclick="closeAnnotationPreview()" style="position: absolute; top: -40px; right: 0; background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">닫기 (ESC)</button>
-                    <div style="position: absolute; top: -40px; left: 0; color: white; font-size: 14px;">
-                        <span id="previewFrameInfo">프레임 0</span> -
-                        <span id="previewAnnotationCount">0개 어노테이션</span>
-                    </div>
-                    <div id="previewImageContainer" style="position: relative; display: inline-block; line-height: 0;">
-                        <img id="previewBaseImage" style="max-width: 85vw; max-height: 75vh; display: block;" />
-                    </div>
-                    <div id="previewLegend" style="margin-top: 10px; padding: 10px; background: #2d2d2d; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 10px;"></div>
-                    <!-- 네비게이션 버튼 -->
-                    <div style="position: absolute; top: 50%; left: -50px; transform: translateY(-50%);">
-                        <button onclick="navigatePreview(-1)" style="background: #4a9eff; border: none; color: white; padding: 15px 20px; border-radius: 4px; cursor: pointer; font-size: 20px;">◀</button>
-                    </div>
-                    <div style="position: absolute; top: 50%; right: -50px; transform: translateY(-50%);">
-                        <button onclick="navigatePreview(1)" style="background: #4a9eff; border: none; color: white; padding: 15px 20px; border-radius: 4px; cursor: pointer; font-size: 20px;">▶</button>
-                    </div>
+                    <div id="projectDetailContent"></div>
                 </div>
             </div>
 
@@ -1405,67 +1454,63 @@
                         <h3 id="classManagerTitle" style="margin: 0; color: #4a9eff;">클래스 관리</h3>
                         <button onclick="closeClassManager()" style="background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer;">닫기</button>
                     </div>
-                    <div id="classManagerContent">
-                        <!-- 동적 콘텐츠 -->
+                    <div id="classManagerContent"></div>
+                </div>
+            </div>
+
+            <!-- 라벨링 점검 패널 -->
+            <div id="labelingInspectorPanel" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; padding: 20px; overflow: auto;">
+                <div style="max-width: 1200px; margin: 0 auto;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #9b59b6;">🔍 라벨링 점검</h3>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <select id="inspectorVideoSelector" onchange="loadInspectorFrames()" style="padding: 8px 15px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 6px; min-width: 250px;">
+                                <option value="">-- 비디오 선택 --</option>
+                            </select>
+                            <button onclick="closeLabelingInspector()" style="padding: 8px 20px; background: #ff4444; border: none; color: white; border-radius: 6px; cursor: pointer;">닫기</button>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 15px; margin-bottom: 15px; padding: 12px; background: #2d2d2d; border-radius: 8px;">
+                        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc;">
+                            <input type="radio" name="inspectorFilter" value="all" checked onchange="filterInspectorFrames()"> 작업된 프레임
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc;">
+                            <input type="radio" name="inspectorFilter" value="annotated" onchange="filterInspectorFrames()"> 선택 클래스 있음
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; color: #ccc;">
+                            <input type="radio" name="inspectorFilter" value="empty" onchange="filterInspectorFrames()"> 선택 클래스 없음
+                        </label>
+                        <div style="margin-left: auto; color: #aaa;">
+                            표시: <span id="inspectorFrameCount" style="color: #4a9eff; font-weight: bold;">0</span>개
+                        </div>
+                    </div>
+                    <div id="inspectorFrameGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: calc(100vh - 200px); overflow-y: auto; padding: 15px; background: #1e1e1e; border-radius: 8px;">
+                        <div style="color: #888; text-align: center; padding: 40px; grid-column: 1/-1;">비디오를 선택하면 프레임이 표시됩니다</div>
                     </div>
                 </div>
             </div>
 
-            <!-- 어노테이션 편집 모달 -->
-            <div id="annotationEditorModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 10001; justify-content: center; align-items: center;">
-                <div style="display: flex; flex-direction: column; width: 95%; height: 95%; max-width: 1400px;">
-                    <!-- 헤더 -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #2d2d2d; border-radius: 8px 8px 0 0;">
-                        <div style="display: flex; align-items: center; gap: 15px;">
-                            <h3 style="margin: 0; color: #4a9eff;">✏️ 어노테이션 편집</h3>
-                            <span id="editorFrameInfo" style="color: #aaa; font-size: 13px;"></span>
-                        </div>
-                        <div style="display: flex; gap: 10px;">
-                            <button onclick="editorPrevFrame()" style="background: #555; border: none; color: white; padding: 8px 15px; border-radius: 4px; cursor: pointer;">◀ 이전</button>
-                            <button onclick="editorNextFrame()" style="background: #555; border: none; color: white; padding: 8px 15px; border-radius: 4px; cursor: pointer;">다음 ▶</button>
-                            <button onclick="saveAnnotationEdit()" style="background: #28a745; border: none; color: white; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">💾 저장</button>
-                            <button onclick="closeAnnotationEditor()" style="background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer;">닫기</button>
-                        </div>
+            <!-- 어노테이션 미리보기/편집 모달들은 기존 유지 -->
+            <div id="annotationPreviewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10001; justify-content: center; align-items: center;">
+                <div style="position: relative; max-width: 90%; max-height: 90%;">
+                    <button onclick="closeAnnotationPreview()" style="position: absolute; top: -40px; right: 0; background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer;">닫기 (ESC)</button>
+                    <div style="position: absolute; top: -40px; left: 0; color: white; font-size: 14px;">
+                        <span id="previewFrameInfo">프레임 0</span> - <span id="previewAnnotationCount">0개 어노테이션</span>
                     </div>
-                    <!-- 메인 영역 -->
-                    <div style="display: flex; flex: 1; overflow: hidden; background: #1a1a1a;">
-                        <!-- 캔버스 영역 -->
-                        <div style="flex: 1; position: relative; display: flex; justify-content: center; align-items: center; overflow: hidden;">
-                            <canvas id="editorCanvas" style="max-width: 100%; max-height: 100%; cursor: crosshair;"></canvas>
-                        </div>
-                        <!-- 사이드바 - 어노테이션 목록 -->
-                        <div style="width: 280px; background: #2d2d2d; padding: 15px; overflow-y: auto;">
-                            <h4 style="margin: 0 0 10px 0; color: #ccc;">어노테이션 목록</h4>
-                            <div id="editorAnnotationList" style="display: flex; flex-direction: column; gap: 8px;">
-                            </div>
-                            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
-                                <div style="font-size: 11px; color: #888; margin-bottom: 10px;">
-                                    💡 팁: 어노테이션 클릭으로 선택, 점 드래그로 수정
-                                </div>
-                                <button onclick="deleteSelectedAnnotation()" id="deleteAnnotationBtn" style="width: 100%; padding: 10px; background: #e74c3c; border: none; color: white; border-radius: 4px; cursor: pointer; display: none;">
-                                    🗑️ 선택한 어노테이션 삭제
-                                </button>
-                            </div>
-                        </div>
+                    <div id="previewImageContainer" style="position: relative; display: inline-block; line-height: 0;">
+                        <img id="previewBaseImage" style="max-width: 85vw; max-height: 75vh; display: block;" />
                     </div>
-                </div>
-            </div>
-
-            <!-- 빌드 결과 요약 -->
-            <div id="datasetResultPanel" style="display: none; background: #1a3a1a; padding: 20px; border-radius: 8px; border: 2px solid #28a745; margin-bottom: 20px;">
-                <h3 style="margin: 0 0 15px 0; color: #28a745;">✅ 데이터셋 빌드 완료</h3>
-                <div id="datasetResultContent" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
-                </div>
-            </div>
-
-            <!-- 빌드 로그 -->
-            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
-                <h3 style="margin: 0 0 15px 0; color: #ccc;">📋 빌드 로그</h3>
-                <div id="datasetLog" style="padding: 15px; border-radius: 4px; min-height: 150px; max-height: 300px; background: #1e1e1e; font-family: monospace; font-size: 12px; overflow-y: auto; border: 1px solid #555; color: #aaa;">
-                    <span data-i18n="dataset.ready">Ready to build dataset...</span>
+                    <div id="previewLegend" style="margin-top: 10px; padding: 10px; background: #2d2d2d; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 10px;"></div>
+                    <div style="position: absolute; top: 50%; left: -50px; transform: translateY(-50%);">
+                        <button onclick="navigatePreview(-1)" style="background: #4a9eff; border: none; color: white; padding: 15px 20px; border-radius: 4px; cursor: pointer; font-size: 20px;">◀</button>
+                    </div>
+                    <div style="position: absolute; top: 50%; right: -50px; transform: translateY(-50%);">
+                        <button onclick="navigatePreview(1)" style="background: #4a9eff; border: none; color: white; padding: 15px 20px; border-radius: 4px; cursor: pointer; font-size: 20px;">▶</button>
+                    </div>
                 </div>
             </div>
         </div>
+
 
         <div id="training-tab" class="tab-content">
             <h2 data-i18n="training.title">Model Training</h2>
@@ -1943,6 +1988,10 @@
                 'common.cancel': '취소',
                 'common.settings': '⚙️ 설정',
                 'common.refresh': '🔄 새로고침',
+                'filter.dateFrom': '시작일:',
+                'filter.dateTo': '종료일:',
+                'filter.myOnly': '내 코멘트만 보기',
+                'filter.reset': '🔄 필터 초기화',
 
                 // 프로젝트
                 'project.title': '프로젝트 관리',
@@ -1958,6 +2007,10 @@
                 'project.loading': '프로젝트 목록을 불러오는 중...',
                 'project.namePlaceholder': '프로젝트 이름 (필수)',
                 'project.workerPlaceholder': '작업자 이름 (선택)',
+                'project.myProjects': '📁 내 프로젝트',
+                'project.sharedProjects': '👥 다른 사용자의 프로젝트',
+                'project.annotationStatus': '📊 전체 어노테이션 현황',
+                'project.commentsDashboard': '💬 코멘트 대시보드',
 
                 // 어노테이션
                 'annotation.title': '비디오 어노테이션',
@@ -2091,6 +2144,10 @@
                 'common.cancel': 'Cancel',
                 'common.settings': '⚙️ Settings',
                 'common.refresh': '🔄 Refresh',
+                'filter.dateFrom': 'From:',
+                'filter.dateTo': 'To:',
+                'filter.myOnly': 'My comments only',
+                'filter.reset': '🔄 Reset Filters',
 
                 // Project
                 'project.title': 'Project Management',
@@ -2106,6 +2163,10 @@
                 'project.loading': 'Loading project list...',
                 'project.namePlaceholder': 'Project Name (Required)',
                 'project.workerPlaceholder': 'Worker Name (Optional)',
+                'project.myProjects': '📁 My Projects',
+                'project.sharedProjects': '👥 Shared Projects',
+                'project.annotationStatus': '📊 Annotation Status',
+                'project.commentsDashboard': '💬 Comments Dashboard',
 
                 // Annotation
                 'annotation.title': 'Video Annotation',
@@ -2597,6 +2658,110 @@
             return response;
         }
 
+        
+        // ==================== 데이터셋 탭 위저드 ====================
+        let currentWizardStep = 1;
+        const totalWizardSteps = 4;
+
+        function showDatasetSubtab(tabName) {
+            // 서브탭 버튼 스타일 변경
+            document.querySelectorAll(".dataset-subtab").forEach(btn => {
+                btn.style.background = "#2d2d2d";
+                btn.style.color = "#aaa";
+            });
+            document.getElementById("subtab-" + tabName).style.background = "#4a9eff";
+            document.getElementById("subtab-" + tabName).style.color = "white";
+
+            // 콘텐츠 표시/숨김
+            document.querySelectorAll(".dataset-subtab-content").forEach(content => {
+                content.style.display = "none";
+            });
+            
+            if (tabName === "overview") {
+                document.getElementById("dataset-overview").style.display = "block";
+            } else if (tabName === "builder") {
+                document.getElementById("dataset-builder").style.display = "block";
+                // 프로젝트 목록 로드
+                if (typeof loadProjectsForDataset === "function") {
+                    loadProjectsForDataset();
+                }
+            }
+        }
+
+        function updateWizardIndicators() {
+            for (let i = 1; i <= totalWizardSteps; i++) {
+                const indicator = document.getElementById("wizard-indicator-" + i);
+                const circle = indicator.querySelector("div");
+                const text = indicator.querySelector("span");
+                const line = document.getElementById("wizard-line-" + (i-1));
+                
+                if (i < currentWizardStep) {
+                    // 완료된 스텝
+                    circle.style.background = "#28a745";
+                    circle.style.color = "white";
+                    text.style.color = "#28a745";
+                    if (line) line.style.background = "#28a745";
+                } else if (i === currentWizardStep) {
+                    // 현재 스텝
+                    const colors = ["#4a9eff", "#4a9eff", "#9b59b6", "#f39c12", "#28a745"];
+                    circle.style.background = colors[i];
+                    circle.style.color = "white";
+                    text.style.color = colors[i];
+                    text.style.fontWeight = "bold";
+                } else {
+                    // 미완료 스텝
+                    circle.style.background = "#404040";
+                    circle.style.color = "#888";
+                    text.style.color = "#888";
+                    text.style.fontWeight = "normal";
+                }
+            }
+        }
+
+        function showWizardStep(step) {
+            document.querySelectorAll(".wizard-content").forEach(content => {
+                content.style.display = "none";
+            });
+            document.getElementById("wizard-step-" + step).style.display = "block";
+            currentWizardStep = step;
+            updateWizardIndicators();
+        }
+
+        function wizardNext() {
+            if (currentWizardStep < totalWizardSteps) {
+                // Step 1 -> 2: 클래스 목록 로드
+                if (currentWizardStep === 1 && typeof updateClassList === "function") {
+                    updateClassList();
+                }
+                // Step 3 -> 4: 통계 업데이트
+                if (currentWizardStep === 3 && typeof updateDatasetStats === "function") {
+                    updateDatasetStats();
+                }
+                showWizardStep(currentWizardStep + 1);
+            }
+        }
+
+        function wizardPrev() {
+            if (currentWizardStep > 1) {
+                showWizardStep(currentWizardStep - 1);
+            }
+        }
+
+        // 프로젝트 선택 시 다음 버튼 활성화
+        function updateWizardNextButton() {
+            const selectedCount = document.querySelectorAll("#datasetProjectList input[type=checkbox]:checked").length;
+            const nextBtn = document.getElementById("wizard-next-1");
+            if (nextBtn) {
+                nextBtn.disabled = selectedCount === 0;
+                nextBtn.style.opacity = selectedCount === 0 ? "0.5" : "1";
+            }
+            const countSpan = document.getElementById("selectedProjectCount");
+            if (countSpan) {
+                countSpan.textContent = selectedCount;
+            }
+        }
+
+
         function showTab(tabName) {
             // 모든 탭 컨텐츠 비활성화
             document.querySelectorAll('.tab-content').forEach(content => content.style.display = 'none');
@@ -2639,6 +2804,11 @@
             // 추론 탭 클릭 시 프로젝트 목록 로드
             if (tabName === 'inference') {
                 initInferenceTab();
+            }
+
+            // 학습 탭 클릭 시 상태 로드
+            if (tabName === 'training' && typeof initTrainingTab === 'function') {
+                initTrainingTab();
             }
 
             // 관리자 사용자가 프로젝트/어노테이션 탭 클릭 시 관리자용 데이터 로드
@@ -4099,7 +4269,7 @@
                     const summaryHtml = `
                         <div style="background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
                             padding: 20px; margin-bottom: 15px; border-radius: 8px; color: white;">
-                            <h3 style="margin: 0 0 15px 0; font-size: 18px;">📊 전체 어노테이션 현황</h3>
+                            <h3 style="margin: 0 0 15px 0; font-size: 18px;"><span data-i18n="project.annotationStatus">📊 전체 어노테이션 현황</span></h3>
                             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; text-align: center;">
                                 <div>
                                     <div style="font-size: 28px; font-weight: bold;">${stats.total_users}</div>
@@ -4238,12 +4408,17 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
         // 현재 프로젝트 표시
         function displayCurrentProject() {
+            const placeholder = document.getElementById('projectPlaceholder');
+            const section = document.getElementById('currentProjectSection');
+            
             if (!currentProject) {
-                document.getElementById('currentProjectSection').style.display = 'none';
+                if (section) section.style.display = 'none';
+                if (placeholder) placeholder.style.display = 'flex';
                 return;
             }
 
-            document.getElementById('currentProjectSection').style.display = 'block';
+            if (placeholder) placeholder.style.display = 'none';
+            if (section) section.style.display = 'block';
             document.getElementById('currentProjectName').textContent = currentProject.name;
 
             // 기본값 설정
@@ -4505,7 +4680,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     titleText = `📊 ${currentProject.name} - 어노테이션 현황`;
                 } else {
                     apiUrl = `/api/annotations/global-summary`;
-                    titleText = '📊 전체 어노테이션 현황';
+                    titleText = '<span data-i18n="project.annotationStatus">📊 전체 어노테이션 현황</span>';
                 }
 
                 // 제목 업데이트
@@ -4672,6 +4847,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         function closeProject() {
             currentProject = null;
             document.getElementById('currentProjectSection').style.display = 'none';
+            const placeholder = document.getElementById('projectPlaceholder');
+            if (placeholder) placeholder.style.display = 'flex';
 
             // 프로젝트를 닫으면 전체 통계로 복원
             loadAnnotationDashboard();
@@ -9354,7 +9531,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             }
 
             // 선택 카운트 업데이트
-            document.getElementById('selectedProjectCount').textContent = datasetSelectedProjects.size;
+            
+            var nextBtn = document.getElementById('wizard-next-1');
+            if (nextBtn) { nextBtn.disabled = datasetSelectedProjects.size === 0; nextBtn.style.opacity = datasetSelectedProjects.size === 0 ? '0.5' : '1'; }
+            if (typeof updateWizardNextButton === 'function') updateWizardNextButton();
 
             // 첫 번째 선택된 프로젝트를 기본값으로 설정 (호환성)
             datasetSelectedProject = datasetSelectedProjects.size > 0 ? [...datasetSelectedProjects][0] : null;
@@ -9373,6 +9553,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             document.getElementById('selectedProjectCount').textContent = datasetSelectedProjects.size;
             datasetSelectedProject = datasetSelectedProjects.size > 0 ? [...datasetSelectedProjects][0] : null;
             updateMultiProjectClasses();
+            if (typeof updateWizardNextButton === 'function') updateWizardNextButton();
         }
 
         // 프로젝트 전체 해제
@@ -9384,6 +9565,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             datasetSelectedProjects.clear();
             datasetSelectedProject = null;
             document.getElementById('selectedProjectCount').textContent = '0';
+            var nextBtn = document.getElementById('wizard-next-1');
+            if (nextBtn) { nextBtn.disabled = true; nextBtn.style.opacity = '0.5'; }
             datasetProjectSummaries = {};
             datasetSelectedClasses.clear();
             updateDatasetClassFilter();
@@ -9527,6 +9710,37 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             });
 
             container.innerHTML = html;
+        }
+
+        function selectCorrosion2Preset() {
+            const target = ['부식(결절)', '부식(녹)'];
+            const available = [];
+
+            // 현재 표시된 클래스 목록에서 사용 가능 여부 확인
+            const classLabels = document.querySelectorAll('#datasetClassFilter label span:first-of-type');
+            classLabels.forEach(el => available.push(el.textContent.split(' (')[0].trim()));
+
+            const missing = target.filter(c => !available.includes(c));
+            if (missing.length > 0) {
+                alert('프리셋 클래스 일부를 찾지 못했습니다: ' + missing.join(', '));
+            }
+
+            datasetSelectedClasses.clear();
+            target.forEach(c => {
+                if (available.includes(c)) datasetSelectedClasses.add(c);
+            });
+
+            updateDatasetClassFilter();
+            updateDatasetVideosList();
+            updateDatasetStats();
+            updateBuildSummary();
+
+            const outEl = document.getElementById('datasetOutputPath');
+            if (outEl) outEl.value = 'pipe_dataset_corrosion2';
+
+            if (datasetSelectedClasses.size > 0) {
+                alert(`프리셋 적용 완료: ${Array.from(datasetSelectedClasses).join(', ')}`);
+            }
         }
 
         // Toggle class selection
@@ -10491,6 +10705,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 panel.querySelector('h3').textContent = '✅ 데이터셋 빌드 완료';
                 panel.querySelector('h3').style.color = '#28a745';
 
+                lastBuiltDatasetPath = result.outputDir;
                 content.innerHTML = `
                     <div style="background: #0d1f0d; padding: 15px; border-radius: 6px; text-align: center;">
                         <div style="font-size: 28px; font-weight: bold; color: #28a745;">${result.totalImages}</div>
@@ -10519,6 +10734,13 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     <div style="grid-column: 1 / -1; background: #0d1f0d; padding: 15px; border-radius: 6px;">
                         <div style="color: #888; font-size: 12px; margin-bottom: 5px;">클래스 (${result.classes.length}개)</div>
                         <div style="color: #ccc;">${result.classes.join(', ')}</div>
+                    </div>
+                `;
+
+                const escapedOutput = String(result.outputDir || '').replace(/\/g, '\\').replace(/'/g, "\\'");
+                content.innerHTML += `
+                    <div style="grid-column: 1 / -1; background: #0d1f0d; padding: 15px; border-radius: 6px; text-align:center;">
+                        <button onclick="useDatasetForTraining('${escapedOutput}')" style="padding:10px 20px; background:#4a9eff; border:none; color:white; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 이 데이터셋으로 학습하기</button>
                     </div>
                 `;
 
@@ -11506,16 +11728,195 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         }
 
         // ===== Training Tab Functions =====
+        let trainingStatusInterval = null;
+        let lastBuiltDatasetPath = null;
+
+        function appendTrainingLog(message, color = '#ccc') {
+            const logDiv = document.getElementById('trainingLog');
+            if (!logDiv) return;
+            const ts = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `<div style="color:${color};">[${ts}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function setTrainingButtons(isTraining) {
+            const startBtn = document.getElementById('startTrainingBtn');
+            const stopBtn = document.getElementById('stopTrainingBtn');
+            if (startBtn) startBtn.disabled = !!isTraining;
+            if (stopBtn) stopBtn.disabled = !isTraining;
+        }
+
+        function updateTrainingProgress(percent, text, color = '#28a745') {
+            const bar = document.getElementById('trainingProgressBar');
+            const textEl = document.getElementById('trainingProgressText');
+            if (!bar || !textEl) return;
+            const p = Math.max(0, Math.min(100, Number(percent) || 0));
+            bar.style.width = `${p}%`;
+            bar.style.background = color;
+            textEl.textContent = text || `${p.toFixed(1)}%`;
+        }
+
+        function ensureTrainingPolling() {
+            if (trainingStatusInterval) return;
+            trainingStatusInterval = setInterval(() => {
+                fetchTrainingStatus(true);
+            }, 3000);
+        }
+
+        function stopTrainingPolling() {
+            if (trainingStatusInterval) {
+                clearInterval(trainingStatusInterval);
+                trainingStatusInterval = null;
+            }
+        }
+
+        function useDatasetForTraining(datasetPath) {
+            if (!datasetPath) return;
+            const input = document.getElementById('trainingDatasetPath');
+            if (input) input.value = datasetPath;
+            const modelType = document.getElementById('trainingModelType');
+            if (modelType) modelType.value = 'yolo';
+            appendTrainingLog(`데이터셋 경로 설정: ${datasetPath}`, '#4a9eff');
+            showTab('training');
+        }
+
+        async function initTrainingTab() {
+            const input = document.getElementById('trainingDatasetPath');
+            if (input && (!input.value || input.value === 'pipe_dataset') && lastBuiltDatasetPath) {
+                input.value = lastBuiltDatasetPath;
+            }
+            await fetchTrainingStatus(true);
+        }
+
         function browseDataset() {
-            alert('데이터셋 선택 기능은 구현 예정입니다.');
+            const current = document.getElementById('trainingDatasetPath').value || lastBuiltDatasetPath || '/home/intu/projects/pipe-inspector-staging/gpu-server';
+            const picked = prompt('학습용 데이터셋 경로를 입력하세요', current);
+            if (picked && picked.trim()) {
+                document.getElementById('trainingDatasetPath').value = picked.trim();
+            }
         }
 
-        function startTraining() {
-            alert('학습 시작 기능은 구현 예정입니다.');
+        async function startTraining() {
+            const modelType = document.getElementById('trainingModelType').value;
+            if (modelType !== 'yolo') {
+                alert('현재는 YOLO Segmentation 학습만 지원합니다.');
+                return;
+            }
+
+            const datasetPath = document.getElementById('trainingDatasetPath').value.trim();
+            const projectName = document.getElementById('trainingOutputPath').value.trim() || 'pipe_defect';
+            const epochs = parseInt(document.getElementById('trainingEpochs').value, 10) || 100;
+            const batchSize = parseInt(document.getElementById('trainingBatchSize').value, 10) || 8;
+            const lr0 = parseFloat(document.getElementById('trainingLR').value) || 0.01;
+
+            if (!datasetPath) {
+                alert('데이터셋 경로를 입력하세요.');
+                return;
+            }
+
+            setTrainingButtons(true);
+            appendTrainingLog('학습 시작 요청 전송...', '#ffa500');
+            updateTrainingProgress(0, '요청 중...', '#4a9eff');
+
+            try {
+                const response = await authFetch('/api/ai/train', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        dataset_path: datasetPath,
+                        model_size: 'n',
+                        epochs: epochs,
+                        batch_size: batchSize,
+                        lr0: lr0,
+                        img_size: 640,
+                        project_name: projectName,
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || '학습 시작 실패');
+                }
+
+                appendTrainingLog(`✅ 학습 시작됨 (job: ${data.job_id})`, '#28a745');
+                ensureTrainingPolling();
+                await fetchTrainingStatus(true);
+            } catch (error) {
+                setTrainingButtons(false);
+                appendTrainingLog(`❌ 학습 시작 실패: ${error.message}`, '#ff6b6b');
+                updateTrainingProgress(0, '시작 실패', '#ff6b6b');
+            }
         }
 
-        function stopTraining() {
-            alert('학습 중지 기능은 구현 예정입니다.');
+        async function fetchTrainingStatus(silent = false) {
+            try {
+                const response = await authFetch('/api/ai/train/status');
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || '상태 조회 실패');
+                }
+
+                const isTraining = !!data.is_training;
+                const progress = data.progress || {};
+                const status = progress.status || (isTraining ? 'training' : 'idle');
+
+                if (status === 'queued') {
+                    updateTrainingProgress(0, '대기 중...', '#4a9eff');
+                    setTrainingButtons(true);
+                    ensureTrainingPolling();
+                } else if (status === 'starting') {
+                    updateTrainingProgress(1, '초기화 중...', '#4a9eff');
+                    setTrainingButtons(true);
+                    ensureTrainingPolling();
+                } else if (status === 'training') {
+                    const percent = progress.percent || (progress.epoch && progress.total_epochs ? (progress.epoch / progress.total_epochs) * 100 : 0);
+                    updateTrainingProgress(percent, `${progress.epoch || 0}/${progress.total_epochs || 0} epoch`, '#28a745');
+                    setTrainingButtons(true);
+                    ensureTrainingPolling();
+                } else if (status === 'completed') {
+                    updateTrainingProgress(100, '완료', '#28a745');
+                    setTrainingButtons(false);
+                    stopTrainingPolling();
+                    if (!silent) {
+                        appendTrainingLog('✅ 학습 완료', '#28a745');
+                        if (progress.best_model) appendTrainingLog(`best.pt: ${progress.best_model}`, '#4a9eff');
+                    }
+                } else if (status === 'cancelled') {
+                    updateTrainingProgress(progress.percent || 0, '중단됨', '#ff6b6b');
+                    setTrainingButtons(false);
+                    stopTrainingPolling();
+                    if (!silent) appendTrainingLog('⚠️ 학습 중단됨', '#ffa500');
+                } else if (status === 'error') {
+                    updateTrainingProgress(progress.percent || 0, '오류', '#ff6b6b');
+                    setTrainingButtons(false);
+                    stopTrainingPolling();
+                    if (!silent) appendTrainingLog(`❌ 오류: ${progress.error || 'unknown'}`, '#ff6b6b');
+                } else {
+                    setTrainingButtons(isTraining);
+                    if (!isTraining) stopTrainingPolling();
+                }
+            } catch (error) {
+                if (!silent) appendTrainingLog(`상태 조회 실패: ${error.message}`, '#ff6b6b');
+            }
+        }
+
+        async function stopTraining() {
+            try {
+                appendTrainingLog('중단 요청 전송...', '#ffa500');
+                const response = await authFetch('/api/ai/train/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || '중단 요청 실패');
+                }
+                appendTrainingLog('⏹ 중단 요청 완료 (현재 epoch 종료 후 반영)', '#ffa500');
+                ensureTrainingPolling();
+            } catch (error) {
+                appendTrainingLog(`❌ 중단 실패: ${error.message}`, '#ff6b6b');
+            }
         }
 
         // ===== Inference Tab Functions =====
@@ -13528,8 +13929,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             });
         }
         
-        // 어노테이션 위치로 이동
-        function goToAnnotation(projectId, videoId, frame) {
+        // 어노테이션 위치로 이동 (Admin 탭용)
+        function goToAnnotationFromAdmin(projectId, videoId, frame) {
             // 모달 닫기
             const modal = document.getElementById('classAnnotationsModal');
             if (modal) modal.remove();
@@ -13814,6 +14215,112 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 
             console.log(`[ADMIN DASHBOARD] CSV exported: ${filename}`);
         }
+
+        // 사이드바 리사이즈 기능
+        let isResizingSidebar = false;
+        let sidebarStartX = 0;
+        let sidebarStartWidth = 0;
+
+        function startSidebarResize(e) {
+            isResizingSidebar = true;
+            const sidebar = document.getElementById('projectSidebar');
+            sidebarStartX = e.clientX;
+            sidebarStartWidth = sidebar.offsetWidth;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        }
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isResizingSidebar) return;
+            const sidebar = document.getElementById('projectSidebar');
+            const delta = e.clientX - sidebarStartX;
+            const newWidth = Math.min(500, Math.max(200, sidebarStartWidth + delta));
+            sidebar.style.width = newWidth + 'px';
+            // 로컬 스토리지에 저장
+            localStorage.setItem('projectSidebarWidth', newWidth);
+        });
+
+        document.addEventListener('mouseup', function() {
+            if (isResizingSidebar) {
+                isResizingSidebar = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+
+        // 페이지 로드 시 저장된 너비 복원
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedWidth = localStorage.getItem('projectSidebarWidth');
+            if (savedWidth) {
+                const sidebar = document.getElementById('projectSidebar');
+                if (sidebar) sidebar.style.width = savedWidth + 'px';
+            }
+        });
+
+        // 카드 세로 리사이즈 기능
+        let isResizingCard = false;
+        let resizingCardId = null;
+        let cardStartY = 0;
+        let cardStartHeight = 0;
+
+        function startCardResize(e, cardId) {
+            isResizingCard = true;
+            resizingCardId = cardId;
+            const card = document.getElementById(cardId);
+            cardStartY = e.clientY;
+            cardStartHeight = card.offsetHeight;
+            document.body.style.cursor = 'row-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        }
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isResizingCard || !resizingCardId) return;
+            const card = document.getElementById(resizingCardId);
+            const delta = e.clientY - cardStartY;
+            const newHeight = Math.max(150, cardStartHeight + delta);
+            card.style.height = newHeight + 'px';
+            card.style.overflow = 'hidden';
+            // 내부 스크롤 영역 조절
+            const scrollArea = card.querySelector('[style*="overflow-y: auto"]');
+            if (scrollArea) {
+                scrollArea.style.maxHeight = (newHeight - 100) + 'px';
+            }
+            // 로컬 스토리지에 저장
+            localStorage.setItem(resizingCardId + 'Height', newHeight);
+        });
+
+        document.addEventListener('mouseup', function() {
+            if (isResizingCard) {
+                isResizingCard = false;
+                resizingCardId = null;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+
+        // 페이지 로드 시 저장된 카드 높이 복원
+        (function() {
+            const origDomReady = window.onload;
+            window.onload = function() {
+                if (origDomReady) origDomReady();
+                ['videoCard', 'annotationCard', 'commentCard'].forEach(function(cardId) {
+                    const savedHeight = localStorage.getItem(cardId + 'Height');
+                    if (savedHeight) {
+                        const card = document.getElementById(cardId);
+                        if (card) {
+                            card.style.height = savedHeight + 'px';
+                            card.style.overflow = 'hidden';
+                            const scrollArea = card.querySelector('[style*="overflow-y: auto"]');
+                            if (scrollArea) {
+                                scrollArea.style.maxHeight = (parseInt(savedHeight) - 100) + 'px';
+                            }
+                        }
+                    }
+                });
+            };
+        })();
 
     </script>
 

@@ -27,7 +27,7 @@ app = Flask(__name__)
 CORS(app)
 
 # GPU 서버 URL (환경 변수 또는 기본값)
-GPU_SERVER_URL = os.getenv('GPU_SERVER_URL', 'http://localhost:5004')
+GPU_SERVER_URL = os.getenv('GPU_SERVER_URL', 'http://localhost:5006')
 
 # 프로젝트 기본 디렉토리 (고정 경로)
 BASE_PROJECTS_DIR = Path('/home/intu/Nas2/k_water/pipe_inspector_data')
@@ -35,6 +35,9 @@ BASE_PROJECTS_DIR = Path('/home/intu/Nas2/k_water/pipe_inspector_data')
 # 기본 디렉토리 생성
 BASE_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# ===== Admin Dashboard Cache =====
+ADMIN_DASHBOARD_CACHE_FILE = Path(__file__).parent / ".admin_dashboard_cache.json"
+ADMIN_DASHBOARD_CACHE_TTL = 300  # 5분 캐시
 # 사용자 관리자 초기화
 user_manager = UserManager()
 
@@ -277,6 +280,65 @@ def require_admin(f):
     return decorated_function
 
 
+
+# ===== Admin Dashboard Cache Functions =====
+def _get_annotations_last_modified():
+    """어노테이션 폴더의 최신 수정 시간 반환"""
+    latest_mtime = 0
+    try:
+        for user_dir in BASE_PROJECTS_DIR.iterdir():
+            if not user_dir.is_dir():
+                continue
+            for project_dir in user_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                annotations_dir = project_dir / 'annotations'
+                if annotations_dir.exists():
+                    dir_mtime = annotations_dir.stat().st_mtime
+                    if dir_mtime > latest_mtime:
+                        latest_mtime = dir_mtime
+    except Exception as e:
+        logger.warning(f'[CACHE] Error checking mtime: {e}')
+    return latest_mtime
+
+def _load_dashboard_cache():
+    """캐시 로드 (유효하면 데이터 반환, 아니면 None)"""
+    import json
+    try:
+        if not ADMIN_DASHBOARD_CACHE_FILE.exists():
+            return None
+        with open(ADMIN_DASHBOARD_CACHE_FILE, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        cache_time = cache.get('cached_at', 0)
+        if time.time() - cache_time > ADMIN_DASHBOARD_CACHE_TTL:
+            logger.info('[CACHE] Dashboard cache expired (TTL)')
+            return None
+        cached_mtime = cache.get('annotations_mtime', 0)
+        current_mtime = _get_annotations_last_modified()
+        if current_mtime > cached_mtime:
+            logger.info('[CACHE] Dashboard cache invalidated (annotations changed)')
+            return None
+        logger.info('[CACHE] Dashboard cache HIT')
+        return cache.get('data')
+    except Exception as e:
+        logger.warning(f'[CACHE] Error loading cache: {e}')
+        return None
+
+def _save_dashboard_cache(data):
+    """캐시 저장"""
+    import json
+    try:
+        cache = {
+            'cached_at': time.time(),
+            'annotations_mtime': _get_annotations_last_modified(),
+            'data': data
+        }
+        with open(ADMIN_DASHBOARD_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f)
+        logger.info('[CACHE] Dashboard cache saved')
+    except Exception as e:
+        logger.warning(f'[CACHE] Error saving cache: {e}')
+
 def find_project_dir(project_id: str, user_id: str):
     """
     프로젝트 디렉토리 찾기
@@ -334,6 +396,10 @@ def forward_to_gpu(path, method='GET', **kwargs):
     """GPU 서버로 요청 전달"""
     url = f"{GPU_SERVER_URL}{path}"
     logger.info(f"Forwarding {method} request to {url}")
+    if 'json' in kwargs and kwargs['json']:
+        import json as _json
+        data_size = len(_json.dumps(kwargs['json']))
+        logger.info(f"Request data size: {data_size / 1024:.1f} KB")
 
     try:
         params = kwargs.get('params', None)
@@ -2703,6 +2769,38 @@ def run_inference_box():
     return jsonify(data), status_code
 
 
+@app.route('/api/ai/train', methods=['POST'])
+@require_auth
+def ai_train_start():
+    """YOLO 학습 시작 (GPU 서버 프록시)"""
+    data, status_code = forward_to_gpu('/api/ai/train', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/ai/train/status', methods=['GET'])
+@require_auth
+def ai_train_status():
+    """YOLO 학습 상태 조회 (GPU 서버 프록시)"""
+    data, status_code = forward_to_gpu('/api/ai/train/status', method='GET')
+    return jsonify(data), status_code
+
+
+@app.route('/api/ai/train/stop', methods=['POST'])
+@require_auth
+def ai_train_stop():
+    """YOLO 학습 중단 요청 (GPU 서버 프록시)"""
+    data, status_code = forward_to_gpu('/api/ai/train/stop', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/ai/models', methods=['GET'])
+@require_auth
+def ai_models():
+    """학습된 모델 목록 (GPU 서버 프록시)"""
+    data, status_code = forward_to_gpu('/api/ai/models', method='GET')
+    return jsonify(data), status_code
+
+
 @app.route('/api/export/dataset', methods=['POST'])
 def export_dataset():
     """학습 데이터셋 export"""
@@ -2935,8 +3033,8 @@ def build_dataset_multi():
             'base_projects_dir': str(BASE_PROJECTS_DIR)
         }
 
-        # GPU 서버에 빌드 요청
-        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo', method='POST', json=build_request)
+        # GPU 서버에 빌드 요청 (클래스 필터/ID 재매핑 지원 버전)
+        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo_filtered', method='POST', json=build_request)
 
         if status_code == 200 and gpu_response.get('success'):
             logger.info(f"[DATASET BUILD-MULTI] Success: {gpu_response.get('output_dir')}")
@@ -5140,6 +5238,13 @@ def get_admin_dashboard():
                 'error': 'Admin access required'
             }), 403
 
+
+        # ===== 캐시 체크 =====
+        cached_data = _load_dashboard_cache()
+        if cached_data:
+            return jsonify(cached_data)
+        
+        logger.info("[ADMIN DASHBOARD] Cache miss, calculating...")
         # 모든 사용자의 프로젝트 스캔
         all_projects = []
 
@@ -5264,11 +5369,16 @@ def get_admin_dashboard():
 
         logger.info(f"[ADMIN DASHBOARD] Fetched {len(all_projects)} projects for admin")
 
-        return jsonify({
-            'success': True,
-            'projects': all_projects,
-            'summary': total_stats
-        })
+        # ===== 캐시 저장 =====
+        result_data = {
+            "success": True,
+            "projects": all_projects,
+            "summary": total_stats
+        }
+        _save_dashboard_cache(result_data)
+        return jsonify(result_data)
+
+
 
     except Exception as e:
         logger.error(f"[ADMIN DASHBOARD] Error: {e}")
@@ -5299,4 +5409,4 @@ if __name__ == '__main__':
         logger.info(f"  {rule.endpoint}: {rule.rule} [{', '.join(rule.methods - {'HEAD', 'OPTIONS'})}]")
 
     # debug=False로 변경하여 reloader 문제 방지
-    app.run(host='0.0.0.0', port=5003, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5005, debug=False, threaded=True)

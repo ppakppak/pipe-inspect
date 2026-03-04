@@ -2955,77 +2955,13 @@ def build_dataset_multi():
         logger.info(f"[DATASET BUILD-MULTI] Classes: {classes}")
         logger.info(f"[DATASET BUILD-MULTI] Output: {output_dir}, Split: {split_ratio}")
 
-        # 각 프로젝트에서 어노테이션 수집
-        annotations_data = []
-        base_dir = Path(BASE_PROJECTS_DIR)
-
-        for project_id, videos in projects.items():
-            # 프로젝트 디렉토리 찾기 (모든 사용자 디렉토리 검색)
-            project_dir = None
-            user_id = None
-
-            for user_dir in base_dir.iterdir():
-                if not user_dir.is_dir():
-                    continue
-                possible_project_dir = user_dir / project_id
-                if possible_project_dir.exists():
-                    project_dir = possible_project_dir
-                    user_id = user_dir.name
-                    break
-
-            if not project_dir:
-                logger.warning(f"[DATASET BUILD-MULTI] Project not found: {project_id}")
-                continue
-
-            # 어노테이션 디렉토리
-            annotations_dir = project_dir / 'annotations'
-            if not annotations_dir.exists():
-                logger.warning(f"[DATASET BUILD-MULTI] No annotations dir for: {project_id}")
-                continue
-
-            # 비디오별 어노테이션 수집
-            for video_info in videos:
-                video_id = video_info.get('video_id')
-                if not video_id:
-                    continue
-
-                video_annotations_dir = annotations_dir / video_id
-                if not video_annotations_dir.exists():
-                    logger.warning(f"[DATASET BUILD-MULTI] No annotations for video: {video_id}")
-                    continue
-
-                # 모든 사용자의 어노테이션 JSON 파일 읽기
-                for json_file in video_annotations_dir.glob('*.json'):
-                    if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
-                        continue
-
-                    try:
-                        with open(json_file, 'r', encoding='utf-8') as f:
-                            anno_data = json.load(f)
-
-                        annotations_data.append({
-                            'user_id': user_id,
-                            'project_id': project_id,
-                            'video_id': video_id,
-                            'annotations': anno_data.get('annotations', {}),
-                            'video_name': video_info.get('name', video_id),
-                            'project_dir': str(project_dir)
-                        })
-
-                    except Exception as e:
-                        logger.error(f"[DATASET BUILD-MULTI] Error reading {json_file}: {e}")
-
-        if not annotations_data:
-            return jsonify({
-                'success': False,
-                'error': 'No annotations found in selected projects'
-            }), 400
-
-        logger.info(f"[DATASET BUILD-MULTI] Collected {len(annotations_data)} annotation files")
+        # 대용량 JSON 전송(413) 방지를 위해
+        # GPU 서버에서 프로젝트 디렉토리를 직접 스캔해 어노테이션을 로드하도록 전달
+        logger.info('[DATASET BUILD-MULTI] Using compact request mode (projects + classes only)')
 
         # GPU 서버로 전달하여 실제 빌드 수행
         build_request = {
-            'annotations_data': annotations_data,
+            'projects': projects,
             'classes': classes,
             'output_dir': output_dir,
             'split_ratio': split_ratio,

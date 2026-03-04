@@ -10737,7 +10737,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     </div>
                 `;
 
-                const escapedOutput = String(result.outputDir || '').replace(/\/g, '\\').replace(/'/g, "\\'");
+                const escapedOutput = String(result.outputDir || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                 content.innerHTML += `
                     <div style="grid-column: 1 / -1; background: #0d1f0d; padding: 15px; border-radius: 6px; text-align:center;">
                         <button onclick="useDatasetForTraining('${escapedOutput}')" style="padding:10px 20px; background:#4a9eff; border:none; color:white; border-radius:6px; cursor:pointer; font-weight:bold;">🚀 이 데이터셋으로 학습하기</button>

@@ -2813,100 +2813,125 @@ def build_yolo_dataset():
         print(f"[DATASET BUILD] Train: {len(train_frames)}, Val: {len(val_frames)}, Test: {len(test_frames)}")
 
         # 각 세트별로 이미지 및 라벨 저장
+        frame_cache_root = Path(__file__).parent / 'frame_cache'
+
+        def get_cache_path(video_path, frame_num):
+            key = hashlib.sha1(video_path.encode('utf-8')).hexdigest()
+            return frame_cache_root / key[:2] / key / f"{int(frame_num):06d}.jpg"
+
         def process_frames(frames, split_name):
-            """최적화된 프레임 처리 - 비디오별 그룹화 + 병렬 처리"""
-            from collections import defaultdict
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            
             saved_count = 0
-            
-            # 비디오별로 프레임 그룹화
+            cache_hits = 0
+            cache_misses = 0
+
             frames_by_video = defaultdict(list)
             for frame_data in frames:
-                video_path = frame_data['video_path']
-                frames_by_video[video_path].append(frame_data)
-            
-            print(f"[DATASET BUILD] Processing {len(frames)} frames from {len(frames_by_video)} videos for {split_name}")
-            
-            def process_video_frames(video_path, video_frames):
-                """한 비디오의 모든 프레임 처리"""
-                local_saved = 0
-                cap = None
-                try:
-                    cap = cv2.VideoCapture(video_path)
-                    if not cap.isOpened():
-                        print(f"[DATASET BUILD] Cannot open video: {video_path}")
-                        return 0
-                    
-                    # 프레임 번호 순으로 정렬 (시퀀셜 읽기 최적화)
-                    video_frames.sort(key=lambda x: x['frame_num'])
-                    
-                    for frame_data in video_frames:
-                        try:
-                            frame_num = frame_data['frame_num']
-                            annotations = frame_data['annotations']
-                            
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                            ret, frame = cap.read()
-                            
-                            if not ret:
-                                continue
-                            
-                            # 이미지 파일명
-                            image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{frame_num}.jpg"
-                            image_path = output_path / split_name / 'images' / image_filename
-                            label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
-                            
-                            # 이미지 저장
-                            cv2.imwrite(str(image_path), frame)
-                            
-                            # YOLO 라벨 생성
-                            height, width = frame.shape[:2]
-                            yolo_labels = []
-                            
-                            for anno in annotations:
-                                if not anno.get('polygon'):
-                                    continue
-                                class_id = anno.get('class_id', 0)
-                                polygon = anno['polygon']
-                                normalized_coords = []
-                                for point in polygon:
-                                    x_norm = point['x'] / width
-                                    y_norm = point['y'] / height
-                                    normalized_coords.append(f"{x_norm:.6f} {y_norm:.6f}")
-                                yolo_line = f"{class_id} " + " ".join(normalized_coords)
-                                yolo_labels.append(yolo_line)
-                            
-                            if yolo_labels:
-                                with open(label_path, 'w') as f:
-                                    f.write('\n'.join(yolo_labels))
-                                local_saved += 1
-                                
-                        except Exception as e:
-                            print(f"[DATASET BUILD] Error processing frame {frame_num}: {e}")
-                            continue
-                finally:
-                    if cap:
-                        cap.release()
-                
-                return local_saved
-            
-            # 병렬 처리 (최대 4개 비디오 동시 처리)
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(process_video_frames, vpath, vframes): vpath 
-                    for vpath, vframes in frames_by_video.items()
-                }
-                for future in as_completed(futures):
-                    try:
-                        saved_count += future.result()
-                    except Exception as e:
-                        print(f"[DATASET BUILD] Video processing error: {e}")
-            
-            return saved_count
+                frames_by_video[frame_data['video_path']].append(frame_data)
 
-        # 각 세트 처리
-        train_count = process_frames(train_frames, 'train')
+            def process_video(video_path, video_frames):
+                local_count = 0
+                local_hits = 0
+                local_misses = 0
+                cap = None
+
+                try:
+                    video_frames.sort(key=lambda x: x['frame_num'])
+
+                    for frame_data in video_frames:
+                        fnum = frame_data['frame_num']
+                        image_filename = f"{frame_data['project_id']}_{frame_data['video_id']}_frame{fnum}.jpg"
+                        image_path = output_path / split_name / 'images' / image_filename
+                        label_path = output_path / split_name / 'labels' / image_filename.replace('.jpg', '.txt')
+
+                        cache_path = get_cache_path(video_path, fnum)
+                        frame = None
+
+                        # 1) 캐시 우선 사용
+                        if cache_path.exists():
+                            frame = cv2.imread(str(cache_path))
+                            if frame is not None:
+                                local_hits += 1
+                                try:
+                                    os.link(str(cache_path), str(image_path))
+                                except Exception:
+                                    shutil.copy2(str(cache_path), str(image_path))
+
+                        # 2) 캐시 미스면 비디오에서 추출 + 캐시에 저장
+                        if frame is None:
+                            local_misses += 1
+
+                            if cap is None:
+                                cap = cv2.VideoCapture(video_path)
+                                if not cap.isOpened():
+                                    print(f"[DATASET BUILD-FILTERED] Cannot open video: {video_path}")
+                                    break
+
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, fnum)
+                            ret, frame = cap.read()
+                            if not ret or frame is None:
+                                continue
+
+                            cv2.imwrite(str(image_path), frame)
+
+                            try:
+                                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                                if not cache_path.exists():
+                                    cv2.imwrite(str(cache_path), frame)
+                            except Exception as e:
+                                print(f"[DATASET BUILD-FILTERED] cache write failed: {cache_path} ({e})")
+
+                        h, w = frame.shape[:2]
+                        lines = []
+                        for anno in frame_data['annotations']:
+                            cid = class_to_id.get(anno['label'])
+                            if cid is None:
+                                continue
+                            coords = []
+                            for point in anno['polygon']:
+                                try:
+                                    x = float(point['x']) / w
+                                    y = float(point['y']) / h
+                                except Exception:
+                                    x = float(point[0]) / w
+                                    y = float(point[1]) / h
+                                x = max(0.0, min(1.0, x))
+                                y = max(0.0, min(1.0, y))
+                                coords.append(f"{x:.6f} {y:.6f}")
+                            if len(coords) >= 3:
+                                lines.append(f"{cid} " + ' '.join(coords))
+
+                        if lines:
+                            with open(label_path, 'w', encoding='utf-8') as f:
+                                f.write('\n'.join(lines))
+                            local_count += 1
+                        else:
+                            try:
+                                image_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                finally:
+                    if cap is not None:
+                        cap.release()
+
+                return local_count, local_hits, local_misses
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(process_video, vp, vf) for vp, vf in frames_by_video.items()]
+                for fut in as_completed(futures):
+                    try:
+                        c, h, m = fut.result()
+                        saved_count += c
+                        cache_hits += h
+                        cache_misses += m
+                    except Exception as e:
+                        print(f"[DATASET BUILD-FILTERED] Video worker error: {e}")
+
+            print(f"[DATASET BUILD-FILTERED] {split_name}: saved={saved_count}, cache_hit={cache_hits}, cache_miss={cache_misses}")
+            return saved_count, cache_hits, cache_misses
+
+        train_count, train_hits, train_misses = process_frames(train_frames, 'train')
+        val_count, val_hits, val_misses = process_frames(val_frames, 'val')
+        test_count, test_hits, test_misses = process_frames(test_frames, 'test')
         val_count = process_frames(val_frames, 'val')
         test_count = process_frames(test_frames, 'test')
 
@@ -3024,6 +3049,8 @@ def build_yolo_dataset_filtered():
     """다중 프로젝트 YOLO 데이터셋 빌드 (클래스 필터 + class id 재매핑)"""
     from pathlib import Path
     import random
+    import hashlib
+    import shutil
     from datetime import datetime
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3365,6 +3392,16 @@ def build_yolo_dataset_filtered():
             'class_names': class_order,
             'class_names_yaml': yaml_names,
             'selected_classes': selected_classes,
+            'cache': {
+                'cache_dir': str(frame_cache_root),
+                'hits': train_hits + val_hits + test_hits,
+                'misses': train_misses + val_misses + test_misses,
+                'by_split': {
+                    'train': {'hit': train_hits, 'miss': train_misses},
+                    'val': {'hit': val_hits, 'miss': val_misses},
+                    'test': {'hit': test_hits, 'miss': test_misses},
+                }
+            }
         }
         with open(output_path / 'dataset_info.json', 'w', encoding='utf-8') as f:
             json.dump(info, f, ensure_ascii=False, indent=2)

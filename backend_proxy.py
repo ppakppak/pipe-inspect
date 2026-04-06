@@ -5164,6 +5164,145 @@ def save_inference_as_annotations():
         }), 500
 
 
+
+# Survey API
+# ============================================================
+survey_jobs = {}
+survey_lock = threading.Lock()
+
+@app.route('/api/survey/start', methods=['POST'])
+def survey_start():
+    data = request.json or {}
+    video_path = data.get('video_path')
+    pipe_diameter = data.get('pipe_diameter_mm', 300)
+    section_length = data.get('section_length_m', 5.0)
+    sample_interval = data.get('sample_interval', 75)
+
+    if not video_path or not os.path.exists(video_path):
+        return jsonify({'success': False, 'error': 'Invalid video_path'}), 400
+
+    import uuid
+    job_id = str(uuid.uuid4())[:8]
+
+    with survey_lock:
+        survey_jobs[job_id] = {
+            'status': 'running', 'progress': 0, 'phase': 'starting',
+            'video_path': video_path, 'result': None, 'error': None
+        }
+
+    def _run_survey():
+        try:
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gpu-server'))
+            from pipe_survey import PipeSurveyAnalyzer
+
+            analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL)
+
+            def progress_cb(frame_num, total, phase_msg):
+                with survey_lock:
+                    pct = int(frame_num / max(total, 1) * 100) if total > 0 else 0
+                    survey_jobs[job_id]['progress'] = pct
+                    survey_jobs[job_id]['phase'] = phase_msg
+
+            result = analyzer.analyze_video(
+                video_path,
+                pipe_diameter_mm=pipe_diameter,
+                sample_interval=sample_interval,
+                section_length_m=section_length,
+                progress_callback=progress_cb,
+            )
+
+            if result.get('frame_distances'):
+                strip_path = analyzer.generate_strip_map_frames(
+                    video_path, result['frame_distances']
+                )
+                result['stripmap_path'] = strip_path
+
+            with survey_lock:
+                survey_jobs[job_id]['status'] = 'completed'
+                survey_jobs[job_id]['progress'] = 100
+                survey_jobs[job_id]['phase'] = 'done'
+                survey_jobs[job_id]['result'] = result
+
+        except Exception as e:
+            with survey_lock:
+                survey_jobs[job_id]['status'] = 'error'
+                survey_jobs[job_id]['error'] = str(e)
+
+    t = threading.Thread(target=_run_survey, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'job_id': job_id})
+
+
+@app.route('/api/survey/status/<job_id>', methods=['GET'])
+def survey_status(job_id):
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    return jsonify({
+        'success': True, 'status': job['status'],
+        'progress': job['progress'], 'phase': job['phase'],
+        'error': job.get('error'),
+    })
+
+
+@app.route('/api/survey/result/<job_id>', methods=['GET'])
+def survey_result(job_id):
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    if job['status'] != 'completed':
+        return jsonify({'success': False, 'error': f"Job status: {job['status']}"}), 400
+    return jsonify({'success': True, 'result': job['result']})
+
+
+@app.route('/api/survey/stripmap/<job_id>', methods=['GET'])
+def survey_stripmap(job_id):
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job or job['status'] != 'completed':
+        return jsonify({'success': False, 'error': 'Not ready'}), 404
+    result = job.get('result', {})
+    strip_path = result.get('stripmap_path')
+    if not strip_path or not os.path.exists(strip_path):
+        return jsonify({'success': False, 'error': 'Stripmap not found'}), 404
+    directory = os.path.dirname(strip_path)
+    filename = os.path.basename(strip_path)
+    return send_from_directory(directory, filename, mimetype='image/jpeg')
+
+
+@app.route('/api/survey/videos', methods=['GET'])
+def survey_list_videos():
+    nas_base = '/home/intu/nas2_kwater/Videos/\uad00\ub0b4\uc2dc\uacbd\uc601\uc0c1'
+    videos = []
+    if os.path.exists(nas_base):
+        for pipe_dir in sorted(os.listdir(nas_base)):
+            pipe_path = os.path.join(nas_base, pipe_dir)
+            if not os.path.isdir(pipe_path):
+                continue
+            parts = pipe_dir.split('-')
+            pipe_mm = 0
+            for p in parts:
+                if p.upper().endswith('MM'):
+                    try:
+                        pipe_mm = int(p.upper().replace('MM', ''))
+                    except:
+                        pass
+            for vf in sorted(os.listdir(pipe_path)):
+                if vf.lower().endswith(('.avi', '.mp4', '.mkv', '.mov')):
+                    full_path = os.path.join(pipe_path, vf)
+                    videos.append({
+                        'path': full_path,
+                        'filename': vf,
+                        'pipe_dir': pipe_dir,
+                        'pipe_diameter_mm': pipe_mm,
+                    })
+    return jsonify({'success': True, 'videos': videos})
+
+
+
 if __name__ == '__main__':
     import threading
     import time
@@ -5468,4 +5607,6 @@ if __name__ == '__main__':
         logger.info(f"  {rule.endpoint}: {rule.rule} [{', '.join(rule.methods - {'HEAD', 'OPTIONS'})}]")
 
     # debug=False로 변경하여 reloader 문제 방지
+
+# ============================================================
     app.run(host='0.0.0.0', port=5003, debug=False, threaded=True)

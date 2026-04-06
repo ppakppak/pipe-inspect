@@ -799,6 +799,7 @@
             <button class="tab" onclick="showTab('dataset')" data-i18n="tab.dataset">📦 Dataset</button>
             <button class="tab" onclick="showTab('training')" data-i18n="tab.training">🚀 Training</button>
             <button class="tab" onclick="showTab('inference')" data-i18n="tab.inference">🎬 Inference</button>
+                        <button class="tab" onclick="showTab('survey')">📊 Survey</button>
             <button id="adminTab" class="tab" onclick="showTab('admin')" style="display: none;" data-i18n="tab.admin">👥 Admin</button>
         </div>
 
@@ -16737,5 +16738,339 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             </div>
         </div>
     </div>
+
+        <!-- ═══ Survey Tab ═══ -->
+        <div id="survey-tab" class="tab-content">
+            <h2>📊 Pipe Survey Analysis</h2>
+
+            <!-- 영상 선택 + 설정 -->
+            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                <div style="display: flex; gap: 15px; align-items: end; flex-wrap: wrap;">
+                    <div style="flex: 2; min-width: 300px;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Video</label>
+                        <select id="surveyVideoSelect" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
+                            <option value="">-- Select Video --</option>
+                        </select>
+                    </div>
+                    <div style="flex: 0;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Pipe (mm)</label>
+                        <input type="number" id="surveyPipeDiameter" value="300" style="width: 80px; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                    </div>
+                    <div style="flex: 0;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Section (m)</label>
+                        <input type="number" id="surveySectionLength" value="5" step="1" style="width: 80px; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <button id="surveyStartBtn" onclick="startSurvey()" style="padding: 10px 25px; background: #4a9eff; border: none; border-radius: 4px; color: white; font-weight: bold; cursor: pointer; font-size: 14px;">
+                            ▶ Start Analysis
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 진행 상태 -->
+            <div id="surveyProgress" style="display: none; background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span id="surveyPhase" style="color: #4a9eff; font-weight: bold;">Starting...</span>
+                    <span id="surveyPct" style="color: #aaa;">0%</span>
+                </div>
+                <div style="background: #1e1e1e; border-radius: 4px; height: 24px; overflow: hidden;">
+                    <div id="surveyProgressBar" style="background: linear-gradient(90deg, #4a9eff, #00d4aa); height: 100%; width: 0%; transition: width 0.3s; border-radius: 4px;"></div>
+                </div>
+            </div>
+
+            <!-- 결과 영역 -->
+            <div id="surveyResults" style="display: none;">
+                <!-- 요약 카드 -->
+                <div id="surveySummaryCards" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;"></div>
+
+                <!-- Strip-map -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; color: #4a9eff;">🗺️ Pipe Interior Strip-map</h3>
+                    <div style="overflow-x: auto;">
+                        <img id="surveyStripmap" style="width: 100%; border-radius: 4px; border: 1px solid #555;" />
+                    </div>
+                </div>
+
+                <!-- 결함 분포 차트 -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; color: #4a9eff;">📊 Defect Distribution</h3>
+                    <canvas id="surveyChart" height="200"></canvas>
+                </div>
+
+                <!-- 구간 상세 테이블 -->
+                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
+                    <h3 style="margin-top: 0; color: #4a9eff;">📋 Section Details</h3>
+                    <div style="overflow-x: auto;">
+                        <table id="surveySectionTable" style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                            <thead>
+                                <tr style="background: #1e1e1e;">
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Section</th>
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Range (m)</th>
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Rust %</th>
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Scale %</th>
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Total %</th>
+                                    <th style="padding: 10px; border: 1px solid #404040; text-align: center;">Grade</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+<script>
+// ═══ Survey Functions ═══
+
+async function loadSurveyVideos() {
+    try {
+        const resp = await fetch('/api/survey/videos');
+        const data = await resp.json();
+        const select = document.getElementById('surveyVideoSelect');
+        select.innerHTML = '<option value="">-- Select Video --</option>';
+        if (data.videos) {
+            data.videos.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.path;
+                opt.textContent = `[${v.pipe_dir}] ${v.filename}`;
+                if (v.pipe_diameter_mm > 0) {
+                    opt.dataset.pipeMm = v.pipe_diameter_mm;
+                }
+                select.appendChild(opt);
+            });
+        }
+    } catch(e) { console.error('Failed to load survey videos:', e); }
+}
+
+document.getElementById('surveyVideoSelect').addEventListener('change', function() {
+    const opt = this.selectedOptions[0];
+    if (opt && opt.dataset.pipeMm) {
+        document.getElementById('surveyPipeDiameter').value = opt.dataset.pipeMm;
+    }
+});
+
+let surveyJobId = null;
+let surveyPollTimer = null;
+
+async function startSurvey() {
+    const videoPath = document.getElementById('surveyVideoSelect').value;
+    if (!videoPath) { alert('Select a video first'); return; }
+
+    const pipeMm = parseInt(document.getElementById('surveyPipeDiameter').value) || 300;
+    const sectionLen = parseFloat(document.getElementById('surveySectionLength').value) || 5;
+
+    document.getElementById('surveyStartBtn').disabled = true;
+    document.getElementById('surveyProgress').style.display = 'block';
+    document.getElementById('surveyResults').style.display = 'none';
+    document.getElementById('surveyProgressBar').style.width = '0%';
+    document.getElementById('surveyPct').textContent = '0%';
+    document.getElementById('surveyPhase').textContent = 'Starting...';
+
+    try {
+        const resp = await fetch('/api/survey/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                video_path: videoPath,
+                pipe_diameter_mm: pipeMm,
+                section_length_m: sectionLen,
+                sample_interval: 75,
+            })
+        });
+        const data = await resp.json();
+        if (!data.success) { alert('Error: ' + data.error); return; }
+
+        surveyJobId = data.job_id;
+        surveyPollTimer = setInterval(pollSurveyStatus, 2000);
+
+    } catch(e) {
+        alert('Failed to start survey: ' + e);
+        document.getElementById('surveyStartBtn').disabled = false;
+    }
+}
+
+async function pollSurveyStatus() {
+    if (!surveyJobId) return;
+    try {
+        const resp = await fetch(`/api/survey/status/${surveyJobId}`);
+        const data = await resp.json();
+
+        document.getElementById('surveyProgressBar').style.width = data.progress + '%';
+        document.getElementById('surveyPct').textContent = data.progress + '%';
+        document.getElementById('surveyPhase').textContent = data.phase || 'Processing...';
+
+        if (data.status === 'completed') {
+            clearInterval(surveyPollTimer);
+            document.getElementById('surveyStartBtn').disabled = false;
+            loadSurveyResult();
+        } else if (data.status === 'error') {
+            clearInterval(surveyPollTimer);
+            document.getElementById('surveyStartBtn').disabled = false;
+            alert('Survey error: ' + (data.error || 'Unknown'));
+        }
+    } catch(e) { console.error('Poll error:', e); }
+}
+
+async function loadSurveyResult() {
+    const resp = await fetch(`/api/survey/result/${surveyJobId}`);
+    const data = await resp.json();
+    if (!data.success) return;
+
+    const result = data.result;
+    const summary = result.summary;
+    const sections = result.sections;
+
+    // Summary cards
+    const cardsDiv = document.getElementById('surveySummaryCards');
+    cardsDiv.innerHTML = `
+        <div style="background:#1a3a5c;padding:15px;border-radius:8px;text-align:center;">
+            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${summary.total_length_m}m</div>
+            <div style="color:#aaa;font-size:12px;">Total Length</div>
+        </div>
+        <div style="background:#1a3a5c;padding:15px;border-radius:8px;text-align:center;">
+            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${summary.pipe_diameter_mm}mm</div>
+            <div style="color:#aaa;font-size:12px;">Pipe Diameter</div>
+        </div>
+        <div style="background:#5c1a1a;padding:15px;border-radius:8px;text-align:center;">
+            <div style="font-size:28px;font-weight:bold;color:#ff6b6b;">${summary.defect_sections || 0}/${summary.sections_count}</div>
+            <div style="color:#aaa;font-size:12px;">Defect Sections</div>
+        </div>
+        <div style="background:#5c1a1a;padding:15px;border-radius:8px;text-align:center;">
+            <div style="font-size:28px;font-weight:bold;color:#ff6b6b;">${summary.defect_ratio_pct || 0}%</div>
+            <div style="color:#aaa;font-size:12px;">Defect Rate</div>
+        </div>
+    `;
+
+    // Strip-map
+    document.getElementById('surveyStripmap').src = `/api/survey/stripmap/${surveyJobId}`;
+
+    // Chart
+    renderSurveyChart(sections);
+
+    // Table
+    renderSurveyTable(sections);
+
+    document.getElementById('surveyResults').style.display = 'block';
+}
+
+function renderSurveyChart(sections) {
+    const canvas = document.getElementById('surveyChart');
+    const ctx = canvas.getContext('2d');
+
+    // Simple bar chart (no Chart.js dependency)
+    const w = canvas.parentElement.clientWidth - 40;
+    canvas.width = w;
+    canvas.height = 250;
+
+    ctx.clearRect(0, 0, w, 250);
+
+    const maxRatio = Math.max(...sections.map(s => s.total_defect_ratio || 0), 10);
+    const barW = Math.max((w - 60) / sections.length - 2, 4);
+    const chartH = 200;
+    const offsetX = 50;
+    const offsetY = 10;
+
+    // Grid lines
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    for (let pct = 0; pct <= maxRatio; pct += 10) {
+        const y = offsetY + chartH - (pct / maxRatio * chartH);
+        ctx.beginPath(); ctx.moveTo(offsetX, y); ctx.lineTo(w, y); ctx.stroke();
+        ctx.fillStyle = '#888'; ctx.font = '11px monospace';
+        ctx.fillText(pct + '%', 5, y + 4);
+    }
+
+    // Critical / Caution lines
+    const cautionY = offsetY + chartH - (10 / maxRatio * chartH);
+    const criticalY = offsetY + chartH - (30 / maxRatio * chartH);
+    ctx.strokeStyle = '#ff8c00'; ctx.setLineDash([5,3]);
+    ctx.beginPath(); ctx.moveTo(offsetX, cautionY); ctx.lineTo(w, cautionY); ctx.stroke();
+    ctx.strokeStyle = '#ff0000';
+    ctx.beginPath(); ctx.moveTo(offsetX, criticalY); ctx.lineTo(w, criticalY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Bars
+    sections.forEach((sec, i) => {
+        const x = offsetX + i * (barW + 2);
+        const defects = sec.defects || {};
+        let rustR = 0, scaleR = 0;
+        for (const [cls, info] of Object.entries(defects)) {
+            if (cls.includes('1') || cls.includes('rust')) rustR += info.pixel_ratio || 0;
+            else scaleR += info.pixel_ratio || 0;
+        }
+
+        // Rust bar
+        const rustH = rustR / maxRatio * chartH;
+        ctx.fillStyle = '#E74C3C';
+        ctx.fillRect(x, offsetY + chartH - rustH, barW, rustH);
+
+        // Scale bar (stacked)
+        const scaleH = scaleR / maxRatio * chartH;
+        ctx.fillStyle = '#F1C40F';
+        ctx.fillRect(x, offsetY + chartH - rustH - scaleH, barW, scaleH);
+
+        // Label
+        if (i % Math.ceil(sections.length / 10) === 0) {
+            ctx.fillStyle = '#888'; ctx.font = '10px monospace';
+            ctx.save(); ctx.translate(x + barW/2, offsetY + chartH + 15);
+            ctx.fillText(sec.start_m.toFixed(0) + 'm', -10, 0);
+            ctx.restore();
+        }
+    });
+
+    // Legend
+    ctx.fillStyle = '#E74C3C'; ctx.fillRect(w - 150, 5, 12, 12);
+    ctx.fillStyle = '#ccc'; ctx.font = '11px sans-serif'; ctx.fillText('Rust', w - 133, 15);
+    ctx.fillStyle = '#F1C40F'; ctx.fillRect(w - 80, 5, 12, 12);
+    ctx.fillStyle = '#ccc'; ctx.fillText('Scale', w - 63, 15);
+}
+
+function renderSurveyTable(sections) {
+    const tbody = document.querySelector('#surveySectionTable tbody');
+    tbody.innerHTML = '';
+
+    sections.forEach((sec, i) => {
+        const defects = sec.defects || {};
+        let rustR = 0, scaleR = 0;
+        for (const [cls, info] of Object.entries(defects)) {
+            if (cls.includes('1') || cls.includes('rust')) rustR += info.pixel_ratio || 0;
+            else scaleR += info.pixel_ratio || 0;
+        }
+        const total = sec.total_defect_ratio || 0;
+        let grade = '🟢', gradeColor = '#2ecc71';
+        if (total > 30) { grade = '🔴'; gradeColor = '#e74c3c'; }
+        else if (total > 10) { grade = '🟡'; gradeColor = '#f39c12'; }
+
+        const tr = document.createElement('tr');
+        tr.style.background = i % 2 === 0 ? '#252525' : '#2a2a2a';
+        tr.innerHTML = `
+            <td style="padding:8px;border:1px solid #404040;text-align:center;">${i+1}</td>
+            <td style="padding:8px;border:1px solid #404040;text-align:center;">${sec.start_m.toFixed(1)} ~ ${sec.end_m.toFixed(1)}</td>
+            <td style="padding:8px;border:1px solid #404040;text-align:center;color:#E74C3C;">${rustR > 0 ? rustR.toFixed(1)+'%' : '-'}</td>
+            <td style="padding:8px;border:1px solid #404040;text-align:center;color:#F1C40F;">${scaleR > 0 ? scaleR.toFixed(1)+'%' : '-'}</td>
+            <td style="padding:8px;border:1px solid #404040;text-align:center;font-weight:bold;">${total.toFixed(1)}%</td>
+            <td style="padding:8px;border:1px solid #404040;text-align:center;font-size:18px;">${grade}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+// Auto-load videos when survey tab opens
+const origShowTab = window.showTab;
+if (origShowTab) {
+    window.showTab = function(tab) {
+        origShowTab(tab);
+        if (tab === 'survey') loadSurveyVideos();
+    };
+} else {
+    document.addEventListener('DOMContentLoaded', () => {
+        const origST = window.showTab;
+        window.showTab = function(tab) { origST(tab); if (tab === 'survey') loadSurveyVideos(); };
+    });
+}
+</script>
+
 </body>
 </html>

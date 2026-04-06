@@ -27,7 +27,7 @@ app = Flask(__name__)
 CORS(app)
 
 # GPU 서버 URL (환경 변수 또는 기본값)
-GPU_SERVER_URL = os.getenv('GPU_SERVER_URL', 'http://localhost:5006')
+GPU_SERVER_URL = os.getenv('GPU_SERVER_URL', 'http://localhost:5004')
 
 # 프로젝트 기본 디렉토리 (고정 경로)
 BASE_PROJECTS_DIR = Path('/home/intu/Nas2/k_water/pipe_inspector_data')
@@ -35,9 +35,6 @@ BASE_PROJECTS_DIR = Path('/home/intu/Nas2/k_water/pipe_inspector_data')
 # 기본 디렉토리 생성
 BASE_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ===== Admin Dashboard Cache =====
-ADMIN_DASHBOARD_CACHE_FILE = Path(__file__).parent / ".admin_dashboard_cache.json"
-ADMIN_DASHBOARD_CACHE_TTL = 300  # 5분 캐시
 # 사용자 관리자 초기화
 user_manager = UserManager()
 
@@ -280,65 +277,6 @@ def require_admin(f):
     return decorated_function
 
 
-
-# ===== Admin Dashboard Cache Functions =====
-def _get_annotations_last_modified():
-    """어노테이션 폴더의 최신 수정 시간 반환"""
-    latest_mtime = 0
-    try:
-        for user_dir in BASE_PROJECTS_DIR.iterdir():
-            if not user_dir.is_dir():
-                continue
-            for project_dir in user_dir.iterdir():
-                if not project_dir.is_dir():
-                    continue
-                annotations_dir = project_dir / 'annotations'
-                if annotations_dir.exists():
-                    dir_mtime = annotations_dir.stat().st_mtime
-                    if dir_mtime > latest_mtime:
-                        latest_mtime = dir_mtime
-    except Exception as e:
-        logger.warning(f'[CACHE] Error checking mtime: {e}')
-    return latest_mtime
-
-def _load_dashboard_cache():
-    """캐시 로드 (유효하면 데이터 반환, 아니면 None)"""
-    import json
-    try:
-        if not ADMIN_DASHBOARD_CACHE_FILE.exists():
-            return None
-        with open(ADMIN_DASHBOARD_CACHE_FILE, 'r', encoding='utf-8') as f:
-            cache = json.load(f)
-        cache_time = cache.get('cached_at', 0)
-        if time.time() - cache_time > ADMIN_DASHBOARD_CACHE_TTL:
-            logger.info('[CACHE] Dashboard cache expired (TTL)')
-            return None
-        cached_mtime = cache.get('annotations_mtime', 0)
-        current_mtime = _get_annotations_last_modified()
-        if current_mtime > cached_mtime:
-            logger.info('[CACHE] Dashboard cache invalidated (annotations changed)')
-            return None
-        logger.info('[CACHE] Dashboard cache HIT')
-        return cache.get('data')
-    except Exception as e:
-        logger.warning(f'[CACHE] Error loading cache: {e}')
-        return None
-
-def _save_dashboard_cache(data):
-    """캐시 저장"""
-    import json
-    try:
-        cache = {
-            'cached_at': time.time(),
-            'annotations_mtime': _get_annotations_last_modified(),
-            'data': data
-        }
-        with open(ADMIN_DASHBOARD_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache, f)
-        logger.info('[CACHE] Dashboard cache saved')
-    except Exception as e:
-        logger.warning(f'[CACHE] Error saving cache: {e}')
-
 def find_project_dir(project_id: str, user_id: str):
     """
     프로젝트 디렉토리 찾기
@@ -396,17 +334,14 @@ def forward_to_gpu(path, method='GET', **kwargs):
     """GPU 서버로 요청 전달"""
     url = f"{GPU_SERVER_URL}{path}"
     logger.info(f"Forwarding {method} request to {url}")
-    if 'json' in kwargs and kwargs['json']:
-        import json as _json
-        data_size = len(_json.dumps(kwargs['json']))
-        logger.info(f"Request data size: {data_size / 1024:.1f} KB")
 
     try:
         params = kwargs.get('params', None)
 
-        # 데이터셋 빌드는 시간이 오래 걸리므로 타임아웃을 길게 설정
+        # 시간이 오래 걸리는 작업은 타임아웃을 길게 설정
         is_dataset_build = '/dataset/build' in path
-        timeout = 3600 if is_dataset_build else 30  # 데이터셋 빌드 1시간, 일반 30초
+        is_sizing = '/sizing/' in path
+        timeout = 600 if is_dataset_build else (120 if is_sizing else 30)
 
         if method == 'GET':
             response = requests.get(url, params=params, timeout=timeout)
@@ -2769,37 +2704,55 @@ def run_inference_box():
     return jsonify(data), status_code
 
 
-@app.route('/api/ai/train', methods=['POST'])
+
+
+# ═══════════════════════ Training API Proxy ═══════════════════════
+
+@app.route('/api/training/datasets', methods=['GET'])
 @require_auth
-def ai_train_start():
-    """YOLO 학습 시작 (GPU 서버 프록시)"""
-    data, status_code = forward_to_gpu('/api/ai/train', method='POST', json=request.json)
-    return jsonify(data), status_code
+def proxy_training_datasets():
+    data, sc = forward_to_gpu('/api/training/datasets', method='GET')
+    return jsonify(data), sc
 
-
-@app.route('/api/ai/train/status', methods=['GET'])
+@app.route('/api/training/runs', methods=['GET'])
 @require_auth
-def ai_train_status():
-    """YOLO 학습 상태 조회 (GPU 서버 프록시)"""
-    data, status_code = forward_to_gpu('/api/ai/train/status', method='GET')
-    return jsonify(data), status_code
+def proxy_training_runs():
+    data, sc = forward_to_gpu('/api/training/runs', method='GET')
+    return jsonify(data), sc
 
-
-@app.route('/api/ai/train/stop', methods=['POST'])
+@app.route('/api/training/start', methods=['POST'])
 @require_auth
-def ai_train_stop():
-    """YOLO 학습 중단 요청 (GPU 서버 프록시)"""
-    data, status_code = forward_to_gpu('/api/ai/train/stop', method='POST', json=request.json)
-    return jsonify(data), status_code
+def proxy_training_start():
+    data, sc = forward_to_gpu('/api/training/start', method='POST', json=request.json)
+    return jsonify(data), sc
 
-
-@app.route('/api/ai/models', methods=['GET'])
+@app.route('/api/training/status/<job_id>', methods=['GET'])
 @require_auth
-def ai_models():
-    """학습된 모델 목록 (GPU 서버 프록시)"""
-    data, status_code = forward_to_gpu('/api/ai/models', method='GET')
-    return jsonify(data), status_code
+def proxy_training_status(job_id):
+    data, sc = forward_to_gpu(f'/api/training/status/{job_id}', method='GET')
+    return jsonify(data), sc
 
+@app.route('/api/training/stop/<job_id>', methods=['POST'])
+@require_auth
+def proxy_training_stop(job_id):
+    data, sc = forward_to_gpu(f'/api/training/stop/{job_id}', method='POST')
+    return jsonify(data), sc
+
+@app.route('/api/training/jobs', methods=['GET'])
+@require_auth
+def proxy_training_jobs():
+    data, sc = forward_to_gpu('/api/training/jobs', method='GET')
+    return jsonify(data), sc
+
+@app.route('/api/training/runs/<run_name>/image/<filename>', methods=['GET'])
+@require_auth
+def proxy_training_run_image(run_name, filename):
+    import requests as req_lib
+    try:
+        resp = req_lib.get(f'{GPU_SERVER_URL}/api/training/runs/{run_name}/image/{filename}', timeout=10)
+        return resp.content, resp.status_code, {'Content-Type': resp.headers.get('Content-Type', 'image/png')}
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/export/dataset', methods=['POST'])
 def export_dataset():
@@ -2955,13 +2908,77 @@ def build_dataset_multi():
         logger.info(f"[DATASET BUILD-MULTI] Classes: {classes}")
         logger.info(f"[DATASET BUILD-MULTI] Output: {output_dir}, Split: {split_ratio}")
 
-        # 대용량 JSON 전송(413) 방지를 위해
-        # GPU 서버에서 프로젝트 디렉토리를 직접 스캔해 어노테이션을 로드하도록 전달
-        logger.info('[DATASET BUILD-MULTI] Using compact request mode (projects + classes only)')
+        # 각 프로젝트에서 어노테이션 수집
+        annotations_data = []
+        base_dir = Path(BASE_PROJECTS_DIR)
+
+        for project_id, videos in projects.items():
+            # 프로젝트 디렉토리 찾기 (모든 사용자 디렉토리 검색)
+            project_dir = None
+            user_id = None
+
+            for user_dir in base_dir.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                possible_project_dir = user_dir / project_id
+                if possible_project_dir.exists():
+                    project_dir = possible_project_dir
+                    user_id = user_dir.name
+                    break
+
+            if not project_dir:
+                logger.warning(f"[DATASET BUILD-MULTI] Project not found: {project_id}")
+                continue
+
+            # 어노테이션 디렉토리
+            annotations_dir = project_dir / 'annotations'
+            if not annotations_dir.exists():
+                logger.warning(f"[DATASET BUILD-MULTI] No annotations dir for: {project_id}")
+                continue
+
+            # 비디오별 어노테이션 수집
+            for video_info in videos:
+                video_id = video_info.get('video_id')
+                if not video_id:
+                    continue
+
+                video_annotations_dir = annotations_dir / video_id
+                if not video_annotations_dir.exists():
+                    logger.warning(f"[DATASET BUILD-MULTI] No annotations for video: {video_id}")
+                    continue
+
+                # 모든 사용자의 어노테이션 JSON 파일 읽기
+                for json_file in video_annotations_dir.glob('*.json'):
+                    if json_file.stem.endswith('.backup') or 'before_fix' in json_file.name:
+                        continue
+
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            anno_data = json.load(f)
+
+                        annotations_data.append({
+                            'user_id': user_id,
+                            'project_id': project_id,
+                            'video_id': video_id,
+                            'annotations': anno_data.get('annotations', {}),
+                            'video_name': video_info.get('name', video_id),
+                            'project_dir': str(project_dir)
+                        })
+
+                    except Exception as e:
+                        logger.error(f"[DATASET BUILD-MULTI] Error reading {json_file}: {e}")
+
+        if not annotations_data:
+            return jsonify({
+                'success': False,
+                'error': 'No annotations found in selected projects'
+            }), 400
+
+        logger.info(f"[DATASET BUILD-MULTI] Collected {len(annotations_data)} annotation files")
 
         # GPU 서버로 전달하여 실제 빌드 수행
         build_request = {
-            'projects': projects,
+            'annotations_data': annotations_data,
             'classes': classes,
             'output_dir': output_dir,
             'split_ratio': split_ratio,
@@ -2969,8 +2986,8 @@ def build_dataset_multi():
             'base_projects_dir': str(BASE_PROJECTS_DIR)
         }
 
-        # GPU 서버에 빌드 요청 (클래스 필터/ID 재매핑 지원 버전)
-        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo_filtered', method='POST', json=build_request)
+        # GPU 서버에 빌드 요청
+        gpu_response, status_code = forward_to_gpu('/api/dataset/build_yolo', method='POST', json=build_request)
 
         if status_code == 200 and gpu_response.get('success'):
             logger.info(f"[DATASET BUILD-MULTI] Success: {gpu_response.get('output_dir')}")
@@ -5174,13 +5191,6 @@ def get_admin_dashboard():
                 'error': 'Admin access required'
             }), 403
 
-
-        # ===== 캐시 체크 =====
-        cached_data = _load_dashboard_cache()
-        if cached_data:
-            return jsonify(cached_data)
-        
-        logger.info("[ADMIN DASHBOARD] Cache miss, calculating...")
         # 모든 사용자의 프로젝트 스캔
         all_projects = []
 
@@ -5305,16 +5315,11 @@ def get_admin_dashboard():
 
         logger.info(f"[ADMIN DASHBOARD] Fetched {len(all_projects)} projects for admin")
 
-        # ===== 캐시 저장 =====
-        result_data = {
-            "success": True,
-            "projects": all_projects,
-            "summary": total_stats
-        }
-        _save_dashboard_cache(result_data)
-        return jsonify(result_data)
-
-
+        return jsonify({
+            'success': True,
+            'projects': all_projects,
+            'summary': total_stats
+        })
 
     except Exception as e:
         logger.error(f"[ADMIN DASHBOARD] Error: {e}")
@@ -5322,6 +5327,124 @@ def get_admin_dashboard():
             'success': False,
             'error': str(e)
         }), 500
+
+
+# ============================================================
+# 결함 크기 산출 (Defect Sizing) 프록시 라우트
+# ============================================================
+
+def _resolve_sizing_request(req_json):
+    """Sizing 요청에서 project_dir를 자동 resolve.
+
+    프론트엔드에서 project_dir이 비어있거나 없으면,
+    project_id + user_id로 실제 경로를 찾아준다.
+    """
+    data = dict(req_json) if req_json else {}
+    project_dir = data.get('project_dir', '')
+
+    if not project_dir:
+        # project_id로 찾기 시도
+        project_id = data.get('project_id', '')
+        if not project_id:
+            return data  # 둘 다 없으면 그대로 반환 (GPU 서버에서 에러 처리)
+
+        resolved = find_project_dir(project_id, request.user_id)
+        if resolved:
+            data['project_dir'] = str(resolved)
+            logger.info(f"[SIZING] Resolved project_dir: {resolved}")
+
+    return data
+
+
+@app.route('/api/sizing/detect-vp', methods=['POST'])
+@require_auth
+def proxy_detect_vp():
+    """소실점(VP) 탐지"""
+    data, status_code = forward_to_gpu('/api/sizing/detect-vp', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/detect-vp-batch', methods=['POST'])
+@require_auth
+def proxy_detect_vp_batch():
+    """배치 VP 탐지"""
+    data, status_code = forward_to_gpu('/api/sizing/detect-vp-batch', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/initialize-depth', methods=['POST'])
+@require_auth
+def proxy_initialize_depth():
+    """Depth 모델 초기화"""
+    data, status_code = forward_to_gpu('/api/sizing/initialize-depth', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/depth-map', methods=['POST'])
+@require_auth
+def proxy_depth_map():
+    """Depth map 추정"""
+    data, status_code = forward_to_gpu('/api/sizing/depth-map', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/calculate', methods=['POST'])
+@require_auth
+def proxy_calculate_sizing():
+    """결함 크기 계산"""
+    data, status_code = forward_to_gpu('/api/sizing/calculate', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/calculate-video', methods=['POST'])
+@require_auth
+def proxy_calculate_video_sizing():
+    """비디오 전체 크기 산출 (백그라운드)"""
+    data, status_code = forward_to_gpu('/api/sizing/calculate-video', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/status/<job_id>', methods=['GET'])
+@require_auth
+def proxy_sizing_status(job_id):
+    """크기 산출 작업 상태 조회"""
+    data, status_code = forward_to_gpu(f'/api/sizing/status/{job_id}', method='GET')
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/area-ratio', methods=['POST'])
+@require_auth
+def proxy_area_ratio():
+    """면적비 산출"""
+    data, status_code = forward_to_gpu('/api/sizing/area-ratio', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/unwrap', methods=['POST'])
+@require_auth
+def proxy_unwrap():
+    """파이프 전개도 생성"""
+    data, status_code = forward_to_gpu('/api/sizing/unwrap', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/depth-unwrap', methods=['POST'])
+@require_auth
+def proxy_depth_unwrap():
+    """Depth 기반 파이프 전개도 생성"""
+    data, status_code = forward_to_gpu('/api/sizing/depth-unwrap', method='POST', json=_resolve_sizing_request(request.json))
+    return jsonify(data), status_code
+
+
+@app.route('/api/sizing/results', methods=['GET'])
+@require_auth
+def proxy_sizing_results():
+    """크기 산출 결과 조회"""
+    data, status_code = forward_to_gpu(
+        '/api/sizing/results', method='GET',
+        params={'project_dir': request.args.get('project_dir'), 'video_id': request.args.get('video_id')}
+    )
+    return jsonify(data), status_code
 
 
 if __name__ == '__main__':
@@ -5345,4 +5468,4 @@ if __name__ == '__main__':
         logger.info(f"  {rule.endpoint}: {rule.rule} [{', '.join(rule.methods - {'HEAD', 'OPTIONS'})}]")
 
     # debug=False로 변경하여 reloader 문제 방지
-    app.run(host='0.0.0.0', port=5005, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5003, debug=False, threaded=True)

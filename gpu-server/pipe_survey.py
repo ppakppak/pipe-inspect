@@ -305,8 +305,8 @@ class PipeSurveyAnalyzer:
         # 행 = 각도, 열 = 반경 (0=VP, max_radius=가장자리)
 
         # 카메라 바로 앞 관벽 = 바깥쪽 고리 (반경 70~85%)
-        r_inner = int(max_radius * 0.55)
-        r_outer = int(max_radius * 0.90)
+        r_inner = int(max_radius * 0.75)
+        r_outer = int(max_radius * 0.95)
 
         # 해당 반경 범위의 띠 추출
         ring = polar[:, r_inner:r_outer, :]  # (720, thickness, 3)
@@ -378,6 +378,22 @@ class PipeSurveyAnalyzer:
                 continue
 
             strip = self._extract_annular_strip(frame, vp_x, vp_y, strip_height_px)
+            # 색상 보정
+            # 1) 그레이월드 화이트밸런스 (파란 편향 제거)
+            b, g, r = cv2.split(strip)
+            avg_b, avg_g, avg_r = np.mean(b), np.mean(g), np.mean(r)
+            avg_all = (avg_b + avg_g + avg_r) / 3
+            if avg_b > 0 and avg_g > 0 and avg_r > 0:
+                b = np.clip(b * (avg_all / avg_b), 0, 255).astype(np.uint8)
+                g = np.clip(g * (avg_all / avg_g), 0, 255).astype(np.uint8)
+                r = np.clip(r * (avg_all / avg_r), 0, 255).astype(np.uint8)
+            strip = cv2.merge([b, g, r])
+            # 2) CLAHE 대비 향상 (텍스처 강조)
+            lab = cv2.cvtColor(strip, cv2.COLOR_BGR2LAB)
+            l, a, b_ch = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 2))
+            l = clahe.apply(l)
+            strip = cv2.cvtColor(cv2.merge([l, a, b_ch]), cv2.COLOR_LAB2BGR)
             strips.append(strip)
 
         cap.release()

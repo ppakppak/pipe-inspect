@@ -259,15 +259,81 @@ class PipeSurveyAnalyzer:
         except Exception as e:
             return None
 
+    def _detect_vp_simple(self, frame):
+        """간단한 VP(소실점) 탐지 — 가장 어두운 영역의 중심"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        # 상단 15% OSD 마스킹
+        gray[:int(h*0.15), :] = 255
+        # 하단 15% OSD 마스킹
+        gray[int(h*0.85):, :] = 255
+        # 대블러 후 최소밝기점
+        blurred = cv2.GaussianBlur(gray, (w//4*2+1, h//4*2+1), 0)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
+        return min_loc  # (x, y)
+
+    def _extract_annular_strip(self, frame, vp_x, vp_y, strip_height=1):
+        """프레임에서 VP 중심 annular ring을 추출하여 펼친 띠를 반환
+
+        Args:
+            frame: BGR 프레임
+            vp_x, vp_y: 소실점 좌표
+            strip_height: 출력 띠 높이 (px)
+
+        Returns:
+            strip: (strip_height, output_width, 3) BGR 이미지
+                   가로 = 관 둘레 (0~360도), 세로 = 반경 방향 두께
+        """
+        h, w = frame.shape[:2]
+
+        # 최대 반경 = VP에서 프레임 가장자리까지 최소 거리
+        max_radius = int(min(vp_x, w - vp_x, vp_y, h - vp_y) * 0.95)
+        if max_radius < 50:
+            max_radius = min(h, w) // 2
+
+        # 극좌표 변환 (warpPolar)
+        # 출력: rows = 각도(0~360), cols = 반경(0~max_radius)
+        output_width = 720  # 360도를 720px로 (0.5도/px)
+        polar = cv2.warpPolar(
+            frame,
+            (max_radius, output_width),  # (cols=radius, rows=angle)
+            (vp_x, vp_y),
+            max_radius,
+            cv2.WARP_POLAR_LINEAR
+        )
+        # polar shape: (output_width, max_radius, 3)
+        # 행 = 각도, 열 = 반경 (0=VP, max_radius=가장자리)
+
+        # 카메라 바로 앞 관벽 = 바깥쪽 고리 (반경 70~85%)
+        r_inner = int(max_radius * 0.55)
+        r_outer = int(max_radius * 0.90)
+
+        # 해당 반경 범위의 띠 추출
+        ring = polar[:, r_inner:r_outer, :]  # (720, thickness, 3)
+
+        # 반경 방향으로 평균 → 1px 높이 띠, 또는 리사이즈
+        # ring shape: (720, thickness, 3) — 행=각도, 열=반경
+        # 반경 방향을 strip_height로 리사이즈 (텍스처 보존)
+        # 전치: (thickness, 720, 3) → resize → (strip_height, 720, 3)
+        ring_t = ring.transpose(1, 0, 2)  # (thickness, 720, 3)
+        strip = cv2.resize(ring_t, (ring_t.shape[1], strip_height))  # (strip_height, 720, 3)
+
+        return strip
+
     def generate_strip_map_frames(self, video_path, distances,
-                                  strip_height_px=5, output_dir=None) -> str:
-        """Strip-map 생성: 각 프레임에서 중앙 수평 띠를 추출하여 이어붙임
+                                  strip_height_px=3, output_dir=None,
+                                  sample_every_n=1) -> str:
+        """Annular Ring Strip-map 생성
+
+        각 프레임에서 VP 중심의 바깥쪽 고리를 추출 → 펼쳐서 → 거리순으로 세로 이어붙임
+        결과: 가로 = 관 둘레(0~360도), 세로 = 관로 거리(m)
 
         Args:
             video_path: 영상 경로
             distances: frame_distances 리스트
-            strip_height_px: 추출할 띠 높이 (px)
+            strip_height_px: 각 프레임에서 추출할 띠 높이
             output_dir: 출력 디렉토리
+            sample_every_n: N개 거리 포인트마다 1개 추출
 
         Returns:
             저장된 strip-map 이미지 경로
@@ -279,30 +345,39 @@ class PipeSurveyAnalyzer:
         if not cap.isOpened():
             return None
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # VP 탐지 (처음 몇 프레임으로)
+        vp_frames = []
+        for d in distances[:5]:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, d['frame_number'])
+            ret, frame = cap.read()
+            if ret:
+                vp_frames.append(self._detect_vp_simple(frame))
 
-        # 거리 변화가 있는 프레임만 추출 (중복 제거)
-        unique_distances = []
-        last_d = None
-        for d in distances:
-            if last_d is None or abs(d['distance_m'] - last_d) > 0.01:
-                unique_distances.append(d)
-                last_d = d['distance_m']
+        if not vp_frames:
+            cap.release()
+            return None
+
+        # VP 중앙값
+        vp_x = int(np.median([v[0] for v in vp_frames]))
+        vp_y = int(np.median([v[1] for v in vp_frames]))
+
+        # 프레임 보간: 거리 reading 사이를 선형 보간하여 촘촘하게 샘플링
+        sorted_d = sorted(distances, key=lambda x: x['frame_number'])
+        first_frame = sorted_d[0]['frame_number']
+        last_frame = sorted_d[-1]['frame_number']
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # 매 N프레임마다 strip 추출 (기본 50프레임 = 2초마다)
+        frame_step = max(50, (last_frame - first_frame) // 500)  # 최대 500줄
 
         strips = []
-        # 중앙 수평 띠 위치 (프레임 높이의 50% 부근)
-        strip_y = frame_h // 2 - strip_height_px // 2
-
-        for d in unique_distances:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, d['frame_number'])
+        for fn in range(first_frame, last_frame + 1, frame_step):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
             ret, frame = cap.read()
             if not ret:
                 continue
 
-            # 중앙 수평 띠 추출
-            strip = frame[strip_y:strip_y + strip_height_px, :, :]
+            strip = self._extract_annular_strip(frame, vp_x, vp_y, strip_height_px)
             strips.append(strip)
 
         cap.release()
@@ -310,7 +385,7 @@ class PipeSurveyAnalyzer:
         if not strips:
             return None
 
-        # 세로로 이어붙임
+        # 세로로 이어붙임 (세로 = 거리, 가로 = 둘레)
         strip_map = np.vstack(strips)
 
         # 저장
@@ -319,7 +394,7 @@ class PipeSurveyAnalyzer:
 
         video_name = Path(video_path).stem
         out_path = os.path.join(output_dir, f'{video_name}_stripmap.jpg')
-        cv2.imwrite(out_path, strip_map, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        cv2.imwrite(out_path, strip_map, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
         return out_path
 

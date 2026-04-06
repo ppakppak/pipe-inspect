@@ -16746,8 +16746,26 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             <!-- 영상 선택 + 설정 -->
             <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
                 <div style="display: flex; gap: 15px; align-items: end; flex-wrap: wrap;">
+                    <div style="flex: 0; min-width: 100px;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Type</label>
+                        <select id="surveyFilterType" onchange="filterSurveyVideos()" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
+                            <option value="">All</option>
+                        </select>
+                    </div>
+                    <div style="flex: 0; min-width: 100px;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Diameter</label>
+                        <select id="surveyFilterDiameter" onchange="filterSurveyVideos()" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
+                            <option value="">All</option>
+                        </select>
+                    </div>
+                    <div style="flex: 0; min-width: 100px;">
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Material</label>
+                        <select id="surveyFilterMaterial" onchange="filterSurveyVideos()" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
+                            <option value="">All</option>
+                        </select>
+                    </div>
                     <div style="flex: 2; min-width: 300px;">
-                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Video</label>
+                        <label style="display: block; margin-bottom: 5px; color: #aaa; font-size: 12px;">Video <span id="surveyVideoCount" style="color: #666;"></span></label>
                         <select id="surveyVideoSelect" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; font-size: 13px;">
                             <option value="">-- Select Video --</option>
                         </select>
@@ -16824,24 +16842,52 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
 <script>
 // ═══ Survey Functions ═══
 
+let _surveyAllVideos = [];
+
 async function loadSurveyVideos() {
     try {
         const resp = await fetch('/api/survey/videos');
         const data = await resp.json();
-        const select = document.getElementById('surveyVideoSelect');
-        select.innerHTML = '<option value="">-- Select Video --</option>';
-        if (data.videos) {
-            data.videos.forEach(v => {
-                const opt = document.createElement('option');
-                opt.value = v.path;
-                opt.textContent = `[${v.pipe_dir}] ${v.filename}`;
-                if (v.pipe_diameter_mm > 0) {
-                    opt.dataset.pipeMm = v.pipe_diameter_mm;
-                }
-                select.appendChild(opt);
-            });
-        }
+        _surveyAllVideos = data.videos || [];
+
+        // 필터 드롭다운 채우기
+        const types = [...new Set(_surveyAllVideos.map(v => v.pipe_type).filter(Boolean))].sort();
+        const diameters = [...new Set(_surveyAllVideos.map(v => v.pipe_diameter_mm).filter(d => d > 0))].sort((a,b) => a-b);
+        const materials = [...new Set(_surveyAllVideos.map(v => v.pipe_material).filter(Boolean))].sort();
+
+        const typeSelect = document.getElementById('surveyFilterType');
+        typeSelect.innerHTML = '<option value="">All</option>' + types.map(t => `<option value="${t}">${t}</option>`).join('');
+
+        const diaSelect = document.getElementById('surveyFilterDiameter');
+        diaSelect.innerHTML = '<option value="">All</option>' + diameters.map(d => `<option value="${d}">${d}mm</option>`).join('');
+
+        const matSelect = document.getElementById('surveyFilterMaterial');
+        matSelect.innerHTML = '<option value="">All</option>' + materials.map(m => `<option value="${m}">${m}</option>`).join('');
+
+        filterSurveyVideos();
     } catch(e) { console.error('Failed to load survey videos:', e); }
+}
+
+function filterSurveyVideos() {
+    const typeFilter = document.getElementById('surveyFilterType').value;
+    const diaFilter = document.getElementById('surveyFilterDiameter').value;
+    const matFilter = document.getElementById('surveyFilterMaterial').value;
+
+    let filtered = _surveyAllVideos;
+    if (typeFilter) filtered = filtered.filter(v => v.pipe_type === typeFilter);
+    if (diaFilter) filtered = filtered.filter(v => v.pipe_diameter_mm === parseInt(diaFilter));
+    if (matFilter) filtered = filtered.filter(v => v.pipe_material === matFilter);
+
+    const select = document.getElementById('surveyVideoSelect');
+    select.innerHTML = '<option value="">-- Select Video --</option>';
+    filtered.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.path;
+        opt.textContent = `[${v.pipe_dir}] ${v.filename}`;
+        if (v.pipe_diameter_mm > 0) opt.dataset.pipeMm = v.pipe_diameter_mm;
+        select.appendChild(opt);
+    });
+    document.getElementById('surveyVideoCount').textContent = `(${filtered.length}/${_surveyAllVideos.length})`;
 }
 
 document.getElementById('surveyVideoSelect').addEventListener('change', function() {

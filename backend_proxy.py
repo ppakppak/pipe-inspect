@@ -5293,11 +5293,24 @@ def survey_list_videos():
             for vf in sorted(os.listdir(pipe_path)):
                 if vf.lower().endswith(('.avi', '.mp4', '.mkv', '.mov')):
                     full_path = os.path.join(pipe_path, vf)
+                    # 메타 파싱: NNN-유형-관경MM-관종
+                    pipe_type = ''  # 지방/광역/집방
+                    pipe_material = ''  # DCIP/SP/PE 등
+                    for p in parts:
+                        if p in ('지방', '광역', '집방'):
+                            pipe_type = p
+                        elif p.upper() in ('DCIP', 'SP', 'PE', 'HIVP', 'CIP', 'PEP', 'HI-3P', 'PFP'):
+                            pipe_material = p.upper()
+                        elif '-' not in p and not p.replace('MM','').isdigit() and not p.isdigit():
+                            if not pipe_material:
+                                pipe_material = p.upper()
                     videos.append({
                         'path': full_path,
                         'filename': vf,
                         'pipe_dir': pipe_dir,
                         'pipe_diameter_mm': pipe_mm,
+                        'pipe_type': pipe_type,
+                        'pipe_material': pipe_material,
                     })
     return jsonify({'success': True, 'videos': videos})
 

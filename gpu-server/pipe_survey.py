@@ -16,6 +16,8 @@ import numpy as np
 import json
 import os
 import time
+import requests
+import base64
 from pathlib import Path
 
 from osd_ocr import OSDDistanceReader
@@ -24,14 +26,14 @@ from osd_ocr import OSDDistanceReader
 class PipeSurveyAnalyzer:
     """영상 전체를 분석하여 구간별 결함 분포를 생성한다."""
 
-    def __init__(self, gpu=True, segment_model=None):
+    def __init__(self, gpu=True, gpu_server_url='http://localhost:5004'):
         """
         Args:
             gpu: GPU 사용 여부
-            segment_model: 세그멘테이션 모델 (None이면 OSD+거리만)
+            gpu_server_url: GPU 서버 API URL
         """
         self.osd_reader = OSDDistanceReader(gpu=gpu)
-        self.segment_model = segment_model
+        self.gpu_server_url = gpu_server_url
 
     def analyze_video(self, video_path, pipe_diameter_mm=300,
                       sample_interval=15, section_length_m=1.0,
@@ -119,9 +121,42 @@ class PipeSurveyAnalyzer:
             }
             sections.append(section)
 
-        # Phase 3: 결함 분석 (모델이 있을 때)
-        # TODO: 세그멘테이션 모델로 각 구간 프레임 분석
-        # 현재는 구조만 잡아둠
+        # Phase 3: 결함 분석 — 구간별 대표 프레임 세그멘테이션
+        if progress_callback:
+            progress_callback(0, len(sections), "Phase 2: 결함 분석 중...")
+
+        cap = cv2.VideoCapture(video_path)
+        for si, section in enumerate(sections):
+            if section['frame_count'] == 0:
+                continue
+
+            # 구간 중간 프레임을 대표로 추론
+            mid_frame = (section['frame_range'][0] + section['frame_range'][1]) // 2
+            defect_info = self._analyze_frame(cap, mid_frame)
+
+            if defect_info:
+                section['defects'] = defect_info.get('by_class', {})
+                section['total_defect_ratio'] = defect_info.get('total_ratio', 0.0)
+                section['num_objects'] = defect_info.get('num_objects', 0)
+
+            if progress_callback:
+                progress_callback(si + 1, len(sections), "결함 분석")
+
+        cap.release()
+
+        # 결함 통계
+        defect_sections = [s for s in sections if s['total_defect_ratio'] > 0]
+        defect_length = len(defect_sections) * section_length_m
+
+        by_class_summary = {}
+        for sec in sections:
+            for cls_name, cls_info in sec.get('defects', {}).items():
+                if cls_name not in by_class_summary:
+                    by_class_summary[cls_name] = {'section_count': 0, 'max_ratio': 0.0}
+                if cls_info.get('pixel_ratio', 0) > 0:
+                    by_class_summary[cls_name]['section_count'] += 1
+                    by_class_summary[cls_name]['max_ratio'] = max(
+                        by_class_summary[cls_name]['max_ratio'], cls_info['pixel_ratio'])
 
         # 요약 생성
         summary = {
@@ -134,9 +169,11 @@ class PipeSurveyAnalyzer:
             'section_length_m': section_length_m,
             'pipe_diameter_mm': pipe_diameter_mm,
             'fps': fps,
+            'defect_sections': len(defect_sections),
+            'defect_length_m': round(defect_length, 2),
+            'defect_ratio_pct': round(defect_length / total_dist * 100, 1) if total_dist > 0 else 0,
+            'by_class': by_class_summary,
         }
-
-        cap.release()
 
         return {
             'video_path': str(video_path),
@@ -168,6 +205,59 @@ class PipeSurveyAnalyzer:
                     frame_dist[f] = d1 + ratio * (d2 - d1)
 
         return frame_dist
+
+    def _analyze_frame(self, cap, frame_number) -> dict:
+        """단일 프레임 세그멘테이션 — GPU 서버 API 호출"""
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ret, frame = cap.read()
+        if not ret:
+            return None
+
+        try:
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            img_b64 = base64.b64encode(buffer).decode('utf-8')
+
+            resp = requests.post(
+                f'{self.gpu_server_url}/api/ai/inference_raw',
+                json={'image_base64': img_b64},
+                timeout=30
+            )
+
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            if not data.get('success'):
+                return None
+
+            boxes = data.get('bounding_boxes', [])
+            width = data.get('width', 1)
+            height = data.get('height', 1)
+            total_pixels = width * height
+
+            by_class = {}
+            total_defect_pixels = 0
+
+            for box in boxes:
+                cls_name = box.get('class_name', f"class_{box.get('class_id', '?')}")
+                area = box.get('area', 0)
+                if cls_name not in by_class:
+                    by_class[cls_name] = {'count': 0, 'total_area': 0, 'pixel_ratio': 0.0}
+                by_class[cls_name]['count'] += 1
+                by_class[cls_name]['total_area'] += area
+                total_defect_pixels += area
+
+            for cls_name in by_class:
+                by_class[cls_name]['pixel_ratio'] = round(
+                    by_class[cls_name]['total_area'] / total_pixels * 100, 2)
+
+            return {
+                'by_class': by_class,
+                'total_ratio': round(total_defect_pixels / total_pixels * 100, 2),
+                'num_objects': len(boxes),
+            }
+        except Exception as e:
+            return None
 
     def generate_strip_map_frames(self, video_path, distances,
                                   strip_height_px=5, output_dir=None) -> str:

@@ -881,6 +881,58 @@ def extract_bounding_boxes_from_mask(mask, min_area=100, include_masks=False):
     return boxes
 
 
+
+@app.route('/api/ai/inference_raw', methods=['POST'])
+def run_inference_raw():
+    """Base64 이미지로 직접 SegFormer 추론 (pipe_survey용)"""
+    global segformer_model, segformer_processor, segformer_device, ai_initialized
+
+    with inference_lock:
+        inference_stats['total_requests'] += 1
+        inference_stats['active_requests'] += 1
+        try:
+            if not ai_initialized or segformer_model is None:
+                return jsonify({'success': False, 'error': 'AI model not initialized'}), 400
+
+            data = request.json
+            img_b64 = data.get('image_base64')
+            if not img_b64:
+                return jsonify({'success': False, 'error': 'image_base64 required'}), 400
+
+            img_bytes = base64.b64decode(img_b64)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return jsonify({'success': False, 'error': 'Failed to decode image'}), 400
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            inputs = segformer_processor(images=frame_rgb, return_tensors="pt")
+            inputs = {k: v.to(segformer_device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = segformer_model(**inputs)
+                logits = outputs.logits
+
+            upsampled_logits = torch.nn.functional.interpolate(
+                logits, size=frame.shape[:2], mode="bilinear", align_corners=False
+            )
+            predicted = upsampled_logits.argmax(dim=1)[0].cpu().numpy()
+            bounding_boxes = extract_bounding_boxes_from_mask(predicted, min_area=100, include_masks=False)
+
+            return jsonify({
+                'success': True,
+                'num_classes': int(predicted.max() + 1),
+                'width': int(predicted.shape[1]),
+                'height': int(predicted.shape[0]),
+                'bounding_boxes': bounding_boxes,
+            })
+
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            inference_stats['active_requests'] -= 1
+
+
 @app.route('/api/ai/inference', methods=['POST'])
 def run_inference():
     """현재 프레임에 대해 SegFormer 추론 실행 및 바운딩 박스 추출"""
@@ -3867,4 +3919,4 @@ if __name__ == '__main__':
         print("⚠️  AI model failed to load (will retry on first inference)\n")
 
     # 멀티스레드 활성화로 동시 요청 처리 가능
-    app.run(host='0.0.0.0', port=5006, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('GPU_PORT', 5004)), debug=False, threaded=True)

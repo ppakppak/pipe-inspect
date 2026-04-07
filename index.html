@@ -16800,20 +16800,34 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
             <!-- 결과 영역 -->
             <div id="surveyResults" style="display: none;">
                 <!-- 요약 카드 -->
-                <div id="surveySummaryCards" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;"></div>
+                <div id="surveySummaryCards" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; margin-bottom: 20px;"></div>
 
-                <!-- Strip-map -->
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-                    <h3 style="margin-top: 0; color: #4a9eff;">🗺️ Pipe Interior Strip-map</h3>
-                    <div style="overflow-x: auto;">
-                        <img id="surveyStripmap" style="width: 100%; border-radius: 4px; border: 1px solid #555;" />
+                <!-- 시각화 카드 -->
+                <div style="display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr); gap: 20px; margin-bottom: 20px; align-items: stretch;">
+                    <!-- Strip-map -->
+                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; min-width: 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
+                            <h3 style="margin:0; color: #4a9eff;">🗺️ Pipe Interior Strip-map</h3>
+                            <div style="color:#888; font-size:12px;">가로: 관 둘레, 세로: 진행 거리</div>
+                        </div>
+                        <div style="color:#9aa0a6; font-size:12px; margin-bottom:10px;">원본 strip-map을 스크롤 가능한 뷰어로 표시합니다.</div>
+                        <div id="surveyStripmapWrap" style="background:#1e1e1e; border:1px solid #555; border-radius:6px; min-height:260px; max-height:420px; overflow:auto; padding:10px; display:flex; align-items:flex-start; justify-content:center;">
+                            <div id="surveyStripmapEmpty" style="color:#777; font-size:13px; padding-top:90px;">Strip-map loading...</div>
+                            <img id="surveyStripmap" style="display:none; max-width:100%; height:auto; border-radius:4px;" />
+                        </div>
                     </div>
-                </div>
 
-                <!-- 결함 분포 차트 -->
-                <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
-                    <h3 style="margin-top: 0; color: #4a9eff;">📊 Defect Distribution</h3>
-                    <canvas id="surveyChart" height="200"></canvas>
+                    <!-- 결함 분포 차트 -->
+                    <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; min-width: 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
+                            <h3 style="margin:0; color: #4a9eff;">📊 Defect Distribution</h3>
+                            <div style="color:#888; font-size:12px;">구간별 Rust / Scale 면적비</div>
+                        </div>
+                        <div style="color:#9aa0a6; font-size:12px; margin-bottom:10px;">구간마다 결함 비율을 누적 막대로 보여줍니다.</div>
+                        <div id="surveyChartWrap" style="background:#1e1e1e; border:1px solid #555; border-radius:6px; padding:10px; min-height:320px;">
+                            <canvas id="surveyChart" style="display:block; width:100%; height:280px;"></canvas>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- 구간 상세 테이블 -->
@@ -16959,118 +16973,158 @@ async function pollSurveyStatus() {
     } catch(e) { console.error('Poll error:', e); }
 }
 
+let surveyLastSections = [];
+
+function getSurveySectionRatios(sec) {
+    const defects = sec.defects || {};
+    let rustR = 0, scaleR = 0;
+    for (const [cls, info] of Object.entries(defects)) {
+        if (cls.includes('1') || cls.includes('rust')) rustR += info.pixel_ratio || 0;
+        else scaleR += info.pixel_ratio || 0;
+    }
+    rustR = Math.min(rustR, 100);
+    scaleR = Math.min(scaleR, 100);
+    return { rustR, scaleR, total: Math.min(rustR + scaleR, 100) };
+}
+
 async function loadSurveyResult() {
     const resp = await fetch(`/api/survey/result/${surveyJobId}`);
     const data = await resp.json();
     if (!data.success) return;
 
     const result = data.result;
-    const summary = result.summary;
-    const sections = result.sections;
+    const summary = result.summary || {};
+    const sections = result.sections || [];
+    surveyLastSections = sections;
 
-    // Summary cards
+    document.getElementById('surveyResults').style.display = 'block';
+
+    const sectionCount = summary.sections_count || sections.length || 0;
+    const defectSections = summary.defect_sections || 0;
+    const defectCoverage = sectionCount ? ((defectSections / sectionCount) * 100) : 0;
+    const peakSeverity = Math.max(0, ...sections.map(s => getSurveySectionRatios(s).total));
+
     const cardsDiv = document.getElementById('surveySummaryCards');
     cardsDiv.innerHTML = `
         <div style="background:#1a3a5c;padding:15px;border-radius:8px;text-align:center;">
-            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${summary.total_length_m}m</div>
+            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${(summary.total_length_m || 0).toFixed ? summary.total_length_m.toFixed(2) : summary.total_length_m}m</div>
             <div style="color:#aaa;font-size:12px;">Total Length</div>
         </div>
         <div style="background:#1a3a5c;padding:15px;border-radius:8px;text-align:center;">
-            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${summary.pipe_diameter_mm}mm</div>
+            <div style="font-size:28px;font-weight:bold;color:#4a9eff;">${summary.pipe_diameter_mm || '-'}mm</div>
             <div style="color:#aaa;font-size:12px;">Pipe Diameter</div>
+            <div style="color:#7f8c8d;font-size:11px;margin-top:4px;">Section ${(summary.section_length_m || 0)}m</div>
         </div>
         <div style="background:#5c1a1a;padding:15px;border-radius:8px;text-align:center;">
-            <div style="font-size:28px;font-weight:bold;color:#ff6b6b;">${summary.defect_sections || 0}/${summary.sections_count}</div>
+            <div style="font-size:28px;font-weight:bold;color:#ff6b6b;">${defectSections}/${sectionCount}</div>
             <div style="color:#aaa;font-size:12px;">Defect Sections</div>
+            <div style="color:#7f8c8d;font-size:11px;margin-top:4px;">Coverage ${defectCoverage.toFixed(1)}%</div>
         </div>
-        <div style="background:#5c1a1a;padding:15px;border-radius:8px;text-align:center;">
-            <div style="font-size:28px;font-weight:bold;color:#ff6b6b;">${summary.defect_ratio_pct || 0}%</div>
-            <div style="color:#aaa;font-size:12px;">Defect Rate</div>
+        <div style="background:#5c3b1a;padding:15px;border-radius:8px;text-align:center;">
+            <div style="font-size:28px;font-weight:bold;color:#ffb347;">${peakSeverity.toFixed(1)}%</div>
+            <div style="color:#aaa;font-size:12px;">Peak Section Severity</div>
         </div>
     `;
 
-    // Strip-map
-    document.getElementById('surveyStripmap').src = `/api/survey/stripmap/${surveyJobId}`;
+    const stripImg = document.getElementById('surveyStripmap');
+    const stripEmpty = document.getElementById('surveyStripmapEmpty');
+    stripImg.style.display = 'none';
+    stripEmpty.style.display = 'block';
+    stripEmpty.textContent = 'Strip-map loading...';
+    stripImg.onload = () => {
+        stripEmpty.style.display = 'none';
+        stripImg.style.display = 'block';
+    };
+    stripImg.onerror = () => {
+        stripEmpty.style.display = 'block';
+        stripEmpty.textContent = 'Strip-map image unavailable';
+        stripImg.style.display = 'none';
+    };
+    stripImg.src = `/api/survey/stripmap/${surveyJobId}`;
 
-    // Chart
-    renderSurveyChart(sections);
-
-    // Table
+    requestAnimationFrame(() => renderSurveyChart(sections));
     renderSurveyTable(sections);
-
-    document.getElementById('surveyResults').style.display = 'block';
 }
 
 function renderSurveyChart(sections) {
     const canvas = document.getElementById('surveyChart');
+    const wrap = document.getElementById('surveyChartWrap');
+    if (!canvas || !wrap) return;
     const ctx = canvas.getContext('2d');
 
-    // Simple bar chart (no Chart.js dependency)
-    const w = canvas.parentElement.clientWidth - 40;
+    const w = Math.max((wrap.clientWidth || 0) - 20, 520);
+    const h = 280;
     canvas.width = w;
-    canvas.height = 250;
+    canvas.height = h;
+    canvas.style.width = '100%';
+    canvas.style.height = h + 'px';
 
-    ctx.clearRect(0, 0, w, 250);
+    ctx.clearRect(0, 0, w, h);
+    if (!sections || !sections.length) {
+        ctx.fillStyle = '#888';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('No section data', 20, 30);
+        return;
+    }
 
-    const maxRatio = Math.max(...sections.map(s => s.total_defect_ratio || 0), 10);
-    const barW = Math.max((w - 60) / sections.length - 2, 4);
-    const chartH = 200;
-    const offsetX = 50;
-    const offsetY = 10;
+    const padding = { left: 42, right: 12, top: 28, bottom: 38 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+    const maxRatio = Math.max(40, ...sections.map(s => getSurveySectionRatios(s).total));
+    const slotW = chartW / sections.length;
+    const barW = Math.max(4, Math.min(slotW - 2, 18));
 
-    // Grid lines
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
     for (let pct = 0; pct <= maxRatio; pct += 10) {
-        const y = offsetY + chartH - (pct / maxRatio * chartH);
-        ctx.beginPath(); ctx.moveTo(offsetX, y); ctx.lineTo(w, y); ctx.stroke();
+        const y = padding.top + chartH - (pct / maxRatio * chartH);
+        ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(w - padding.right, y); ctx.stroke();
         ctx.fillStyle = '#888'; ctx.font = '11px monospace';
-        ctx.fillText(pct + '%', 5, y + 4);
+        ctx.fillText(pct + '%', 4, y + 4);
     }
 
-    // Critical / Caution lines
-    const cautionY = offsetY + chartH - (10 / maxRatio * chartH);
-    const criticalY = offsetY + chartH - (30 / maxRatio * chartH);
-    ctx.strokeStyle = '#ff8c00'; ctx.setLineDash([5,3]);
-    ctx.beginPath(); ctx.moveTo(offsetX, cautionY); ctx.lineTo(w, cautionY); ctx.stroke();
-    ctx.strokeStyle = '#ff0000';
-    ctx.beginPath(); ctx.moveTo(offsetX, criticalY); ctx.lineTo(w, criticalY); ctx.stroke();
+    const thresholds = [
+        { value: 10, color: '#ff8c00', label: 'Caution' },
+        { value: 30, color: '#ff4d4f', label: 'Critical' }
+    ];
+    ctx.setLineDash([5, 4]);
+    thresholds.forEach(t => {
+        const y = padding.top + chartH - (t.value / maxRatio * chartH);
+        ctx.strokeStyle = t.color;
+        ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(w - padding.right, y); ctx.stroke();
+    });
     ctx.setLineDash([]);
 
-    // Bars
     sections.forEach((sec, i) => {
-        const x = offsetX + i * (barW + 2);
-        const defects = sec.defects || {};
-        let rustR = 0, scaleR = 0;
-        for (const [cls, info] of Object.entries(defects)) {
-            if (cls.includes('1') || cls.includes('rust')) rustR += info.pixel_ratio || 0;
-            else scaleR += info.pixel_ratio || 0;
-        }
+        const { rustR, scaleR } = getSurveySectionRatios(sec);
+        const x = padding.left + i * slotW + (slotW - barW) / 2;
+        const rustH = (rustR / maxRatio) * chartH;
+        const scaleH = (scaleR / maxRatio) * chartH;
 
-        // Rust bar
-        const rustH = rustR / maxRatio * chartH;
         ctx.fillStyle = '#E74C3C';
-        ctx.fillRect(x, offsetY + chartH - rustH, barW, rustH);
-
-        // Scale bar (stacked)
-        const scaleH = scaleR / maxRatio * chartH;
+        ctx.fillRect(x, padding.top + chartH - rustH, barW, rustH);
         ctx.fillStyle = '#F1C40F';
-        ctx.fillRect(x, offsetY + chartH - rustH - scaleH, barW, scaleH);
+        ctx.fillRect(x, padding.top + chartH - rustH - scaleH, barW, scaleH);
 
-        // Label
-        if (i % Math.ceil(sections.length / 10) === 0) {
-            ctx.fillStyle = '#888'; ctx.font = '10px monospace';
-            ctx.save(); ctx.translate(x + barW/2, offsetY + chartH + 15);
-            ctx.fillText(sec.start_m.toFixed(0) + 'm', -10, 0);
+        const labelStep = Math.max(1, Math.ceil(sections.length / 8));
+        if (i % labelStep === 0) {
+            ctx.fillStyle = '#888';
+            ctx.font = '10px monospace';
+            ctx.save();
+            ctx.translate(x + barW / 2, h - 14);
+            ctx.rotate(-Math.PI / 5);
+            ctx.fillText(`${sec.start_m.toFixed(0)}m`, -10, 0);
             ctx.restore();
         }
     });
 
-    // Legend
-    ctx.fillStyle = '#E74C3C'; ctx.fillRect(w - 150, 5, 12, 12);
-    ctx.fillStyle = '#ccc'; ctx.font = '11px sans-serif'; ctx.fillText('Rust', w - 133, 15);
-    ctx.fillStyle = '#F1C40F'; ctx.fillRect(w - 80, 5, 12, 12);
-    ctx.fillStyle = '#ccc'; ctx.fillText('Scale', w - 63, 15);
+    ctx.fillStyle = '#ccc';
+    ctx.font = '11px sans-serif';
+    ctx.fillText('Section start', padding.left, h - 4);
+    ctx.fillStyle = '#E74C3C'; ctx.fillRect(w - 170, 8, 12, 12);
+    ctx.fillStyle = '#ccc'; ctx.fillText('Rust', w - 152, 18);
+    ctx.fillStyle = '#F1C40F'; ctx.fillRect(w - 104, 8, 12, 12);
+    ctx.fillStyle = '#ccc'; ctx.fillText('Scale', w - 86, 18);
 }
 
 function renderSurveyTable(sections) {
@@ -17078,13 +17132,7 @@ function renderSurveyTable(sections) {
     tbody.innerHTML = '';
 
     sections.forEach((sec, i) => {
-        const defects = sec.defects || {};
-        let rustR = 0, scaleR = 0;
-        for (const [cls, info] of Object.entries(defects)) {
-            if (cls.includes('1') || cls.includes('rust')) rustR += info.pixel_ratio || 0;
-            else scaleR += info.pixel_ratio || 0;
-        }
-        const total = sec.total_defect_ratio || 0;
+        const { rustR, scaleR, total } = getSurveySectionRatios(sec);
         let grade = '🟢', gradeColor = '#2ecc71';
         if (total > 30) { grade = '🔴'; gradeColor = '#e74c3c'; }
         else if (total > 10) { grade = '🟡'; gradeColor = '#f39c12'; }
@@ -17102,6 +17150,12 @@ function renderSurveyTable(sections) {
         tbody.appendChild(tr);
     });
 }
+
+window.addEventListener('resize', () => {
+    if (surveyLastSections && surveyLastSections.length && document.getElementById('surveyResults').style.display !== 'none') {
+        renderSurveyChart(surveyLastSections);
+    }
+});
 
 // Auto-load videos when survey tab opens
 const origShowTab = window.showTab;

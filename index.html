@@ -11621,7 +11621,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     html += `<div style="flex:1; height:${h}px; background:#4fc3f7; min-width:1px;" title="${v.toFixed(4)}"></div>`;
                 });
                 html += '</div>';
-                html += `<div style="display:flex; justify-content:space-between; font-size:9px; color:#666; margin-top:2px;"><span>가까움(y=0)</span><span>먼 곳(y=max)</span></div>`;
+                html += `<div style="display:flex; justify-content:space-between; font-size:9px; color:#666; margin-top:2px;"><span>먼 곳, VP 근처 (y=0)</span><span>가까운 곳, 카메라 근처 (y=max)</span></div>`;
                 profileEl.innerHTML = html;
             } else {
                 profileEl.innerHTML = '<span style="color: #666;">프로파일 없음</span>';

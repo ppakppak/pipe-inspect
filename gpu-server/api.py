@@ -24,7 +24,7 @@ import time
 # sys.path.insert(0, '/home/ppak/SynologyDrive/ykpark/linux_devel/ground_sam/Grounded-Segment-Anything')
 
 from project_manager import ProjectManager
-from defect_sizing import VanishingPointDetector
+from defect_sizing import VanishingPointDetector, DepthEstimator, PipeSizeCalibrator, PipeAreaRatioCalculator, PipeUnwrapper, DepthAwarePipeUnwrapper, SizingResultManager
 
 # SegFormer 모델 전역 변수
 segformer_model = None
@@ -1036,6 +1036,300 @@ def detect_vp_batch_api():
             'frame_numbers': used_frames,
             'results': per_frame_results,
             'median_vp': batch_result.get('median_vp'),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+
+def _encode_image_base64(image, ext='.jpg', params=None):
+    if params is None:
+        params = [cv2.IMWRITE_JPEG_QUALITY, 90] if ext == '.jpg' else []
+    ok, buf = cv2.imencode(ext, image, params)
+    if not ok:
+        raise RuntimeError('Failed to encode image')
+    return base64.b64encode(buf.tobytes()).decode('utf-8')
+
+
+def _flat_polygon_to_points(polygon_flat):
+    pts = []
+    for i in range(0, len(polygon_flat), 2):
+        pts.append([float(polygon_flat[i]), float(polygon_flat[i+1])])
+    return pts
+
+
+def _normalize_defect_polygon(defect):
+    polygon = defect.get('polygon') or defect.get('segmentation')
+    if isinstance(polygon, list) and polygon and isinstance(polygon[0], dict):
+        flat = []
+        for pt in polygon:
+            flat.extend([float(pt['x']), float(pt['y'])])
+        polygon = flat
+    return polygon if isinstance(polygon, list) and len(polygon) >= 6 else None
+
+
+def _resolve_vp_from_request(data, frame, video_cache_key):
+    req_vp = data.get('vp') or {}
+    if req_vp and 'vp_x' in req_vp and 'vp_y' in req_vp:
+        return {
+            'vp_x': float(req_vp['vp_x']),
+            'vp_y': float(req_vp['vp_y']),
+            'confidence': float(req_vp.get('confidence', 1.0)),
+            'method': req_vp.get('method', 'client')
+        }
+    return vp_detector.detect(frame, video_id=video_cache_key)
+
+
+def _measure_defects(defects, calibrator, depth_map=None, vp=None):
+    measurements = []
+    for defect in defects:
+        polygon_flat = _normalize_defect_polygon(defect)
+        if not polygon_flat:
+            measurements.append({
+                'annotation_index': defect.get('annotation_index', defect.get('index', -1)),
+                'label': defect.get('label', defect.get('category', 'unknown')),
+                'error': 'invalid polygon'
+            })
+            continue
+
+        result = calibrator.measure_defect(_flat_polygon_to_points(polygon_flat), depth_map=depth_map)
+        result['annotation_index'] = defect.get('annotation_index', defect.get('index', -1))
+        result['label'] = defect.get('label', defect.get('category', 'unknown'))
+        if vp:
+            result['vp'] = vp
+        measurements.append(result)
+    return measurements
+
+
+def _compute_frame_area_ratio(defects, coord_system):
+    visible_pipe_area_mm2 = float(coord_system.get('x_range_mm', 0) * coord_system.get('y_range_mm', 0))
+    total_defect_area_mm2 = float(sum(float(d.get('area_mm2', 0) or 0) for d in defects))
+    return {
+        'visible_pipe_area_mm2': round(visible_pipe_area_mm2, 1),
+        'visible_pipe_area_cm2': round(visible_pipe_area_mm2 / 100.0, 2),
+        'total_defect_area_mm2': round(total_defect_area_mm2, 1),
+        'total_defect_area_cm2': round(total_defect_area_mm2 / 100.0, 2),
+        'defect_ratio_percent': round((total_defect_area_mm2 / visible_pipe_area_mm2 * 100.0) if visible_pipe_area_mm2 > 0 else 0.0, 4)
+    }
+
+
+@app.route('/api/sizing/initialize-depth', methods=['POST'])
+def sizing_initialize_depth():
+    try:
+        model_type = (request.json or {}).get('model_type', 'MiDaS_small')
+        depth_estimator = DepthEstimator.get_instance(model_type)
+        depth_estimator._ensure_loaded()
+        return jsonify({
+            'success': True,
+            'model_type': model_type,
+            'device': str(DepthEstimator._device),
+            'vram_mb': round(depth_estimator.get_vram_usage(), 1)
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/depth-map', methods=['POST'])
+def sizing_depth_map():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_number = int(data.get('frame_number', 0))
+        if not project_dir or not video_id:
+            return jsonify({'success': False, 'error': 'project_dir and video_id required'}), 400
+
+        frame, actual_frame, total_frames, _ = _load_video_frame_for_sizing(project_dir, video_id, frame_number)
+        depth_estimator = DepthEstimator.get_instance('MiDaS_small')
+        depth_map = depth_estimator.estimate(frame, video_id=f'{project_dir}:{video_id}', frame_number=actual_frame)
+        colorized = DepthEstimator.depth_to_colorized(depth_map)
+
+        return jsonify({
+            'success': True,
+            'frame_number': actual_frame,
+            'total_frames': total_frames,
+            'colorized_preview': _encode_image_base64(colorized),
+            'depth_map_png': DepthEstimator.depth_to_base64_png(depth_map)
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/calculate', methods=['POST'])
+def sizing_calculate():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_number = int(data.get('frame_number', 0))
+        pipe_diameter_mm = float(data.get('pipe_diameter_mm', 300))
+        defects = data.get('defects') or []
+        use_depth = bool(data.get('use_depth', True))
+        if not project_dir or not video_id:
+            return jsonify({'success': False, 'error': 'project_dir and video_id required'}), 400
+
+        frame, actual_frame, _, _ = _load_video_frame_for_sizing(project_dir, video_id, frame_number)
+        cache_key = f'{project_dir}:{video_id}'
+        vp = _resolve_vp_from_request(data, frame, cache_key)
+        calibrator = PipeSizeCalibrator(pipe_diameter_mm, vp['vp_x'], vp['vp_y'], frame.shape[1], frame.shape[0])
+
+        depth_map = None
+        depth_preview = None
+        if use_depth:
+            depth_estimator = DepthEstimator.get_instance('MiDaS_small')
+            depth_map = depth_estimator.estimate(frame, video_id=cache_key, frame_number=actual_frame)
+            depth_preview = _encode_image_base64(DepthEstimator.depth_to_colorized(depth_map))
+
+        measurements = _measure_defects(defects, calibrator, depth_map=depth_map, vp=vp)
+        if project_dir:
+            try:
+                SizingResultManager.save_results(project_dir, video_id, {'frame_number': actual_frame, 'measurements': measurements})
+            except Exception:
+                pass
+
+        return jsonify({
+            'success': True,
+            'frame_number': actual_frame,
+            'vp': vp,
+            'measurements': measurements,
+            'depth_map_preview': depth_preview,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/area-ratio', methods=['POST'])
+def sizing_area_ratio():
+    try:
+        data = request.json or {}
+        pipe_diameter_mm = float(data.get('pipe_diameter_mm', 300))
+        section_length_mm = float(data.get('section_length_mm', 6000))
+        measurements = data.get('measurements') or []
+        calc = PipeAreaRatioCalculator()
+        result = calc.calculate_section_ratio(pipe_diameter_mm, section_length_mm, defect_measurements=measurements)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/unwrap', methods=['POST'])
+def sizing_unwrap():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_number = int(data.get('frame_number', 0))
+        pipe_diameter_mm = float(data.get('pipe_diameter_mm', 300))
+        output_width = int(data.get('output_width', 800))
+        output_height = int(data.get('output_height', 600))
+        defects = data.get('defects') or []
+        if not project_dir or not video_id:
+            return jsonify({'success': False, 'error': 'project_dir and video_id required'}), 400
+
+        frame, actual_frame, _, _ = _load_video_frame_for_sizing(project_dir, video_id, frame_number)
+        vp = _resolve_vp_from_request(data, frame, f'{project_dir}:{video_id}')
+        unwrapper = PipeUnwrapper(vp['vp_x'], vp['vp_y'], frame.shape[1], frame.shape[0], pipe_diameter_mm, output_width, output_height)
+        unwrapped = unwrapper.unwrap(frame)
+        coord = unwrapper.get_coordinate_system()
+
+        result_defects = []
+        for defect in defects:
+            polygon_flat = _normalize_defect_polygon(defect)
+            if not polygon_flat:
+                continue
+            unwrapped_polygon = unwrapper.transform_polygon(polygon_flat)
+            area = unwrapper.calculate_unwrapped_area(unwrapped_polygon)
+            result_defects.append({
+                'index': defect.get('index', defect.get('annotation_index', -1)),
+                'category': defect.get('category', defect.get('label', 'unknown')),
+                'unwrapped_polygon': unwrapped_polygon,
+                **area
+            })
+
+        frame_area_ratio = _compute_frame_area_ratio(result_defects, coord)
+        return jsonify({
+            'success': True,
+            'frame_number': actual_frame,
+            'vp': vp,
+            'unwrapped_image': _encode_image_base64(unwrapped),
+            'defects': result_defects,
+            'coordinate_system': coord,
+            'frame_area_ratio': frame_area_ratio
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/depth-unwrap', methods=['POST'])
+def sizing_depth_unwrap():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_number = int(data.get('frame_number', 0))
+        pipe_diameter_mm = float(data.get('pipe_diameter_mm', 300))
+        output_width = int(data.get('output_width', 800))
+        output_height = int(data.get('output_height', 600))
+        defects = data.get('defects') or []
+        if not project_dir or not video_id:
+            return jsonify({'success': False, 'error': 'project_dir and video_id required'}), 400
+
+        frame, actual_frame, _, _ = _load_video_frame_for_sizing(project_dir, video_id, frame_number)
+        cache_key = f'{project_dir}:{video_id}'
+        vp = _resolve_vp_from_request(data, frame, cache_key)
+        depth_estimator = DepthEstimator.get_instance('MiDaS_small')
+        depth_map = depth_estimator.estimate(frame, video_id=cache_key, frame_number=actual_frame)
+        calibrator = PipeSizeCalibrator(pipe_diameter_mm, vp['vp_x'], vp['vp_y'], frame.shape[1], frame.shape[0])
+        unwrapper = DepthAwarePipeUnwrapper(vp['vp_x'], vp['vp_y'], frame.shape[1], frame.shape[0], pipe_diameter_mm, output_width, output_height)
+        unwrapper.set_depth_map(depth_map, calibrator)
+        unwrapped = unwrapper.unwrap(frame)
+        depth_overlay = unwrapper.unwrap_depth(depth_map)
+        coord = unwrapper.get_coordinate_system()
+
+        result_defects = []
+        for defect in defects:
+            polygon_flat = _normalize_defect_polygon(defect)
+            if not polygon_flat:
+                continue
+            unwrapped_polygon = unwrapper.transform_polygon(polygon_flat)
+            area = unwrapper.calculate_unwrapped_area(unwrapped_polygon)
+            result_defects.append({
+                'index': defect.get('index', defect.get('annotation_index', -1)),
+                'category': defect.get('category', defect.get('label', 'unknown')),
+                'unwrapped_polygon': unwrapped_polygon,
+                **area
+            })
+
+        y_profile = []
+        if getattr(unwrapper, 'mm_per_px_y_array', None) is not None:
+            arr = unwrapper.mm_per_px_y_array
+            step = max(1, len(arr)//20)
+            y_profile = [round(float(v), 4) for v in arr[::step]]
+
+        frame_area_ratio = _compute_frame_area_ratio(result_defects, coord)
+        return jsonify({
+            'success': True,
+            'frame_number': actual_frame,
+            'vp': vp,
+            'unwrapped_image': _encode_image_base64(unwrapped),
+            'depth_overlay': _encode_image_base64(depth_overlay),
+            'defects': result_defects,
+            'coordinate_system': coord,
+            'frame_area_ratio': frame_area_ratio,
+            'y_scale_profile': y_profile
         })
     except Exception as e:
         import traceback

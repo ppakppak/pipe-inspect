@@ -18,6 +18,23 @@ from pathlib import Path
 from datetime import datetime
 
 
+def _unwrap_cyclic_x_coords(xs, width):
+    """원통 seam(0°/360° 경계)을 넘는 X 좌표를 연속적으로 펼친다."""
+    if not xs:
+        return xs
+    unwrapped = [float(xs[0])]
+    half = float(width) / 2.0
+    for x in xs[1:]:
+        x = float(x)
+        prev = unwrapped[-1]
+        while x - prev > half:
+            x -= float(width)
+        while prev - x > half:
+            x += float(width)
+        unwrapped.append(x)
+    return unwrapped
+
+
 # ============================================================
 # Phase 1: 소실점(Vanishing Point) 탐지
 # ============================================================
@@ -880,6 +897,9 @@ class PipeUnwrapper:
         xs = [polygon_flat_unwrapped[i * 2] for i in range(n)]
         ys = [polygon_flat_unwrapped[i * 2 + 1] for i in range(n)]
 
+        # 원통 seam(좌우 경계) 넘는 폴리곤 보정
+        xs = _unwrap_cyclic_x_coords(xs, self.output_width)
+
         area_px2 = 0
         for i in range(n):
             j = (i + 1) % n
@@ -1190,6 +1210,9 @@ class DepthAwarePipeUnwrapper:
 
         xs = [polygon_flat_unwrapped[i * 2] for i in range(n)]
         ys = [polygon_flat_unwrapped[i * 2 + 1] for i in range(n)]
+
+        # 원통 seam(좌우 경계) 넘는 폴리곤 보정
+        xs = _unwrap_cyclic_x_coords(xs, self.output_width)
 
         if self.mm_per_px_y_array is not None:
             # 누적 Y스케일 테이블: pixel Y → physical Y (mm)

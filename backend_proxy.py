@@ -5315,6 +5315,61 @@ def survey_list_videos():
     return jsonify({'success': True, 'videos': videos})
 
 
+def _resolve_survey_stream_path(video_path: str):
+    allowed_roots = [
+        '/home/intu/nas2_kwater/Videos/관내시경영상',
+        '/home/intu/nas2_kwater/Videos/SAHARA',
+        '/home/intu/nas2_kwater/Videos_web/관내시경영상',
+        '/home/intu/nas2_kwater/Videos_web/SAHARA',
+        '/mnt/kwater_data/Videos/관내시경영상',
+        '/mnt/kwater_data/Videos/SAHARA',
+        '/mnt/kwater_data/Videos_web/관내시경영상',
+        '/mnt/kwater_data/Videos_web/SAHARA',
+    ]
+
+    if not video_path or not any(video_path.startswith(root) for root in allowed_roots):
+        return None, 'Forbidden'
+
+    resolved = video_path
+    if '/Videos/' in resolved:
+        web_path = resolved.replace('/Videos/', '/Videos_web/')
+        web_path = os.path.splitext(web_path)[0] + '.mp4'
+        if os.path.exists(web_path):
+            resolved = web_path
+
+    if not os.path.exists(resolved):
+        return None, 'Video file not found'
+
+    return resolved, None
+
+
+@app.route('/api/survey/video', methods=['GET'])
+def survey_video_stream():
+    from flask import send_file
+
+    video_path = request.args.get('path', '')
+    resolved, err = _resolve_survey_stream_path(video_path)
+    if err:
+        code = 404 if err == 'Video file not found' else 403
+        return jsonify({'success': False, 'error': err}), code
+
+    ext = os.path.splitext(resolved)[1].lower()
+    mimetype = {
+        '.mp4': 'video/mp4',
+        '.mov': 'video/quicktime',
+        '.mkv': 'video/x-matroska',
+        '.avi': 'video/x-msvideo',
+    }.get(ext, 'application/octet-stream')
+
+    return send_file(
+        resolved,
+        mimetype=mimetype,
+        as_attachment=False,
+        conditional=True,
+        max_age=3600,
+    )
+
+
 
 if __name__ == '__main__':
     import threading

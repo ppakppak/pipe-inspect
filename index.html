@@ -16786,6 +16786,18 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 </div>
             </div>
 
+            <!-- 원본 영상 미리보기 -->
+            <div id="surveyVideoPreviewCard" style="display: none; background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
+                    <h3 style="margin:0; color:#4a9eff;">🎬 Original Video Preview</h3>
+                    <a id="surveyVideoOpenLink" href="#" target="_blank" rel="noopener noreferrer" style="color:#7fb3ff; font-size:12px; text-decoration:none; display:none;">새 탭에서 열기</a>
+                </div>
+                <div id="surveyVideoMeta" style="color:#9aa0a6; font-size:12px; margin-bottom:10px;">선택한 영상을 미리 보고 브라우저 기본 컨트롤로 이동할 수 있습니다.</div>
+                <div style="background:#1e1e1e; border:1px solid #555; border-radius:6px; padding:10px;">
+                    <video id="surveyVideoPreview" controls preload="metadata" style="width:100%; max-height:420px; background:#000; border-radius:4px;"></video>
+                </div>
+            </div>
+
             <!-- 진행 상태 -->
             <div id="surveyProgress" style="display: none; background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
@@ -16899,9 +16911,45 @@ function filterSurveyVideos() {
         opt.value = v.path;
         opt.textContent = `[${v.pipe_dir}] ${v.filename}`;
         if (v.pipe_diameter_mm > 0) opt.dataset.pipeMm = v.pipe_diameter_mm;
+        opt.dataset.pipeDir = v.pipe_dir || '';
+        opt.dataset.filename = v.filename || '';
         select.appendChild(opt);
     });
     document.getElementById('surveyVideoCount').textContent = `(${filtered.length}/${_surveyAllVideos.length})`;
+    updateSurveyVideoPreview();
+}
+
+function updateSurveyVideoPreview() {
+    const select = document.getElementById('surveyVideoSelect');
+    const opt = select.selectedOptions[0];
+    const card = document.getElementById('surveyVideoPreviewCard');
+    const video = document.getElementById('surveyVideoPreview');
+    const meta = document.getElementById('surveyVideoMeta');
+    const openLink = document.getElementById('surveyVideoOpenLink');
+
+    if (!opt || !opt.value) {
+        card.style.display = 'none';
+        video.removeAttribute('src');
+        delete video.dataset.currentSrc;
+        video.load();
+        openLink.style.display = 'none';
+        return;
+    }
+
+    const previewUrl = `/api/survey/video?path=${encodeURIComponent(opt.value)}`;
+    const pipeDir = opt.dataset.pipeDir || '-';
+    const filename = opt.dataset.filename || opt.textContent || '';
+
+    card.style.display = 'block';
+    meta.textContent = `[${pipeDir}] ${filename}`;
+    openLink.href = previewUrl;
+    openLink.style.display = 'inline';
+
+    if (video.dataset.currentSrc !== previewUrl) {
+        video.dataset.currentSrc = previewUrl;
+        video.src = previewUrl;
+        video.load();
+    }
 }
 
 document.getElementById('surveyVideoSelect').addEventListener('change', function() {
@@ -16909,6 +16957,7 @@ document.getElementById('surveyVideoSelect').addEventListener('change', function
     if (opt && opt.dataset.pipeMm) {
         document.getElementById('surveyPipeDiameter').value = opt.dataset.pipeMm;
     }
+    updateSurveyVideoPreview();
 });
 
 let surveyJobId = null;

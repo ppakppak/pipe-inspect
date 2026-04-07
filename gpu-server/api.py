@@ -18,11 +18,13 @@ import subprocess
 import math
 import threading
 import json
+import time
 
 # Grounded-SAM 경로 추가
 # sys.path.insert(0, '/home/ppak/SynologyDrive/ykpark/linux_devel/ground_sam/Grounded-Segment-Anything')
 
 from project_manager import ProjectManager
+from defect_sizing import VanishingPointDetector
 
 # SegFormer 모델 전역 변수
 segformer_model = None
@@ -45,6 +47,9 @@ inference_stats = {
 # 작업 관리 (진행 상황 추적 및 취소)
 active_jobs = {}  # job_id -> { 'status', 'progress', 'cancel_requested', 'video_path', ... }
 job_lock = threading.Lock()
+
+# Sizing helpers
+vp_detector = VanishingPointDetector()
 
 app = Flask(__name__)
 CORS(app)
@@ -880,6 +885,162 @@ def extract_bounding_boxes_from_mask(mask, min_area=100, include_masks=False):
 
     return boxes
 
+
+
+
+
+def _get_project_video_path(project_dir, video_id):
+    from pathlib import Path
+    import json
+
+    project_json_path = Path(project_dir) / 'project.json'
+    if not project_json_path.exists():
+        raise FileNotFoundError(f'Project not found: {project_json_path}')
+
+    with open(project_json_path, 'r', encoding='utf-8') as f:
+        project_data = json.load(f)
+
+    for video in project_data.get('videos', []):
+        if video.get('video_id') == video_id:
+            video_path = video.get('video_path', str(Path(project_dir) / 'videos' / video['filename']))
+            return video_path, int(video.get('total_frames', 0) or 0)
+
+    raise FileNotFoundError(f'Video not found: {video_id}')
+
+
+def _load_video_frame_for_sizing(project_dir, video_id, frame_number):
+    video_path, total_frames = _get_project_video_path(project_dir, video_id)
+
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f'Video file not found: {video_path}')
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f'Failed to open video: {video_path}')
+
+    if total_frames <= 0:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if total_frames > 0:
+        frame_number = max(0, min(int(frame_number), total_frames - 1))
+    else:
+        frame_number = max(0, int(frame_number))
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    ret, frame = cap.read()
+
+    if (not ret or frame is None) and frame_number < 200:
+        for fallback_frame in [10, 30, 50, 100, 150, 200]:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fallback_frame)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                frame_number = fallback_frame
+                break
+
+    cap.release()
+
+    if not ret or frame is None:
+        raise RuntimeError(f'Failed to read frame {frame_number}')
+
+    return frame, frame_number, total_frames, video_path
+
+
+@app.route('/api/sizing/detect-vp', methods=['POST'])
+def detect_vp_api():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_number = int(data.get('frame_number', 0))
+
+        if not project_dir:
+            return jsonify({'success': False, 'error': 'project_dir required'}), 400
+        if not video_id:
+            return jsonify({'success': False, 'error': 'video_id required'}), 400
+
+        frame, actual_frame, total_frames, video_path = _load_video_frame_for_sizing(project_dir, video_id, frame_number)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray_masked = vp_detector._mask_osd(gray)
+
+        result_radial = vp_detector._detect_radial_convergence(gray_masked)
+        result_dark = vp_detector._detect_gaussian_darkest(gray_masked)
+        result = result_radial if result_radial['confidence'] >= result_dark['confidence'] else result_dark
+
+        cache_key = f"{project_dir}:{video_id}"
+        vp_detector._cache[cache_key] = { 'vp': result, 'timestamp': time.time() }
+
+        return jsonify({
+            'success': True,
+            'vp': result,
+            'vp_radial': result_radial,
+            'vp_darkest': result_dark,
+            'frame_number': actual_frame,
+            'requested_frame_number': frame_number,
+            'total_frames': total_frames,
+            'video_path': video_path,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sizing/detect-vp-batch', methods=['POST'])
+def detect_vp_batch_api():
+    try:
+        data = request.json or {}
+        project_dir = data.get('project_dir')
+        video_id = data.get('video_id')
+        frame_numbers = data.get('frame_numbers') or []
+
+        if not project_dir:
+            return jsonify({'success': False, 'error': 'project_dir required'}), 400
+        if not video_id:
+            return jsonify({'success': False, 'error': 'video_id required'}), 400
+        if not frame_numbers:
+            return jsonify({'success': False, 'error': 'frame_numbers required'}), 400
+
+        frames = []
+        used_frames = []
+        per_frame_results = []
+
+        for fn in frame_numbers:
+            try:
+                frame, actual_frame, _, _ = _load_video_frame_for_sizing(project_dir, video_id, int(fn))
+                frames.append(frame)
+                used_frames.append(actual_frame)
+            except Exception:
+                continue
+
+        if not frames:
+            return jsonify({'success': False, 'error': 'No valid frames loaded'}), 400
+
+        batch_result = vp_detector.detect_batch(frames, video_id=f"{project_dir}:{video_id}")
+
+        for actual_frame, frame in zip(used_frames, frames):
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray_masked = vp_detector._mask_osd(gray)
+            result_radial = vp_detector._detect_radial_convergence(gray_masked)
+            result_dark = vp_detector._detect_gaussian_darkest(gray_masked)
+            chosen = result_radial if result_radial['confidence'] >= result_dark['confidence'] else result_dark
+            per_frame_results.append({
+                'frame_number': actual_frame,
+                'vp': chosen,
+                'vp_radial': result_radial,
+                'vp_darkest': result_dark,
+            })
+
+        return jsonify({
+            'success': True,
+            'frames_processed': len(frames),
+            'frame_numbers': used_frames,
+            'results': per_frame_results,
+            'median_vp': batch_result.get('median_vp'),
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/ai/inference_raw', methods=['POST'])

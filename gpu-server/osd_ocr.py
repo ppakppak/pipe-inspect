@@ -29,16 +29,28 @@ class OSDDistanceReader:
     DISTANCE_ROI = {'x_start': 0.70, 'x_end': 1.0, 'y_start': 0.85, 'y_end': 1.0}
     DATETIME_ROI = {'x_start': 0.0, 'x_end': 0.40, 'y_start': 0.0, 'y_end': 0.12}
 
-    def __init__(self, gpu=True, debug=False):
+    def __init__(self, gpu=True, debug=False,
+                 model_storage_directory=None, download_enabled=True):
+        """
+        Args:
+            model_storage_directory: EasyOCR 모델(.pth) 디렉토리. 지정 시 해당 경로 사용.
+            download_enabled: False면 모델 자동 다운로드 금지 (오프라인 현장용)
+        """
         self.debug = debug
         self._reader = None
         self._gpu = gpu
+        self._model_dir = model_storage_directory
+        self._download_enabled = download_enabled
 
     def _ensure_reader(self):
         if self._reader is None:
             if not HAS_EASYOCR:
                 raise ImportError("easyocr not installed. pip install easyocr")
-            self._reader = easyocr.Reader(['en'], gpu=self._gpu, verbose=False)
+            kwargs = {'gpu': self._gpu, 'verbose': False}
+            if self._model_dir is not None:
+                kwargs['model_storage_directory'] = str(self._model_dir)
+                kwargs['download_enabled'] = self._download_enabled
+            self._reader = easyocr.Reader(['en'], **kwargs)
         return self._reader
 
     # ─── Public API ───

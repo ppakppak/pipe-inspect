@@ -46,11 +46,96 @@ def _get_defect_color(class_name):
     return DEFAULT_COLOR_BGR
 
 
+# ─── YOLO 결과 → detections 변환 (api.py /api/survey/infer와 공유) ───
+
+def yolo_result_to_detections(result, width, height,
+                              polygon_scale=0.25, max_polygon_points=150):
+    """Ultralytics 추론 결과 1건 → detections 리스트.
+
+    각 detection: {box: [x,y,w,h], label, class_id, confidence,
+                   area (마스크 있으면 마스크 픽셀 수), polygon: [[x,y],...]}
+    """
+    detections = []
+    if result.boxes is None or len(result.boxes) == 0:
+        return detections
+
+    boxes = result.boxes.xyxy.cpu().numpy()
+    classes = result.boxes.cls.cpu().numpy().astype(int)
+    confs = result.boxes.conf.cpu().numpy()
+    masks = result.masks.data.cpu().numpy() if result.masks is not None else None
+
+    for i, (box, cls, conf) in enumerate(zip(boxes, classes, confs)):
+        x1, y1, x2, y2 = box.astype(int)
+        class_name = result.names[cls] if cls < len(result.names) else f'class_{cls}'
+        area = int((x2 - x1) * (y2 - y1))
+
+        det = {
+            'box': [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+            'label': class_name,
+            'class_id': int(cls),
+            'confidence': round(float(conf), 3),
+            'area': area,
+        }
+
+        # 마스크 → 폴리곤 추출 (다운스케일 후 contour, 최대 max_polygon_points점)
+        if masks is not None and i < len(masks):
+            mask = masks[i]
+            small_w = int(width * polygon_scale)
+            small_h = int(height * polygon_scale)
+            mask_small = cv2.resize(mask, (small_w, small_h))
+            mask_binary = (mask_small > 0.5).astype(np.uint8) * 255
+
+            contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                epsilon = 0.003 * cv2.arcLength(largest, True)
+                approx = cv2.approxPolyDP(largest, epsilon, True)
+                polygon_points = (approx.reshape(-1, 2) / polygon_scale).astype(int)
+                if len(polygon_points) > max_polygon_points:
+                    indices = np.linspace(0, len(polygon_points) - 1, max_polygon_points, dtype=int)
+                    polygon_points = polygon_points[indices]
+                det['polygon'] = polygon_points.tolist()
+
+                # 마스크 기반 면적 (bbox보다 정확)
+                mask_full = cv2.resize(mask, (width, height))
+                det['area'] = int(np.sum(mask_full > 0.5))
+
+        detections.append(det)
+
+    return detections
+
+
+def make_local_yolo_infer(model, conf=0.15, imgsz=640, device=None):
+    """로컬 YOLO 모델로 동작하는 infer_fn 생성 (GPU 서버 없이 사용).
+
+    PipeSurveyAnalyzer(infer_fn=make_local_yolo_infer(model)) 형태로 주입.
+    """
+    def infer_fn(frame_bgr):
+        h, w = frame_bgr.shape[:2]
+        kwargs = {'verbose': False, 'conf': conf, 'imgsz': imgsz}
+        if device is not None:
+            kwargs['device'] = device
+        results = model.predict(frame_bgr, **kwargs)
+        return yolo_result_to_detections(results[0], w, h)
+    return infer_fn
+
+
 class PipeSurveyAnalyzer:
     """정지 구간 기반으로 영상을 분석하여 연속 전개도 + 결함 분포를 생성한다."""
 
-    def __init__(self, gpu=True, gpu_server_url='http://localhost:5004'):
+    def __init__(self, gpu=True, gpu_server_url='http://localhost:5004',
+                 infer_fn=None, distance_fn=None):
+        """
+        Args:
+            gpu_server_url: infer_fn 미지정 시 사용할 GPU 서버 주소 (HTTP 경로)
+            infer_fn: fn(frame_bgr) -> detections 리스트. 지정하면 GPU 서버 없이
+                      로컬 추론으로 동작 (make_local_yolo_infer 참고)
+            distance_fn: fn(frame_bgr) -> float|None. 지정하면 stop별 대표 프레임에서
+                         OSD 거리(m)를 읽어 stop['distance_m']에 기록
+        """
         self.gpu_server_url = gpu_server_url
+        self.infer_fn = infer_fn
+        self.distance_fn = distance_fn
 
     # ════════════════════════════════════════════
     #  메인 분석
@@ -162,6 +247,7 @@ class PipeSurveyAnalyzer:
         strips_clean = []
         strips_overlay = []
         strips_annular = []
+        last_distance = None
 
         for si, stop in enumerate(stops):
             # 가장 선명한 프레임 선택
@@ -172,6 +258,18 @@ class PipeSurveyAnalyzer:
             ret, frame = cap.read()
             if not ret:
                 continue
+
+            # OSD 거리 (주입 시) — 직전 유효값 대비 100m 이상 점프는 OCR 오독으로 버림
+            if self.distance_fn is not None:
+                try:
+                    d = self.distance_fn(frame)
+                except Exception:
+                    d = None
+                if d is not None and last_distance is not None and abs(d - last_distance) >= 100:
+                    d = None
+                if d is not None:
+                    last_distance = d
+                stop['distance_m'] = d
 
             # YOLO 추론
             detections = self._infer_frame(frame)
@@ -461,7 +559,13 @@ class PipeSurveyAnalyzer:
     #  YOLO 추론
     # ════════════════════════════════════════════
     def _infer_frame(self, frame) -> list:
-        """YOLO instance segmentation — GPU 서버 호출"""
+        """YOLO instance segmentation — infer_fn 주입 시 로컬, 아니면 GPU 서버 호출"""
+        if self.infer_fn is not None:
+            try:
+                return self.infer_fn(frame)
+            except Exception as e:
+                print(f"[Survey] local inference error: {e}")
+                return []
         try:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             img_b64 = base64.b64encode(buffer).decode('utf-8')

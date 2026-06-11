@@ -2,16 +2,24 @@
 """
 관로 조사 통합 모듈 (Pipe Survey Analyzer)
 
-OSD 거리 + AI 세그멘테이션 + 면적비 산출을 결합하여
-전체 관로의 구간별 결함 분포를 생성한다.
+SSIM 기반 정지/이동 감지 → 정지 구간만 YOLO Instance Segmentation +
+PipeUnwrapper 극좌표 전개 → 연속 전개도 + Stop별 결함 분포를 생성한다.
+
+핵심 원리:
+  - 관내시경 카메라는 수동 조작 (밀고/끌기)
+  - 정지 구간 = 작업자가 관심을 가진 지점 → 선명, 분석 가치 높음
+  - 이동 구간 = 부유물, 흔들림 → 노이즈, 분석 가치 없음
+  - 관벽 ROI의 SSIM으로 정지/이동 판별 (부유물에 강건)
 
 출력:
-  - 구간별 결함 통계 (1m 단위)
-  - 결함 분포 JSON
-  - Strip-map용 프레임-거리 매핑
+  - 정지 구간(stop) 목록 + stop별 YOLO 결과
+  - 연속 전개도 이미지 (정지 구간만, 결함 오버레이)
+  - 프레임별 YOLO 결과 (비디오 오버레이용)
+  - Stop별 결함 통계 JSON
 """
 
 import cv2
+import math
 import numpy as np
 import json
 import os
@@ -19,400 +27,593 @@ import time
 import requests
 import base64
 from pathlib import Path
+from skimage.metrics import structural_similarity as ssim
 
-from osd_ocr import OSDDistanceReader
+
+# ─── 색상 팔레트 (클래스별) ───
+DEFECT_COLORS_BGR = {
+    'rust':  (60, 76, 231),    # #E74C3C (BGR)
+    'scale': (15, 196, 241),   # #F1C40F (BGR)
+}
+DEFAULT_COLOR_BGR = (255, 128, 0)  # cyan fallback
+
+
+def _get_defect_color(class_name):
+    lower = class_name.lower()
+    for key, color in DEFECT_COLORS_BGR.items():
+        if key in lower:
+            return color
+    return DEFAULT_COLOR_BGR
 
 
 class PipeSurveyAnalyzer:
-    """영상 전체를 분석하여 구간별 결함 분포를 생성한다."""
+    """정지 구간 기반으로 영상을 분석하여 연속 전개도 + 결함 분포를 생성한다."""
 
     def __init__(self, gpu=True, gpu_server_url='http://localhost:5004'):
-        """
-        Args:
-            gpu: GPU 사용 여부
-            gpu_server_url: GPU 서버 API URL
-        """
-        self.osd_reader = OSDDistanceReader(gpu=gpu)
         self.gpu_server_url = gpu_server_url
 
+    # ════════════════════════════════════════════
+    #  메인 분석
+    # ════════════════════════════════════════════
     def analyze_video(self, video_path, pipe_diameter_mm=300,
-                      sample_interval=15, section_length_m=1.0,
+                      ssim_threshold=0.92, min_stop_frames=15,
+                      scan_every_n=25,
                       progress_callback=None) -> dict:
         """영상 전체 분석
+
+        Phase 1: Motion Detection — SSIM 기반 정지/이동 구간 탐지
+        Phase 2: 정지 구간별 YOLO 추론 + PipeUnwrapper 전개
+        Phase 3: 후처리 — 전개도 결합, 결과 집계
 
         Args:
             video_path: 영상 파일 경로
             pipe_diameter_mm: 관경 (mm)
-            sample_interval: OCR 수행 간격 (프레임 수)
-            section_length_m: 통계 구간 길이 (m)
-            progress_callback: fn(frame_num, total_frames, message)
+            ssim_threshold: 정지 판별 SSIM 임계값 (기본 0.92)
+            min_stop_frames: 최소 정지 프레임 수 (기본 15 ≈ 0.6초@25fps)
+            scan_every_n: Motion scan 간격 (기본 5프레임)
+            progress_callback: fn(current, total, message)
 
         Returns:
             {
-                'video_path': str,
-                'pipe_diameter_mm': int,
-                'total_distance_m': float,
-                'total_frames': int,
-                'frame_distances': [{frame_number, distance_m, timestamp_sec}, ...],
-                'sections': [
-                    {
-                        'start_m': float, 'end_m': float,
-                        'frame_range': [start_frame, end_frame],
-                        'defects': {class_name: {'count': int, 'area_ratio': float}},
-                        'total_defect_ratio': float,
-                    }, ...
-                ],
-                'summary': {
-                    'total_length_m': float,
-                    'defect_length_m': float,
-                    'defect_ratio': float,
-                    'by_class': {class_name: {'length_m': float, 'max_ratio': float}},
-                }
+              video_path, pipe_diameter_mm, fps, total_frames,
+              stops: [{index, start_frame, end_frame, duration_sec,
+                       best_frame, detections, defects, ...}],
+              motion_profile: [{frame, ssim_score}, ...],
+              frame_results: [{frame_number, timestamp_sec, detections}, ...],
+              summary: {...},
+              panorama_path, panorama_overlay_path, stripmap_path,
+              coordinate_system, vp,
             }
         """
+        from defect_sizing import PipeUnwrapper
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        img_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        img_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
 
-        # Phase 1: OSD 거리 스캔
+        if fps <= 0:
+            fps = 25.0
+
+        # ═══ Phase 1: VP 탐지 + Motion Detection ═══
         if progress_callback:
-            progress_callback(0, total_frames, "Phase 1: OSD 거리 스캔 중...")
-
-        distances = self.osd_reader.read_video_distances(
-            video_path, sample_interval,
-            lambda fn, total: progress_callback(fn, total, "OSD 스캔") if progress_callback else None
-        )
-
-        if not distances:
-            cap.release()
-            return {'error': 'No distance readings found', 'frame_distances': []}
-
-        # 거리 보간 — 모든 프레임에 거리 매핑
-        frame_dist_map = self._interpolate_distances(distances, total_frames)
-
-        # Phase 2: 구간 분할
-        total_dist = distances[-1]['distance_m'] - distances[0]['distance_m']
-        start_dist = distances[0]['distance_m']
-        end_dist = distances[-1]['distance_m']
-        num_sections = max(1, int(np.ceil(total_dist / section_length_m)))
-
-        sections = []
-        for i in range(num_sections):
-            sec_start = start_dist + i * section_length_m
-            sec_end = min(sec_start + section_length_m, end_dist)
-
-            # 해당 구간의 프레임 범위
-            frames_in_section = [
-                fn for fn, d in frame_dist_map.items()
-                if sec_start <= d < sec_end
-            ]
-
-            section = {
-                'index': i,
-                'start_m': round(sec_start, 2),
-                'end_m': round(sec_end, 2),
-                'frame_range': [min(frames_in_section), max(frames_in_section)] if frames_in_section else [0, 0],
-                'frame_count': len(frames_in_section),
-                'defects': {},
-                'total_defect_ratio': 0.0,
-            }
-            sections.append(section)
-
-        # Phase 3: 결함 분석 — 구간별 대표 프레임 세그멘테이션
-        if progress_callback:
-            progress_callback(0, len(sections), "Phase 2: 결함 분석 중...")
+            progress_callback(0, 100, "Phase 1: 영상 스캔 중...")
 
         cap = cv2.VideoCapture(video_path)
-        for si, section in enumerate(sections):
-            if section['frame_count'] == 0:
-                continue
 
-            # 구간 중간 프레임을 대표로 추론
-            mid_frame = (section['frame_range'][0] + section['frame_range'][1]) // 2
-            defect_info = self._analyze_frame(cap, mid_frame)
+        # VP 탐지 (초반 5프레임)
+        vp_x, vp_y = self._detect_vp_from_video(cap, total_frames)
+        if vp_x is None:
+            cap.release()
+            return {'error': 'VP detection failed'}
 
-            if defect_info:
-                section['defects'] = defect_info.get('by_class', {})
-                section['total_defect_ratio'] = defect_info.get('total_ratio', 0.0)
-                section['num_objects'] = defect_info.get('num_objects', 0)
+        # 관벽 ROI 마스크 생성 (VP에서 반경 60~90% 링 영역)
+        roi_mask = self._create_pipe_wall_roi(img_w, img_h, vp_x, vp_y)
 
-            if progress_callback:
-                progress_callback(si + 1, len(sections), "결함 분석")
+        # Motion scan: 매 scan_every_n 프레임마다 SSIM 계산
+        motion_profile, stops = self._detect_stops(
+            cap, total_frames, roi_mask,
+            scan_every_n=scan_every_n,
+            ssim_threshold=ssim_threshold,
+            min_stop_frames=min_stop_frames,
+            fps=fps,
+            progress_callback=lambda cur, total:
+                progress_callback(int(cur / max(total, 1) * 35), 100, f"스캔 {cur}/{total}")
+                if progress_callback else None
+        )
 
         cap.release()
 
-        # 결함 통계
-        defect_sections = [s for s in sections if s['total_defect_ratio'] > 0]
-        defect_length = len(defect_sections) * section_length_m
+        if not stops:
+            return {
+                'error': 'No stops detected',
+                'video_path': str(video_path),
+                'motion_profile': motion_profile,
+                'stops': [],
+            }
 
+        # ═══ Phase 2: 정지 구간별 분석 ═══
+        if progress_callback:
+            progress_callback(35, 100, f"Phase 2: {len(stops)}개 정지 구간 분석 중...")
+
+        # PipeUnwrapper 생성
+        unwrap_h = 200
+        output_width = 720
+        strip_height = 12
+        unwrapper = PipeUnwrapper(
+            vp_x, vp_y, img_w, img_h,
+            pipe_diameter_mm=pipe_diameter_mm,
+            output_width=output_width,
+            output_height=unwrap_h
+        )
+
+        y_start = int(unwrap_h * 0.15)
+        y_end = int(unwrap_h * 0.65)
+
+        cap = cv2.VideoCapture(video_path)
+        total_stops = len(stops)
+
+        frame_results = []
+        strips_clean = []
+        strips_overlay = []
+        strips_annular = []
+
+        for si, stop in enumerate(stops):
+            # 가장 선명한 프레임 선택
+            best_frame = self._select_best_frame(cap, stop, roi_mask)
+            stop['best_frame'] = best_frame
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, best_frame)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # YOLO 추론
+            detections = self._infer_frame(frame)
+            stop['detections'] = detections
+
+            # 결함 집계
+            by_class, total_ratio, num_objects = self._aggregate_detections(
+                detections, img_w * img_h
+            )
+            stop['defects'] = by_class
+            stop['total_defect_ratio'] = total_ratio
+            stop['num_objects'] = num_objects
+
+            # 프레임 결과 (비디오 오버레이용)
+            frame_results.append({
+                'frame_number': best_frame,
+                'timestamp_sec': round(best_frame / fps, 2),
+                'stop_index': si,
+                'detections': detections,
+            })
+
+            # PipeUnwrapper 전개
+            unwrapped = unwrapper.unwrap(frame)
+            unwrapped = self._color_correct(unwrapped)
+
+            crop = unwrapped[y_start:y_end, :, :]
+            strip_clean = cv2.resize(crop, (output_width, strip_height))
+
+            strip_over = strip_clean.copy()
+            for det in detections:
+                polygon = det.get('polygon', [])
+                if polygon and len(polygon) >= 3:
+                    self._draw_defect_on_strip(
+                        strip_over, polygon, det.get('label', 'unknown'),
+                        unwrapper, y_start, y_end, strip_height, output_width
+                    )
+
+            strips_clean.append(strip_clean)
+            strips_overlay.append(strip_over)
+
+            # Annular ring strip
+            ann_strip = self._extract_annular_strip(frame, vp_x, vp_y, 3)
+            ann_strip = self._color_correct(ann_strip)
+            strips_annular.append(ann_strip)
+
+            if progress_callback:
+                pct = 35 + int((si + 1) / total_stops * 50)
+                progress_callback(pct, 100, f"Stop {si+1}/{total_stops} 분석")
+
+        cap.release()
+
+        # ═══ Phase 3: 후처리 ═══
+        if progress_callback:
+            progress_callback(88, 100, "Phase 3: 결과 저장 중...")
+
+        # 이미지 저장
+        output_dir = os.path.dirname(video_path)
+        video_name = Path(video_path).stem
+
+        panorama_path = None
+        panorama_overlay_path = None
+        stripmap_path = None
+
+        if strips_clean:
+            panorama = np.vstack(strips_clean)
+            panorama_over = np.vstack(strips_overlay)
+            panorama_path = os.path.join(output_dir, f'{video_name}_unwrap.jpg')
+            panorama_overlay_path = os.path.join(output_dir, f'{video_name}_unwrap_overlay.jpg')
+            cv2.imwrite(panorama_path, panorama, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            cv2.imwrite(panorama_overlay_path, panorama_over, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+        if strips_annular:
+            strip_map = np.vstack(strips_annular)
+            stripmap_path = os.path.join(output_dir, f'{video_name}_stripmap.jpg')
+            cv2.imwrite(stripmap_path, strip_map, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+        coord_sys = unwrapper.get_coordinate_system()
+
+        # 결함 통계
+        defect_stops = [s for s in stops if s.get('total_defect_ratio', 0) > 0]
         by_class_summary = {}
-        for sec in sections:
-            for cls_name, cls_info in sec.get('defects', {}).items():
+        for stop in stops:
+            for cls_name, cls_info in stop.get('defects', {}).items():
                 if cls_name not in by_class_summary:
-                    by_class_summary[cls_name] = {'section_count': 0, 'max_ratio': 0.0}
+                    by_class_summary[cls_name] = {'stop_count': 0, 'max_ratio': 0.0}
                 if cls_info.get('pixel_ratio', 0) > 0:
-                    by_class_summary[cls_name]['section_count'] += 1
+                    by_class_summary[cls_name]['stop_count'] += 1
                     by_class_summary[cls_name]['max_ratio'] = max(
                         by_class_summary[cls_name]['max_ratio'], cls_info['pixel_ratio'])
 
-        # 요약 생성
+        total_stop_time = sum(s.get('duration_sec', 0) for s in stops)
+        total_video_time = total_frames / fps if fps > 0 else 0
+
         summary = {
-            'total_length_m': round(total_dist, 2),
-            'start_m': round(start_dist, 2),
-            'end_m': round(end_dist, 2),
             'total_frames': total_frames,
-            'readings_count': len(distances),
-            'sections_count': num_sections,
-            'section_length_m': section_length_m,
-            'pipe_diameter_mm': pipe_diameter_mm,
             'fps': fps,
-            'defect_sections': len(defect_sections),
-            'defect_length_m': round(defect_length, 2),
-            'defect_ratio_pct': round(defect_length / total_dist * 100, 1) if total_dist > 0 else 0,
+            'video_duration_sec': round(total_video_time, 1),
+            'pipe_diameter_mm': pipe_diameter_mm,
+            'ssim_threshold': ssim_threshold,
+            'total_stops': len(stops),
+            'defect_stops': len(defect_stops),
+            'total_stop_time_sec': round(total_stop_time, 1),
+            'stop_ratio_pct': round(total_stop_time / total_video_time * 100, 1) if total_video_time > 0 else 0,
+            'analyzed_frames': len(frame_results),
             'by_class': by_class_summary,
         }
+
+        if progress_callback:
+            progress_callback(100, 100, "완료")
 
         return {
             'video_path': str(video_path),
             'pipe_diameter_mm': pipe_diameter_mm,
-            'frame_distances': distances,
-            'sections': sections,
+            'fps': fps,
+            'total_frames': total_frames,
+            'stops': stops,
+            'motion_profile': motion_profile,
+            'frame_results': frame_results,
             'summary': summary,
+            'panorama_path': panorama_path,
+            'panorama_overlay_path': panorama_overlay_path,
+            'stripmap_path': stripmap_path,
+            'coordinate_system': coord_sys,
+            'vp': {'x': vp_x, 'y': vp_y},
         }
 
-    def _interpolate_distances(self, distances, total_frames):
-        """OSD 읽은 지점 사이를 선형 보간하여 전체 프레임-거리 매핑 생성"""
-        frame_dist = {}
+    # ════════════════════════════════════════════
+    #  Motion Detection
+    # ════════════════════════════════════════════
+    def _create_pipe_wall_roi(self, img_w, img_h, vp_x, vp_y):
+        """관벽 ROI 마스크 생성 — VP에서 반경 60~90% 링 영역
+        부유물(VP 근처)을 제외하고 관벽 텍스처만 포함
+        """
+        mask = np.zeros((img_h, img_w), dtype=np.uint8)
 
-        for i, d in enumerate(distances):
-            frame_dist[d['frame_number']] = d['distance_m']
+        # VP에서 프레임 가장자리까지 최소 거리
+        max_r = min(vp_x, img_w - vp_x, vp_y, img_h - vp_y)
 
-        # 보간: 읽은 지점 사이를 선형으로 채움
-        sorted_readings = sorted(distances, key=lambda d: d['frame_number'])
+        r_inner = int(max_r * 0.60)
+        r_outer = int(max_r * 0.90)
 
-        for i in range(len(sorted_readings) - 1):
-            f1 = sorted_readings[i]['frame_number']
-            f2 = sorted_readings[i+1]['frame_number']
-            d1 = sorted_readings[i]['distance_m']
-            d2 = sorted_readings[i+1]['distance_m']
+        cv2.circle(mask, (vp_x, vp_y), r_outer, 255, -1)
+        cv2.circle(mask, (vp_x, vp_y), r_inner, 0, -1)
 
-            if f2 > f1:
-                for f in range(f1, f2 + 1):
-                    ratio = (f - f1) / (f2 - f1)
-                    frame_dist[f] = d1 + ratio * (d2 - d1)
+        # OSD 영역 제외 (상단 15%, 하단 15%)
+        mask[:int(img_h * 0.15), :] = 0
+        mask[int(img_h * 0.85):, :] = 0
 
-        return frame_dist
+        return mask
 
-    def _analyze_frame(self, cap, frame_number) -> dict:
-        """단일 프레임 세그멘테이션 — GPU 서버 API 호출"""
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        ret, frame = cap.read()
-        if not ret:
-            return None
+    def _detect_stops(self, cap, total_frames, roi_mask,
+                      scan_every_n=25, ssim_threshold=0.92,
+                      min_stop_frames=15, fps=25.0,
+                      progress_callback=None):
+        """SSIM 기반 정지/이동 구간 탐지 (최적화: 순차읽기 + 다운스케일)
 
+        Returns:
+            motion_profile: [{frame, ssim_score}, ...]
+            stops: [{index, start_frame, end_frame, duration_sec, ...}, ...]
+        """
+        motion_profile = []
+
+        # ROI bounding box
+        roi_ys, roi_xs = np.where(roi_mask > 0)
+        if len(roi_ys) == 0:
+            return [], []
+
+        ry1, ry2 = int(roi_ys.min()), int(roi_ys.max())
+        rx1, rx2 = int(roi_xs.min()), int(roi_xs.max())
+
+        # 다운스케일된 ROI 마스크 (1/4 크기)
+        scale = 0.25
+        roi_crop = roi_mask[ry1:ry2+1, rx1:rx2+1]
+        small_h, small_w = int(roi_crop.shape[0] * scale), int(roi_crop.shape[1] * scale)
+        roi_crop_small = cv2.resize(roi_crop, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+
+        prev_small = None
+        frame_count = 0
+        total_scans = total_frames // max(scan_every_n, 1)
+
+        # 순차 읽기 — grab()으로 빠르게 skip, 필요한 프레임만 retrieve()
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        while frame_count < total_frames:
+            if frame_count % scan_every_n == 0:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # ROI crop + 다운스케일 + grayscale
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                roi_patch = gray[ry1:ry2+1, rx1:rx2+1]
+                small = cv2.resize(roi_patch, (small_w, small_h), interpolation=cv2.INTER_AREA)
+                small[roi_crop_small == 0] = 0
+
+                if prev_small is not None:
+                    score = ssim(prev_small, small)
+                    motion_profile.append({
+                        'frame': frame_count,
+                        'ssim_score': round(float(score), 4),
+                    })
+
+                prev_small = small
+
+                scan_idx = frame_count // scan_every_n
+                if progress_callback and scan_idx % 20 == 0:
+                    progress_callback(scan_idx, total_scans)
+            else:
+                # 디코딩 없이 건너뛰기 (훨씬 빠름)
+                cap.grab()
+
+            frame_count += 1
+
+        # 정지 구간 추출: ssim >= threshold인 연속 구간
+        stops = []
+        in_stop = False
+        stop_start = 0
+
+        for mp in motion_profile:
+            is_still = mp['ssim_score'] >= ssim_threshold
+
+            if is_still and not in_stop:
+                stop_start = mp['frame']
+                in_stop = True
+            elif not is_still and in_stop:
+                stop_end = mp['frame']
+                duration_frames = stop_end - stop_start
+                if duration_frames >= min_stop_frames:
+                    stops.append({
+                        'index': len(stops),
+                        'start_frame': stop_start,
+                        'end_frame': stop_end,
+                        'duration_frames': duration_frames,
+                        'duration_sec': round(duration_frames / fps, 2),
+                        'timestamp_sec': round(stop_start / fps, 2),
+                    })
+                in_stop = False
+
+        # 마지막 구간 처리
+        if in_stop and motion_profile:
+            stop_end = motion_profile[-1]['frame']
+            duration_frames = stop_end - stop_start
+            if duration_frames >= min_stop_frames:
+                stops.append({
+                    'index': len(stops),
+                    'start_frame': stop_start,
+                    'end_frame': stop_end,
+                    'duration_frames': duration_frames,
+                    'duration_sec': round(duration_frames / fps, 2),
+                    'timestamp_sec': round(stop_start / fps, 2),
+                })
+
+        return motion_profile, stops
+
+    def _select_best_frame(self, cap, stop, roi_mask):
+        """정지 구간 내에서 가장 선명한 프레임 선택 (Laplacian variance)"""
+        start = stop['start_frame']
+        end = stop['end_frame']
+        duration = end - start
+
+        # 구간 내 5개 지점 샘플링
+        sample_count = min(5, max(1, duration // 10))
+        sample_frames = np.linspace(start, end, sample_count, dtype=int)
+
+        best_frame = (start + end) // 2
+        best_sharpness = -1
+
+        for fn in sample_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(fn))
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # ROI 내 Laplacian variance = 선명도 지표
+            masked = cv2.bitwise_and(gray, gray, mask=roi_mask)
+            laplacian = cv2.Laplacian(masked, cv2.CV_64F)
+            sharpness = laplacian.var()
+
+            if sharpness > best_sharpness:
+                best_sharpness = sharpness
+                best_frame = int(fn)
+
+        return best_frame
+
+    # ════════════════════════════════════════════
+    #  YOLO 추론
+    # ════════════════════════════════════════════
+    def _infer_frame(self, frame) -> list:
+        """YOLO instance segmentation — GPU 서버 호출"""
         try:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             img_b64 = base64.b64encode(buffer).decode('utf-8')
 
             resp = requests.post(
-                f'{self.gpu_server_url}/api/ai/inference_raw',
+                f'{self.gpu_server_url}/api/survey/infer',
                 json={'image_base64': img_b64},
                 timeout=30
             )
 
             if resp.status_code != 200:
-                return None
+                return []
 
             data = resp.json()
             if not data.get('success'):
-                return None
+                return []
 
-            boxes = data.get('bounding_boxes', [])
-            width = data.get('width', 1)
-            height = data.get('height', 1)
-            total_pixels = width * height
+            return data.get('detections', [])
 
-            by_class = {}
-            total_defect_pixels = 0
+        except Exception as e:
+            print(f"[Survey] YOLO inference error: {e}")
+            return []
 
-            for box in boxes:
-                cls_name = box.get('class_name', f"class_{box.get('class_id', '?')}")
-                area = box.get('area', 0)
-                if cls_name not in by_class:
-                    by_class[cls_name] = {'count': 0, 'total_area': 0, 'pixel_ratio': 0.0}
-                by_class[cls_name]['count'] += 1
-                by_class[cls_name]['total_area'] += area
-                total_defect_pixels += area
+    def _aggregate_detections(self, detections, total_pixels):
+        """detections → by_class, total_ratio, num_objects"""
+        by_class = {}
+        total_area = 0
 
+        for det in detections:
+            cls_name = det.get('label', 'unknown')
+            area = det.get('area', 0)
+            if cls_name not in by_class:
+                by_class[cls_name] = {'count': 0, 'total_area': 0, 'pixel_ratio': 0.0}
+            by_class[cls_name]['count'] += 1
+            by_class[cls_name]['total_area'] += area
+            total_area += area
+
+        if total_pixels > 0:
             for cls_name in by_class:
                 by_class[cls_name]['pixel_ratio'] = round(
                     by_class[cls_name]['total_area'] / total_pixels * 100, 2)
 
-            return {
-                'by_class': by_class,
-                'total_ratio': round(total_defect_pixels / total_pixels * 100, 2),
-                'num_objects': len(boxes),
-            }
-        except Exception as e:
-            return None
+        total_ratio = round(total_area / total_pixels * 100, 2) if total_pixels > 0 else 0
+        return by_class, total_ratio, len(detections)
 
-    def _detect_vp_simple(self, frame):
-        """간단한 VP(소실점) 탐지 — 가장 어두운 영역의 중심"""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-        # 상단 15% OSD 마스킹
-        gray[:int(h*0.15), :] = 255
-        # 하단 15% OSD 마스킹
-        gray[int(h*0.85):, :] = 255
-        # 대블러 후 최소밝기점
-        blurred = cv2.GaussianBlur(gray, (w//4*2+1, h//4*2+1), 0)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
-        return min_loc  # (x, y)
-
-    def _extract_annular_strip(self, frame, vp_x, vp_y, strip_height=1):
-        """프레임에서 VP 중심 annular ring을 추출하여 펼친 띠를 반환
-
-        Args:
-            frame: BGR 프레임
-            vp_x, vp_y: 소실점 좌표
-            strip_height: 출력 띠 높이 (px)
-
-        Returns:
-            strip: (strip_height, output_width, 3) BGR 이미지
-                   가로 = 관 둘레 (0~360도), 세로 = 반경 방향 두께
-        """
-        h, w = frame.shape[:2]
-
-        # 최대 반경 = VP에서 프레임 가장자리까지 최소 거리
-        max_radius = int(min(vp_x, w - vp_x, vp_y, h - vp_y) * 0.95)
-        if max_radius < 50:
-            max_radius = min(h, w) // 2
-
-        # 극좌표 변환 (warpPolar)
-        # 출력: rows = 각도(0~360), cols = 반경(0~max_radius)
-        output_width = 720  # 360도를 720px로 (0.5도/px)
-        polar = cv2.warpPolar(
-            frame,
-            (max_radius, output_width),  # (cols=radius, rows=angle)
-            (vp_x, vp_y),
-            max_radius,
-            cv2.WARP_POLAR_LINEAR
-        )
-        # polar shape: (output_width, max_radius, 3)
-        # 행 = 각도, 열 = 반경 (0=VP, max_radius=가장자리)
-
-        # 카메라 바로 앞 관벽 = 바깥쪽 고리 (반경 70~85%)
-        r_inner = int(max_radius * 0.75)
-        r_outer = int(max_radius * 0.95)
-
-        # 해당 반경 범위의 띠 추출
-        ring = polar[:, r_inner:r_outer, :]  # (720, thickness, 3)
-
-        # 반경 방향으로 평균 → 1px 높이 띠, 또는 리사이즈
-        # ring shape: (720, thickness, 3) — 행=각도, 열=반경
-        # 반경 방향을 strip_height로 리사이즈 (텍스처 보존)
-        # 전치: (thickness, 720, 3) → resize → (strip_height, 720, 3)
-        ring_t = ring.transpose(1, 0, 2)  # (thickness, 720, 3)
-        strip = cv2.resize(ring_t, (ring_t.shape[1], strip_height))  # (strip_height, 720, 3)
-
-        return strip
-
-    def generate_strip_map_frames(self, video_path, distances,
-                                  strip_height_px=3, output_dir=None,
-                                  sample_every_n=1) -> str:
-        """Annular Ring Strip-map 생성
-
-        각 프레임에서 VP 중심의 바깥쪽 고리를 추출 → 펼쳐서 → 거리순으로 세로 이어붙임
-        결과: 가로 = 관 둘레(0~360도), 세로 = 관로 거리(m)
-
-        Args:
-            video_path: 영상 경로
-            distances: frame_distances 리스트
-            strip_height_px: 각 프레임에서 추출할 띠 높이
-            output_dir: 출력 디렉토리
-            sample_every_n: N개 거리 포인트마다 1개 추출
-
-        Returns:
-            저장된 strip-map 이미지 경로
-        """
-        if not distances:
-            return None
-
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return None
-
-        # VP 탐지 (처음 몇 프레임으로)
+    # ════════════════════════════════════════════
+    #  VP 탐지
+    # ════════════════════════════════════════════
+    def _detect_vp_from_video(self, cap, total_frames):
+        """영상 초반 프레임으로 VP 탐지, 중앙값 반환"""
         vp_frames = []
-        for d in distances[:5]:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, d['frame_number'])
+        # 초반 5개 위치에서 샘플
+        sample_positions = np.linspace(0, min(total_frames - 1, 500), 5, dtype=int)
+        for fn in sample_positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(fn))
             ret, frame = cap.read()
             if ret:
                 vp_frames.append(self._detect_vp_simple(frame))
 
         if not vp_frames:
-            cap.release()
-            return None
+            return None, None
 
-        # VP 중앙값
         vp_x = int(np.median([v[0] for v in vp_frames]))
         vp_y = int(np.median([v[1] for v in vp_frames]))
+        return vp_x, vp_y
 
-        # 프레임 보간: 거리 reading 사이를 선형 보간하여 촘촘하게 샘플링
-        sorted_d = sorted(distances, key=lambda x: x['frame_number'])
-        first_frame = sorted_d[0]['frame_number']
-        last_frame = sorted_d[-1]['frame_number']
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    def _detect_vp_simple(self, frame):
+        """간단한 VP(소실점) 탐지 — 가장 어두운 영역의 중심"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        gray[:int(h * 0.15), :] = 255
+        gray[int(h * 0.85):, :] = 255
+        blurred = cv2.GaussianBlur(gray, (w // 4 * 2 + 1, h // 4 * 2 + 1), 0)
+        _, _, min_loc, _ = cv2.minMaxLoc(blurred)
+        return min_loc
 
-        # 매 N프레임마다 strip 추출 (기본 50프레임 = 2초마다)
-        frame_step = max(50, (last_frame - first_frame) // 500)  # 최대 500줄
+    # ════════════════════════════════════════════
+    #  전개도 오버레이
+    # ════════════════════════════════════════════
+    def _draw_defect_on_strip(self, strip, polygon, label, unwrapper,
+                              y_start, y_end, strip_height, output_width):
+        """전개 strip 위에 결함 폴리곤 오버레이"""
+        color = _get_defect_color(label)
 
-        strips = []
-        for fn in range(first_frame, last_frame + 1, frame_step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
-            ret, frame = cap.read()
-            if not ret:
-                continue
+        if isinstance(polygon[0], (list, tuple)):
+            flat = []
+            for pt in polygon:
+                flat.extend([float(pt[0]), float(pt[1])])
+        else:
+            flat = [float(v) for v in polygon]
 
-            strip = self._extract_annular_strip(frame, vp_x, vp_y, strip_height_px)
-            # 색상 보정
-            # 1) 그레이월드 화이트밸런스 (파란 편향 제거)
-            b, g, r = cv2.split(strip)
-            avg_b, avg_g, avg_r = np.mean(b), np.mean(g), np.mean(r)
-            avg_all = (avg_b + avg_g + avg_r) / 3
-            if avg_b > 0 and avg_g > 0 and avg_r > 0:
-                b = np.clip(b * (avg_all / avg_b), 0, 255).astype(np.uint8)
-                g = np.clip(g * (avg_all / avg_g), 0, 255).astype(np.uint8)
-                r = np.clip(r * (avg_all / avg_r), 0, 255).astype(np.uint8)
-            strip = cv2.merge([b, g, r])
-            # 2) CLAHE 대비 향상 (텍스처 강조)
-            lab = cv2.cvtColor(strip, cv2.COLOR_BGR2LAB)
-            l, a, b_ch = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 2))
-            l = clahe.apply(l)
-            strip = cv2.cvtColor(cv2.merge([l, a, b_ch]), cv2.COLOR_LAB2BGR)
-            strips.append(strip)
+        transformed = unwrapper.transform_polygon(flat)
 
-        cap.release()
+        strip_pts = []
+        for j in range(0, len(transformed), 2):
+            tx = transformed[j]
+            ty = transformed[j + 1]
+            sy = (ty - y_start) / (y_end - y_start) * strip_height
+            sy = max(0, min(strip_height - 1, sy))
+            sx = max(0, min(output_width - 1, tx))
+            strip_pts.append([int(sx), int(sy)])
 
-        if not strips:
-            return None
+        if len(strip_pts) >= 3:
+            pts_np = np.array(strip_pts, dtype=np.int32)
+            overlay_layer = strip.copy()
+            cv2.fillPoly(overlay_layer, [pts_np], color)
+            cv2.addWeighted(overlay_layer, 0.35, strip, 0.65, 0, strip)
+            cv2.polylines(strip, [pts_np], True, color, 1, cv2.LINE_AA)
 
-        # 세로로 이어붙임 (세로 = 거리, 가로 = 둘레)
-        strip_map = np.vstack(strips)
+    # ════════════════════════════════════════════
+    #  Annular ring strip
+    # ════════════════════════════════════════════
+    def _extract_annular_strip(self, frame, vp_x, vp_y, strip_height=1):
+        h, w = frame.shape[:2]
 
-        # 저장
-        if output_dir is None:
-            output_dir = os.path.dirname(video_path)
+        max_radius = int(min(vp_x, w - vp_x, vp_y, h - vp_y) * 0.95)
+        if max_radius < 50:
+            max_radius = min(h, w) // 2
 
-        video_name = Path(video_path).stem
-        out_path = os.path.join(output_dir, f'{video_name}_stripmap.jpg')
-        cv2.imwrite(out_path, strip_map, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        output_width = 720
+        polar = cv2.warpPolar(
+            frame, (max_radius, output_width),
+            (vp_x, vp_y), max_radius, cv2.WARP_POLAR_LINEAR
+        )
 
-        return out_path
+        r_inner = int(max_radius * 0.75)
+        r_outer = int(max_radius * 0.95)
+
+        ring = polar[:, r_inner:r_outer, :]
+        ring_t = ring.transpose(1, 0, 2)
+        strip = cv2.resize(ring_t, (ring_t.shape[1], strip_height))
+        return strip
+
+    # ════════════════════════════════════════════
+    #  색보정
+    # ════════════════════════════════════════════
+    def _color_correct(self, img):
+        """그레이월드 WB + CLAHE"""
+        b, g, r = cv2.split(img)
+        avg_b, avg_g, avg_r = np.mean(b), np.mean(g), np.mean(r)
+        avg_all = (avg_b + avg_g + avg_r) / 3
+        if avg_b > 0 and avg_g > 0 and avg_r > 0:
+            b = np.clip(b * (avg_all / avg_b), 0, 255).astype(np.uint8)
+            g = np.clip(g * (avg_all / avg_g), 0, 255).astype(np.uint8)
+            r = np.clip(r * (avg_all / avg_r), 0, 255).astype(np.uint8)
+        img = cv2.merge([b, g, r])
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 2))
+        l_ch = clahe.apply(l_ch)
+        img = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
+        return img
 
 
 # ─── CLI ───
@@ -421,23 +622,23 @@ if __name__ == '__main__':
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python pipe_survey.py <video_path> [--interval N] [--section-length M] [--strip-map]")
+        print("Usage: python pipe_survey.py <video_path> [--ssim-threshold 0.92] [--min-stop-frames 15] [--scan-every 5]")
         sys.exit(1)
 
     args = sys.argv[1:]
-    interval = 30
-    section_length = 1.0
-    do_strip = False
+    ssim_thresh = 0.92
+    min_stop = 15
+    scan_every = 5
     video_path = None
 
     i = 0
     while i < len(args):
-        if args[i] == '--interval':
-            interval = int(args[i+1]); i += 2
-        elif args[i] == '--section-length':
-            section_length = float(args[i+1]); i += 2
-        elif args[i] == '--strip-map':
-            do_strip = True; i += 1
+        if args[i] == '--ssim-threshold':
+            ssim_thresh = float(args[i + 1]); i += 2
+        elif args[i] == '--min-stop-frames':
+            min_stop = int(args[i + 1]); i += 2
+        elif args[i] == '--scan-every':
+            scan_every = int(args[i + 1]); i += 2
         else:
             video_path = args[i]; i += 1
 
@@ -450,15 +651,14 @@ if __name__ == '__main__':
     print(f"Analyzing: {os.path.basename(video_path)}")
     t0 = time.time()
 
-    def progress(fn, total, msg):
-        if fn % (interval * 10) == 0:
-            pct = fn / total * 100 if total > 0 else 0
-            print(f"  [{msg}] {fn}/{total} ({pct:.0f}%)")
+    def progress(cur, total, msg):
+        print(f"  [{msg}] {cur}%")
 
     result = analyzer.analyze_video(
         video_path,
-        sample_interval=interval,
-        section_length_m=section_length,
+        ssim_threshold=ssim_thresh,
+        min_stop_frames=min_stop,
+        scan_every_n=scan_every,
         progress_callback=progress
     )
 
@@ -466,34 +666,27 @@ if __name__ == '__main__':
 
     if 'error' in result:
         print(f"Error: {result['error']}")
+        if result.get('stops') is not None:
+            print(f"Stops found: {len(result.get('stops', []))}")
         sys.exit(1)
 
     s = result['summary']
-    print(f"\n{'='*50}")
-    print(f"관로: {s['pipe_diameter_mm']}mm, {s['total_length_m']}m")
-    print(f"구간: {s['start_m']}m → {s['end_m']}m ({s['sections_count']}구간 × {s['section_length_m']}m)")
-    print(f"프레임: {s['total_frames']} (OCR {s['readings_count']}회)")
+    print(f"\n{'=' * 50}")
+    print(f"관경: {s['pipe_diameter_mm']}mm")
+    print(f"영상: {s['video_duration_sec']}s ({s['total_frames']} frames)")
+    print(f"정지 구간: {s['total_stops']}개 ({s['total_stop_time_sec']}s, {s['stop_ratio_pct']}%)")
+    print(f"결함 구간: {s['defect_stops']}개")
     print(f"소요: {elapsed:.1f}s")
 
-    # 구간 미리보기
-    print(f"\n구간별 현황 (상위 10):")
-    for sec in result['sections'][:10]:
-        print(f"  {sec['start_m']:6.1f}~{sec['end_m']:6.1f}m | frames {sec['frame_range'][0]}~{sec['frame_range'][1]} ({sec['frame_count']})")
+    print(f"\nStop 목록:")
+    for stop in result['stops'][:20]:
+        ts = stop['timestamp_sec']
+        dur = stop['duration_sec']
+        ratio = stop.get('total_defect_ratio', 0)
+        dets = stop.get('num_objects', 0)
+        print(f"  #{stop['index']:3d} | {ts:7.1f}s | {dur:5.1f}s | defect {ratio:5.1f}% | {dets} objects")
 
-    if len(result['sections']) > 10:
-        print(f"  ... ({len(result['sections'])} 구간 총)")
-
-    # JSON 저장
     out_path = video_path + '.survey.json'
     with open(out_path, 'w') as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
+        json.dump(result, f, indent=2, ensure_ascii=False, default=str)
     print(f"\n저장: {out_path}")
-
-    # Strip-map 생성
-    if do_strip:
-        print("\nStrip-map 생성 중...")
-        strip_path = analyzer.generate_strip_map_frames(
-            video_path, result['frame_distances']
-        )
-        if strip_path:
-            print(f"Strip-map 저장: {strip_path}")

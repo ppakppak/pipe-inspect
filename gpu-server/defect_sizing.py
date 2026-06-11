@@ -566,12 +566,31 @@ class PipeSizeCalibrator:
     - depth 값을 이용하여 각 위치에서의 mm/pixel 비율을 추정
     """
 
-    def __init__(self, pipe_diameter_mm, vp_x, vp_y, image_w, image_h):
+    def __init__(self, pipe_diameter_mm, vp_x, vp_y, image_w, image_h, camera_f=None):
+        """
+        Args:
+            pipe_diameter_mm: 관 직경 (mm)
+            vp_x, vp_y: 소실점 (카메라 principal point 와 일치한다고 가정)
+            image_w, image_h: 이미지 크기
+            camera_f: 카메라 초점거리 (픽셀). None 이면 이미지 크기로 HD/FHD 자동 결정.
+                     설정 시 광학 모델 (pinhole + 원통) 기반 정확 적분 사용.
+        """
         self.pipe_diameter_mm = pipe_diameter_mm
         self.vp_x = vp_x
         self.vp_y = vp_y
         self.image_w = image_w
         self.image_h = image_h
+
+        # 카메라 f 자동 결정 (없으면)
+        if camera_f is None:
+            if image_h >= 1080 or image_w >= 1920:
+                self.camera_f = 1479.749  # FHD 프리셋
+            else:
+                self.camera_f = 934.89    # HD 프리셋
+            self._f_source = 'auto-preset'
+        else:
+            self.camera_f = float(camera_f)
+            self._f_source = 'user'
 
         # 이미지에서 파이프 단면의 pixel 직경 추정
         # VP에서 가장 먼 모서리까지의 거리 × 2 ≈ 최대 가시 직경
@@ -581,10 +600,9 @@ class PipeSizeCalibrator:
             math.hypot(vp_x, image_h - vp_y),
             math.hypot(image_w - vp_x, image_h - vp_y)
         )
-        # 파이프가 이미지의 대부분을 차지한다고 가정
-        # 이미지 중심에서 가장자리까지 = 파이프 반경
+        # (legacy) 파이프가 이미지의 대부분을 차지한다고 가정
         self.reference_pipe_radius_px = min(image_w, image_h) / 2.0
-        self.base_scale = pipe_diameter_mm / (2.0 * self.reference_pipe_radius_px)  # mm/px at reference
+        self.base_scale = pipe_diameter_mm / (2.0 * self.reference_pipe_radius_px)
 
     def compute_scale_at_depth(self, depth_value, point_x, point_y) -> float:
         """주어진 위치와 depth에서의 mm/pixel 스케일 팩터 계산.
@@ -632,25 +650,29 @@ class PipeSizeCalibrator:
     def measure_defect(self, polygon_points, depth_map=None) -> dict:
         """결함의 실물 크기를 계산한다.
 
+        측정 모드 (우선순위 — 정확도 순):
+          1. camera_f 설정됨  → 광학 모델 + 픽셀 단위 적분 (정확, PPNet 불사용) ← 기본
+          2. depth_map 있음   → MiDaS 깊이 기반 (legacy, 상대 깊이라 부정확)
+          3. 둘 다 없음       → VP 거리 기반 단순 추정 (legacy, 매우 부정확)
+
         Args:
             polygon_points: [[x1,y1], [x2,y2], ...] 형태의 폴리곤 좌표
-            depth_map: 0~1 정규화된 깊이 맵 (없으면 VP 거리 기반 추정)
+            depth_map: 0~1 정규화된 깊이 맵 (옵션)
 
         Returns:
-            측정 결과 딕셔너리
+            측정 결과 딕셔너리 (method 필드로 어느 모드 사용했는지 표시)
         """
         pts = np.array(polygon_points, dtype=np.float32)
         if len(pts) < 3:
             return {'error': 'polygon must have at least 3 points'}
 
-        # Pixel 단위 측정
-        # Bounding box
+        # 공통: 픽셀 단위 측정
         x_min, y_min = pts.min(axis=0)
         x_max, y_max = pts.max(axis=0)
         pixel_width = float(x_max - x_min)
         pixel_height = float(y_max - y_min)
 
-        # Pixel area (Shoelace formula)
+        # Pixel area (Shoelace)
         n = len(pts)
         pixel_area = 0.0
         for i in range(n):
@@ -659,34 +681,71 @@ class PipeSizeCalibrator:
             pixel_area -= pts[j][0] * pts[i][1]
         pixel_area = abs(pixel_area) / 2.0
 
-        # 결함 중심점
         cx = float(pts[:, 0].mean())
         cy = float(pts[:, 1].mean())
 
-        # mm/pixel 스케일 계산
-        if depth_map is not None:
-            scale = self.compute_scale_at_position(depth_map, cx, cy)
+        # ─── 모드 1: 광학 모델 + 픽셀 적분 (camera_f 있으면 우선) ─────────────
+        if self.camera_f is not None:
+            # 폴리곤을 마스크화 → 각 픽셀에서 ray-cylinder 교차 + cos α 적분
+            mask = np.zeros((self.image_h, self.image_w), dtype=np.uint8)
+            pts_int = pts.astype(np.int32).reshape(-1, 1, 2)
+            cv2.fillPoly(mask, [pts_int], 255)
+            ys_p, xs_p = np.where(mask > 0)
+            if xs_p.size == 0:
+                # 폴리곤이 화면 밖이거나 너무 작음 → 중심 단일 점 fallback
+                d_center = math.hypot(cx - self.vp_x, cy - self.vp_y)
+                d_safe = max(d_center, 5.0)
+                R = self.pipe_diameter_mm / 2.0
+                f = self.camera_f
+                cos_a = d_safe / math.sqrt(d_safe ** 2 + f ** 2)
+                avg_scale = R / d_safe
+                real_area_mm2 = pixel_area * (avg_scale ** 2) / max(cos_a, 0.05)
+            else:
+                du = xs_p.astype(np.float64) - self.vp_x
+                dv = ys_p.astype(np.float64) - self.vp_y
+                d = np.sqrt(du * du + dv * dv)
+                d_safe = np.maximum(d, 5.0)
+                R = self.pipe_diameter_mm / 2.0
+                f = float(self.camera_f)
+                # 표면적 = (R/d)² / cos α, cos α = d / √(d²+f²)
+                cos_alpha = d_safe / np.sqrt(d_safe * d_safe + f * f)
+                pixel_sa = (R * R / (d_safe * d_safe)) / np.maximum(cos_alpha, 0.05)
+                real_area_mm2 = float(pixel_sa.sum())
+                # 평균 mm/px (참고용) — bbox 환산에도 사용
+                avg_scale = float(np.mean(R / d_safe))
 
-            # 결함 영역의 평균 스케일 (더 정확한 면적 계산)
+            real_width_mm = float(pixel_width * avg_scale)
+            real_height_mm = float(pixel_height * avg_scale)
+            confidence = 0.80
+            method = 'optical(f=%g,%s)' % (self.camera_f, self._f_source)
+            scale = avg_scale  # 호환
+
+        # ─── 모드 2: depth_map (legacy) ─────────────
+        elif depth_map is not None:
+            scale = self.compute_scale_at_position(depth_map, cx, cy)
             scales = []
             for pt in pts:
                 s = self.compute_scale_at_position(depth_map, pt[0], pt[1])
                 scales.append(s)
             avg_scale = float(np.mean(scales))
             confidence = 0.85
+            real_area_mm2 = float(pixel_area * (avg_scale ** 2))
+            real_width_mm = float(pixel_width * scale)
+            real_height_mm = float(pixel_height * scale)
+            method = 'depth_map'
+
+        # ─── 모드 3: legacy VP 거리 단순 추정 ─────────────
         else:
-            # 깊이 맵 없이 VP 거리 기반 추정
             dist_from_vp = math.hypot(cx - self.vp_x, cy - self.vp_y)
             max_dist = math.hypot(self.image_w / 2, self.image_h / 2)
             norm_dist = min(dist_from_vp / max_dist, 1.0) if max_dist > 0 else 0.5
             scale = self.base_scale / max(norm_dist, 0.2)
             avg_scale = scale
-            confidence = 0.5  # 깊이 정보 없이는 낮은 신뢰도
-
-        real_width_mm = float(pixel_width * scale)
-        real_height_mm = float(pixel_height * scale)
-        real_area_mm2 = float(pixel_area * (avg_scale ** 2))
-        real_area_cm2 = real_area_mm2 / 100.0
+            confidence = 0.5
+            real_area_mm2 = float(pixel_area * (avg_scale ** 2))
+            real_width_mm = float(pixel_width * scale)
+            real_height_mm = float(pixel_height * scale)
+            method = 'legacy_vp'
 
         return {
             'pixel_area': round(float(pixel_area), 1),
@@ -695,11 +754,12 @@ class PipeSizeCalibrator:
             'real_width_mm': round(real_width_mm, 1),
             'real_height_mm': round(real_height_mm, 1),
             'real_area_mm2': round(real_area_mm2, 1),
-            'real_area_cm2': round(real_area_cm2, 2),
+            'real_area_cm2': round(real_area_mm2 / 100.0, 2),
             'scale_factor_mm_per_px': round(float(avg_scale), 4),
             'measurement_confidence': round(float(confidence), 2),
             'center_px': {'x': round(float(cx), 1), 'y': round(float(cy), 1)},
-            'measured_at': datetime.now().isoformat()
+            'measured_at': datetime.now().isoformat(),
+            'method': method,
         }
 
 

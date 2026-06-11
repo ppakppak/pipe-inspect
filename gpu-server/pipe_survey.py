@@ -30,10 +30,12 @@ from pathlib import Path
 from skimage.metrics import structural_similarity as ssim
 
 
-# ─── 색상 팔레트 (클래스별) ───
+# ─── 색상 팔레트 (클래스별, 부분 문자열 매칭) ───
 DEFECT_COLORS_BGR = {
-    'rust':  (60, 76, 231),    # #E74C3C (BGR)
-    'scale': (15, 196, 241),   # #F1C40F (BGR)
+    'rust':   (60, 76, 231),    # #E74C3C (BGR)
+    'scale':  (15, 196, 241),   # #F1C40F (BGR)
+    'nodule': (0, 140, 255),    # 주황: corrosion_nodule
+    'peel':   (255, 80, 80),    # coating_peel / peeling_silcoat
 }
 DEFAULT_COLOR_BGR = (255, 128, 0)  # cyan fallback
 

@@ -1104,16 +1104,95 @@ def _measure_defects(defects, calibrator, depth_map=None, vp=None):
     return measurements
 
 
-def _compute_frame_area_ratio(defects, coord_system):
-    visible_pipe_area_mm2 = float(coord_system.get('x_range_mm', 0) * coord_system.get('y_range_mm', 0))
-    total_defect_area_mm2 = float(sum(float(d.get('area_mm2', 0) or 0) for d in defects))
+def _bbox_of_flat_polygon(poly_flat, mmpx_x=1.0, mmpx_y=1.0):
+    """평면 좌표 폴리곤(flat) → 축정렬 bbox + 종횡비.
+
+    Returns: {bbox_width_mm, bbox_height_mm, aspect_wh, polygon_fill_pct}
+    """
+    if not poly_flat or len(poly_flat) < 6:
+        return {'bbox_width_mm': None, 'bbox_height_mm': None,
+                'aspect_wh': None, 'polygon_fill_pct': None}
+    xs = poly_flat[0::2]
+    ys = poly_flat[1::2]
+    w_px = max(xs) - min(xs)
+    h_px = max(ys) - min(ys)
+    w_mm = w_px * mmpx_x
+    h_mm = h_px * mmpx_y
+    # Shoelace 로 폴리곤 픽셀 면적 → bbox 대비 채움 비율
+    n = len(xs)
+    s = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        s += xs[i] * ys[j] - xs[j] * ys[i]
+    poly_px = abs(s) / 2.0
+    bbox_px = w_px * h_px
+    fill = (poly_px / bbox_px * 100.0) if bbox_px > 0 else None
     return {
-        'visible_pipe_area_mm2': round(visible_pipe_area_mm2, 1),
-        'visible_pipe_area_cm2': round(visible_pipe_area_mm2 / 100.0, 2),
+        'bbox_width_mm': round(w_mm, 2) if w_mm else None,
+        'bbox_height_mm': round(h_mm, 2) if h_mm else None,
+        'aspect_wh': round(w_mm / h_mm, 3) if (w_mm and h_mm > 0) else None,
+        'polygon_fill_pct': round(fill, 2) if fill is not None else None,
+    }
+
+
+def _compute_frame_area_ratio(defects, coord_system, polygons=None, image_size=None,
+                                 visible_pipe_area_mm2=None):
+    """프레임 단위 면적비 다중 척도.
+
+    세 가지 척도 동시 산출:
+      A. screen_pixel_ratio  — 화면 폴리곤 픽셀 ÷ 영상 픽셀 (육안 직관)
+      B. visible_surface_ratio — 결함 표면적 ÷ 카메라 실측 가시 표면적 (PPNet 가시 영역)
+      C. full_mesh_ratio (기존, defect_ratio_percent 키) — 결함 ÷ 전개도 메시 전체
+
+    Args:
+        defects: [{area_mm2}, ...]
+        coord_system: 전개도 좌표계 dict (기존 척도 C 용)
+        polygons: 원본 프레임 폴리곤 좌표 list of [x1,y1,x2,y2,...] (척도 A 용)
+        image_size: (image_w, image_h) tuple (척도 A 용)
+        visible_pipe_area_mm2: PPNet 가시 영역 mm² (척도 B 용)
+    """
+    full_mesh_mm2 = float(coord_system.get('x_range_mm', 0) * coord_system.get('y_range_mm', 0))
+    total_defect_area_mm2 = float(sum(float(d.get('area_mm2', 0) or 0) for d in defects))
+
+    result = {
+        # 기존 호환 키 (전개도 메시 전체 분모)
+        'visible_pipe_area_mm2': round(full_mesh_mm2, 1),
+        'visible_pipe_area_cm2': round(full_mesh_mm2 / 100.0, 2),
         'total_defect_area_mm2': round(total_defect_area_mm2, 1),
         'total_defect_area_cm2': round(total_defect_area_mm2 / 100.0, 2),
-        'defect_ratio_percent': round((total_defect_area_mm2 / visible_pipe_area_mm2 * 100.0) if visible_pipe_area_mm2 > 0 else 0.0, 4)
+        'defect_ratio_percent': round((total_defect_area_mm2 / full_mesh_mm2 * 100.0)
+                                       if full_mesh_mm2 > 0 else 0.0, 4),
     }
+
+    # A. 화면 픽셀 비율 (모든 모드 공통, 가장 직관적)
+    if polygons and image_size:
+        img_w, img_h = image_size
+        total_poly_px = 0.0
+        for p in polygons:
+            if not p or len(p) < 6:
+                continue
+            xs = p[0::2]
+            ys = p[1::2]
+            n = len(xs)
+            s = 0.0
+            for i in range(n):
+                j = (i + 1) % n
+                s += xs[i] * ys[j] - xs[j] * ys[i]
+            total_poly_px += abs(s) / 2.0
+        frame_px = float(img_w * img_h)
+        if frame_px > 0:
+            result['screen_pixel_defect_px'] = int(round(total_poly_px))
+            result['screen_pixel_frame_px'] = int(frame_px)
+            result['screen_pixel_ratio_pct'] = round(total_poly_px / frame_px * 100.0, 4)
+
+    # B. 가시 표면 비율 (PPNet 가시 영역 분모)
+    if visible_pipe_area_mm2 and visible_pipe_area_mm2 > 0:
+        result['visible_surface_pipe_area_mm2'] = round(float(visible_pipe_area_mm2), 1)
+        result['visible_surface_pipe_area_cm2'] = round(float(visible_pipe_area_mm2) / 100.0, 2)
+        result['visible_surface_ratio_pct'] = round(
+            total_defect_area_mm2 / float(visible_pipe_area_mm2) * 100.0, 4)
+
+    return result
 
 
 @app.route('/api/sizing/initialize-depth', methods=['POST'])
@@ -1337,6 +1416,1016 @@ def sizing_depth_unwrap():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  Quick Sizing — 프로젝트 없이 임의 영상/프레임으로 사이징·면적비 산출
+# ═══════════════════════════════════════════════════════════════════════
+import tempfile
+import uuid
+import shutil
+from pathlib import Path as _Path
+
+QUICK_SIZING_DIR = _Path(tempfile.gettempdir()) / 'quick_sizing'
+QUICK_SIZING_DIR.mkdir(parents=True, exist_ok=True)
+QUICK_SIZING_SNAPSHOT_DIR = QUICK_SIZING_DIR / 'snapshots'
+QUICK_SIZING_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+QUICK_SIZING_SESSIONS = {}  # token -> {'path', 'fps', 'frame_count', 'width', 'height', 'created_at'}
+QUICK_SIZING_TTL_SEC = 6 * 3600  # 6시간 (영상 본체. 스냅샷은 로그와 함께 보존)
+QUICK_SIZING_LOG_PATH = QUICK_SIZING_DIR / 'analyze_log.jsonl'
+_quick_sizing_log_lock = threading.Lock()
+
+
+def _quick_sizing_save_snapshot(frame_bgr, token, frame_number):
+    """분석 시점 프레임을 디스크에 저장. 이미 있으면 재사용. 상대 파일명 반환."""
+    try:
+        fname = f'{token}_{int(frame_number):06d}.jpg'
+        fpath = QUICK_SIZING_SNAPSHOT_DIR / fname
+        if not fpath.exists():
+            cv2.imwrite(str(fpath), frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        return fname
+    except Exception as e:
+        print(f'[quick-sizing] snapshot save failed: {e}')
+        return None
+
+
+def _quick_sizing_log(record: dict) -> None:
+    """JSONL 한 줄 추가 (스레드 안전). 실패해도 분석 응답은 영향 없음."""
+    try:
+        with _quick_sizing_log_lock:
+            with open(QUICK_SIZING_LOG_PATH, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
+    except Exception as e:
+        print(f'[quick-sizing] log write failed: {e}')
+
+
+def _compute_accuracy(measurements, unwrap_defects, ground_truth):
+    """기준값과 측정값 비교 → 폴리곤별 오차 + 전체 MAPE.
+
+    ground_truth: [{area_mm2?, width_mm?, height_mm?, label?}, ...] (인덱스 매칭)
+    """
+    if not ground_truth:
+        return None
+    rows = []
+    abs_errs = []
+    for i, gt in enumerate(ground_truth):
+        if not isinstance(gt, dict):
+            continue
+        m = measurements[i] if i < len(measurements) else {}
+        u = unwrap_defects[i] if unwrap_defects and i < len(unwrap_defects) else {}
+        row = {'index': i, 'gt': gt}
+        # Calibrator 측정
+        meas_area = m.get('real_area_mm2')
+        if meas_area is not None and gt.get('area_mm2'):
+            err = (meas_area - gt['area_mm2']) / gt['area_mm2'] * 100.0
+            row['calibrator_area_mm2'] = meas_area
+            row['calibrator_error_pct'] = round(err, 2)
+            abs_errs.append(abs(err))
+        # 전개도 측정
+        uw_area = u.get('area_mm2')
+        if uw_area is not None and gt.get('area_mm2'):
+            err = (uw_area - gt['area_mm2']) / gt['area_mm2'] * 100.0
+            row['unwrap_area_mm2'] = uw_area
+            row['unwrap_error_pct'] = round(err, 2)
+        rows.append(row)
+    mape = round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else None
+    return {
+        'rows': rows,
+        'mape_pct': mape,
+        'n_compared': len(abs_errs),
+    }
+
+
+def _quick_sizing_evict_old():
+    """메모리 세션만 만료. 디스크 파일은 보존 (이력 복원용)."""
+    now = time.time()
+    expired = [t for t, s in QUICK_SIZING_SESSIONS.items()
+               if now - s.get('created_at', 0) > QUICK_SIZING_TTL_SEC]
+    for t in expired:
+        QUICK_SIZING_SESSIONS.pop(t, None)
+
+
+def _quick_sizing_attach_session(video_path):
+    """디스크 영상 파일에 새 세션 부착 (메타데이터 채움)."""
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f'video missing: {video_path}')
+    ext = os.path.splitext(video_path)[1].lower()
+    is_image = ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp')
+    token = uuid.uuid4().hex
+    if is_image:
+        img = cv2.imread(video_path, cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError('cannot read image')
+        h, w = img.shape[:2]
+        meta = {'path': video_path, 'kind': 'image', 'fps': 0.0,
+                'frame_count': 1, 'width': w, 'height': h, 'created_at': time.time()}
+    else:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError('cannot open video')
+        meta = {'path': video_path, 'kind': 'video',
+                'fps': float(cap.get(cv2.CAP_PROP_FPS) or 0),
+                'frame_count': int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                'width': int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+                'height': int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+                'created_at': time.time()}
+        cap.release()
+    QUICK_SIZING_SESSIONS[token] = meta
+    return token, meta
+
+
+def _quick_sizing_get_session(token):
+    sess = QUICK_SIZING_SESSIONS.get(token)
+    if not sess:
+        raise FileNotFoundError(f'unknown token: {token}')
+    if not os.path.exists(sess['path']):
+        QUICK_SIZING_SESSIONS.pop(token, None)
+        raise FileNotFoundError(f'session file missing: {token}')
+    return sess
+
+
+def _quick_sizing_read_frame(sess, frame_number):
+    cap = cv2.VideoCapture(sess['path'])
+    if not cap.isOpened():
+        raise RuntimeError(f'failed to open: {sess["path"]}')
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or sess.get('frame_count', 0)
+    frame_number = max(0, min(int(frame_number), max(0, total - 1)))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    ok, frame = cap.read()
+    if (not ok or frame is None) and frame_number > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok, frame = cap.read()
+        frame_number = 0
+    cap.release()
+    if not ok or frame is None:
+        raise RuntimeError(f'failed to read frame {frame_number}')
+    return frame, frame_number
+
+
+@app.route('/api/quick-sizing/upload', methods=['POST'])
+def quick_sizing_upload():
+    """영상/이미지 업로드 → 임시 토큰 반환.
+
+    multipart form:
+      file: video (mp4/avi/...) 또는 image (jpg/png)
+
+    응답: { token, kind: 'video'|'image', frame_count, fps, width, height }
+    """
+    try:
+        _quick_sizing_evict_old()
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'multipart file required'}), 400
+        f = request.files['file']
+        if not f or f.filename == '':
+            return jsonify({'success': False, 'error': 'empty filename'}), 400
+
+        suffix = os.path.splitext(f.filename)[1].lower() or '.mp4'
+        token = uuid.uuid4().hex
+        save_path = str(QUICK_SIZING_DIR / f'{token}{suffix}')
+        f.save(save_path)
+
+        is_image = suffix in ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp')
+        if is_image:
+            img = cv2.imread(save_path, cv2.IMREAD_COLOR)
+            if img is None:
+                os.remove(save_path)
+                return jsonify({'success': False, 'error': 'invalid image'}), 400
+            h, w = img.shape[:2]
+            meta = {'path': save_path, 'kind': 'image', 'fps': 0.0,
+                    'frame_count': 1, 'width': w, 'height': h, 'created_at': time.time()}
+        else:
+            cap = cv2.VideoCapture(save_path)
+            if not cap.isOpened():
+                cap.release()
+                os.remove(save_path)
+                return jsonify({'success': False, 'error': 'cannot open video'}), 400
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            cap.release()
+            meta = {'path': save_path, 'kind': 'video', 'fps': fps,
+                    'frame_count': n, 'width': w, 'height': h, 'created_at': time.time()}
+        QUICK_SIZING_SESSIONS[token] = meta
+        return jsonify({
+            'success': True,
+            'token': token,
+            'kind': meta['kind'],
+            'frame_count': meta['frame_count'],
+            'fps': meta['fps'],
+            'width': meta['width'],
+            'height': meta['height'],
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/frame', methods=['POST'])
+def quick_sizing_frame():
+    """토큰 + 프레임 번호 → 프레임 JPEG base64 + 자동 VP 검출.
+
+    JSON: { token, frame_number, detect_vp?: bool }
+    응답: { success, frame_base64, frame_number, vp?: {...}, vp_radial?, vp_darkest? }
+    """
+    try:
+        data = request.json or {}
+        token = data.get('token')
+        if not token:
+            return jsonify({'success': False, 'error': 'token required'}), 400
+        sess = _quick_sizing_get_session(token)
+
+        if sess['kind'] == 'image':
+            frame = cv2.imread(sess['path'], cv2.IMREAD_COLOR)
+            actual = 0
+        else:
+            frame, actual = _quick_sizing_read_frame(sess, int(data.get('frame_number', 0)))
+
+        out = {
+            'success': True,
+            'frame_number': actual,
+            'frame_base64': _encode_image_base64(frame),
+            'width': int(frame.shape[1]),
+            'height': int(frame.shape[0]),
+        }
+        if bool(data.get('detect_vp', True)):
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray_masked = vp_detector._mask_osd(gray)
+            r_radial = vp_detector._detect_radial_convergence(gray_masked)
+            r_dark = vp_detector._detect_gaussian_darkest(gray_masked)
+            best = r_radial if r_radial['confidence'] >= r_dark['confidence'] else r_dark
+            cache_key = f'quick:{token}'
+            vp_detector._cache[cache_key] = {'vp': best, 'timestamp': time.time()}
+            out['vp'] = best
+            out['vp_radial'] = r_radial
+            out['vp_darkest'] = r_dark
+        return jsonify(out)
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _quick_sizing_analyze_impl(data):
+    """Quick Sizing 분석 핵심 로직. (response_dict, status_code) 반환.
+
+    HTTP 라우트 + batch 양쪽에서 재사용.
+    """
+    try:
+        token = data.get('token')
+        if not token:
+            return ({'success': False, 'error': 'token required'}, 400)
+        sess = _quick_sizing_get_session(token)
+
+        pipe_diameter_mm = float(data.get('pipe_diameter_mm', 300))
+        section_length_mm = float(data.get('section_length_mm', 6000))
+        use_depth = bool(data.get('use_depth', True))
+        # 전개 방식: 'none' | 'vp' | 'ppnet' (옛 include_unwrap 호환)
+        unwrap_method = (data.get('unwrap_method') or '').lower()
+        if not unwrap_method:
+            unwrap_method = 'vp' if data.get('include_unwrap', True) else 'none'
+        if unwrap_method not in ('none', 'vp', 'ppnet'):
+            return ({'success': False, 'error': f'invalid unwrap_method: {unwrap_method}'}, 400)
+        out_w = int(data.get('output_width', 800))
+        out_h = int(data.get('output_height', 600))
+        # PPNet 3D 전개에서 메시가 cover 하는 축 방향 최대 깊이.
+        # 너무 작으면 화면 중앙(원근 먼 쪽) 결함이 메시 밖으로 잘려서 area_px=0.
+        max_depth_mm = float(data.get('max_depth_mm', 1000))
+        # 카메라 intrinsic override (캘리브레이션). PPNet 3D 모드에만 영향.
+        camera_f_override = data.get('camera_f')
+        if camera_f_override is not None:
+            try:
+                camera_f_override = float(camera_f_override)
+                if camera_f_override <= 0:
+                    camera_f_override = None
+            except (TypeError, ValueError):
+                camera_f_override = None
+        ground_truth = data.get('ground_truth') or None  # [{area_mm2?, label?}, ...]
+        log_enabled = data.get('log_enabled', True)
+        log_note = data.get('log_note') or ''
+
+        raw_polys = data.get('polygons') or data.get('defects') or []
+        defects = []
+        for i, p in enumerate(raw_polys):
+            if isinstance(p, dict):
+                poly = _normalize_defect_polygon(p)
+                label = p.get('label') or p.get('category') or 'defect'
+            elif isinstance(p, list):
+                poly = p if len(p) >= 6 else None
+                label = 'defect'
+            else:
+                poly = None
+                label = 'defect'
+            if poly:
+                defects.append({'index': i, 'label': label, 'polygon': poly})
+
+        if sess['kind'] == 'image':
+            frame = cv2.imread(sess['path'], cv2.IMREAD_COLOR)
+            actual = 0
+        else:
+            frame, actual = _quick_sizing_read_frame(sess, int(data.get('frame_number', 0)))
+
+        # 복원용: 영상 파일 경로 (디스크에 보존되어 있어 재추출 가능)
+        video_path_abs = sess.get('path')
+
+        cache_key = f'quick:{token}'
+        vp = _resolve_vp_from_request(data, frame, cache_key)
+        # Calibrator: camera_f 가 있으면 광학 모델, 없으면 이미지 크기로 HD/FHD 기본값 사용
+        calibrator = PipeSizeCalibrator(pipe_diameter_mm, vp['vp_x'], vp['vp_y'],
+                                          frame.shape[1], frame.shape[0],
+                                          camera_f=camera_f_override)
+
+        depth_map = None
+        depth_preview = None
+        if use_depth:
+            try:
+                depth_estimator = DepthEstimator.get_instance('MiDaS_small')
+                depth_map = depth_estimator.estimate(frame, video_id=cache_key, frame_number=actual)
+                depth_preview = _encode_image_base64(DepthEstimator.depth_to_colorized(depth_map))
+            except Exception as de:
+                print(f'[quick-sizing] depth estimation failed: {de}')
+
+        measurements = _measure_defects(defects, calibrator, depth_map=depth_map, vp=vp)
+
+        # 면적비 (section 기반)
+        area_ratio_full = None
+        try:
+            calc = PipeAreaRatioCalculator()
+            area_ratio_full = calc.calculate_section_ratio(
+                pipe_diameter_mm, section_length_mm,
+                defect_measurements=[m for m in measurements if not m.get('error')]
+            )
+        except Exception as are:
+            print(f'[quick-sizing] area ratio failed: {are}')
+
+        # 전개도 + 프레임 단위 면적비
+        unwrap_out = None
+        frame_area_ratio = None
+        ppnet_pose = None
+
+        if unwrap_method == 'vp' and defects:
+            try:
+                unwrapper = PipeUnwrapper(vp['vp_x'], vp['vp_y'],
+                                            frame.shape[1], frame.shape[0],
+                                            pipe_diameter_mm, out_w, out_h)
+                unwrapped = unwrapper.unwrap(frame)
+                coord = unwrapper.get_coordinate_system()
+                uw_defs = []
+                mmpx_x = coord.get('mm_per_px_x', 1.0)
+                mmpx_y = coord.get('mm_per_px_y', 1.0)
+                for d in defects:
+                    pts = d['polygon']
+                    uw_poly = unwrapper.transform_polygon(pts)
+                    area = unwrapper.calculate_unwrapped_area(uw_poly)
+                    # 전개도 좌표계에서 bbox 산출 (직사각형 종횡비 검증용)
+                    bbox = _bbox_of_flat_polygon(uw_poly, mmpx_x, mmpx_y)
+                    uw_defs.append({'index': d['index'], 'label': d['label'],
+                                     'unwrapped_polygon': uw_poly, **area, **bbox})
+                frame_area_ratio = _compute_frame_area_ratio(
+                    uw_defs, coord,
+                    polygons=[d['polygon'] for d in defects],
+                    image_size=(frame.shape[1], frame.shape[0]),
+                )
+                unwrap_out = {
+                    'method': 'vp',
+                    'unwrapped_image': _encode_image_base64(unwrapped),
+                    'coordinate_system': coord,
+                    'defects': uw_defs,
+                }
+            except Exception as ue:
+                print(f'[quick-sizing] vp unwrap failed: {ue}')
+
+        elif unwrap_method == 'ppnet':
+            try:
+                from gnu_mapping import GNUMappingEngine
+                ppnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights', 'ppnet.pt')
+                if not os.path.exists(ppnet_path):
+                    return ({'success': False, 'error': 'PPNet 가중치 없음: weights/ppnet.pt'}, 400)
+
+                # 폴리곤 → 마스크 변환
+                defect_masks = []
+                for d in defects:
+                    poly = d['polygon']
+                    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                    pts = np.array([[int(poly[i]), int(poly[i+1])]
+                                     for i in range(0, len(poly), 2)], dtype=np.int32)
+                    if len(pts) >= 3:
+                        cv2.fillPoly(mask, [pts], 255)
+                        defect_masks.append({'label': d['label'], 'mask': mask})
+
+                # 사용자가 수동 자세를 지정했으면 PPNet 추론 스킵
+                use_manual_pose = bool(data.get('use_manual_pose', False))
+                pose_override = None
+                vp_in = data.get('vp') or {}
+                if use_manual_pose and 'vp_x' in vp_in and 'vp_y' in vp_in:
+                    pose_override = (
+                        float(vp_in['vp_x']),
+                        float(vp_in['vp_y']),
+                        float(vp_in.get('angle', 0.0)),
+                        float(vp_in.get('step', 0.0)),
+                    )
+
+                engine = GNUMappingEngine(ppnet_model_path=ppnet_path,
+                                            pipe_diameter_mm=pipe_diameter_mm,
+                                            water=False,
+                                            pixel_per_mm=10.0,
+                                            max_depth_mm=max_depth_mm)
+                camera_override = None
+                if camera_f_override is not None:
+                    camera_override = {'f': camera_f_override}
+                gnu_result = engine.process_frame(frame, defect_masks or None,
+                                                    include_depth_map=use_depth,
+                                                    pose_override=pose_override,
+                                                    camera_override=camera_override)
+                ppnet_pose = gnu_result.get('pose')
+                # 자세 출처 메타 (manual vs ppnet)
+                if ppnet_pose:
+                    ppnet_pose = {**ppnet_pose}
+                    ppnet_pose.setdefault('source', 'ppnet')
+                coord = gnu_result.get('coordinate_system') or {}
+                # 응답 스키마를 VP 모드와 동일하게 정규화
+                uw_defs = []
+                for ud in gnu_result.get('unwrapped_defects', []) or []:
+                    uw_defs.append({
+                        'label': ud.get('label'),
+                        'area_px': ud.get('area_px'),
+                        'area_mm2': ud.get('area_mm2'),
+                        'area_cm2': ud.get('area_cm2'),
+                        'area_ratio_pct': ud.get('area_ratio_pct'),
+                        'area_ratio_visible_pct': ud.get('area_ratio_visible_pct'),
+                        'weighted_ratio_pct': ud.get('weighted_ratio_pct'),
+                        'weighted_area_mm2': ud.get('weighted_area_mm2'),
+                        'avg_camera_distance_mm': ud.get('avg_camera_distance_mm'),
+                        'bbox_width_mm': ud.get('bbox_width_mm'),
+                        'bbox_height_mm': ud.get('bbox_height_mm'),
+                        'aspect_wh': ud.get('aspect_wh'),
+                        'polygon_fill_pct': ud.get('polygon_fill_pct'),
+                    })
+                # 프레임 면적비 (다중 척도: 화면 픽셀, 가시 표면, 메시 전체)
+                frame_area_ratio = _compute_frame_area_ratio(
+                    [{'area_mm2': d.get('area_mm2') or 0} for d in uw_defs], coord,
+                    polygons=[d['polygon'] for d in defects],
+                    image_size=(frame.shape[1], frame.shape[0]),
+                    visible_pipe_area_mm2=gnu_result.get('visible_unwrap_mm2'),
+                )
+                unwrap_out = {
+                    'method': 'ppnet',
+                    'unwrapped_image': (gnu_result.get('unwrapped_overlay_b64')
+                                          or gnu_result.get('unwrapped_rgb_b64')),
+                    'coordinate_system': coord,
+                    'defects': uw_defs,
+                    'visible_coverage_pct': gnu_result.get('visible_coverage_pct'),
+                    'visible_unwrap_mm2': gnu_result.get('visible_unwrap_mm2'),
+                    'unwrap_total_mm2': gnu_result.get('unwrap_total_mm2'),
+                }
+                if not depth_preview and gnu_result.get('depth_heatmap_b64'):
+                    depth_preview = gnu_result['depth_heatmap_b64']
+                # PPNet 자세를 vp 정보로 보강 (UI 표시용)
+                if ppnet_pose:
+                    vp = {
+                        **vp,
+                        'vp_x': ppnet_pose['vp_x'],
+                        'vp_y': ppnet_pose['vp_y'],
+                        'angle': ppnet_pose['angle'],
+                        'step': ppnet_pose['step'],
+                        'method': 'ppnet',
+                        'confidence': 1.0,
+                    }
+            except Exception as pe:
+                import traceback
+                traceback.print_exc()
+                print(f'[quick-sizing] ppnet unwrap failed: {pe}')
+
+        # 'none' 모드 또는 unwrap 실패해도 화면 픽셀 비율은 계산
+        if frame_area_ratio is None and defects:
+            frame_area_ratio = _compute_frame_area_ratio(
+                [], {},
+                polygons=[d['polygon'] for d in defects],
+                image_size=(frame.shape[1], frame.shape[0]),
+            )
+
+        # 기준값 vs 측정값 → 오차
+        uw_defs_for_acc = (unwrap_out or {}).get('defects') if unwrap_out else None
+        accuracy = _compute_accuracy(measurements, uw_defs_for_acc, ground_truth)
+
+        # JSONL 로그 (요청+요약 결과만, 큰 base64는 길이만 기록)
+        if log_enabled:
+            try:
+                _quick_sizing_log({
+                    'ts': time.time(),
+                    'ts_iso': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime()),
+                    'token': token,
+                    'session_kind': sess.get('kind'),
+                    'note': log_note,
+                    'request': {
+                        'frame_number': int(data.get('frame_number', 0)),
+                        'pipe_diameter_mm': pipe_diameter_mm,
+                        'section_length_mm': section_length_mm,
+                        'max_depth_mm': max_depth_mm,
+                        'unwrap_method': unwrap_method,
+                        'use_depth': use_depth,
+                        'vp_input': data.get('vp'),
+                        'polygons_n': len(defects),
+                        'polygon_points': [len(d['polygon']) // 2 for d in defects],
+                        # 폴리곤 좌표 전체 저장 — 추후 종횡비/회전 분석 등에 사용
+                        'polygons': [d['polygon'] for d in defects],
+                        'ground_truth': ground_truth,
+                    },
+                    'video_path': video_path_abs,        # 복원용 — 디스크 영상 경로
+                    'session_kind': sess.get('kind'),
+                    'result': {
+                        'frame_number': actual,
+                        'vp_resolved': vp,
+                        'ppnet_pose': ppnet_pose,
+                        'measurements': [{k: v for k, v in m.items()
+                                          if k not in ('vp', 'center_px')} for m in measurements],
+                        'area_ratio': area_ratio_full,
+                        'frame_area_ratio': frame_area_ratio,
+                        'unwrap_defects': uw_defs_for_acc,
+                        'unwrap_coord': (unwrap_out or {}).get('coordinate_system'),
+                        'accuracy': accuracy,
+                        'depth_preview_size': len(depth_preview or ''),
+                        'unwrap_image_size': len((unwrap_out or {}).get('unwrapped_image') or ''),
+                    },
+                })
+            except Exception as le:
+                print(f'[quick-sizing] log compose failed: {le}')
+
+        return ({
+            'success': True,
+            'frame_number': actual,
+            'video_path': video_path_abs,
+            'vp': vp,
+            'ppnet_pose': ppnet_pose,
+            'unwrap_method': unwrap_method,
+            'pipe_diameter_mm': pipe_diameter_mm,
+            'section_length_mm': section_length_mm,
+            'max_depth_mm': max_depth_mm,
+            'camera_f_used': camera_f_override,  # 사용된 카메라 f (None이면 기본 프리셋)
+            'measurements': measurements,
+            'area_ratio': area_ratio_full,
+            'frame_area_ratio': frame_area_ratio,
+            'unwrap': unwrap_out,
+            'depth_preview': depth_preview,
+            'accuracy': accuracy,
+        }, 200)
+    except FileNotFoundError as e:
+        return ({'success': False, 'error': str(e)}, 404)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return ({'success': False, 'error': str(e)}, 500)
+
+
+@app.route('/api/quick-sizing/analyze', methods=['POST'])
+def quick_sizing_analyze():
+    """HTTP 래퍼 — 단일 프레임 분석. (호환성 유지)"""
+    body, status = _quick_sizing_analyze_impl(request.json or {})
+    return jsonify(body), status
+
+
+@app.route('/api/quick-sizing/calibrate-f', methods=['POST'])
+def quick_sizing_calibrate_f():
+    """카메라 초점거리(f) 자동 캘리브레이션.
+
+    GT 면적이 입력된 폴리곤(들) 의 측정값과 기준값이 일치하도록 f 를 도출.
+
+    PPNet 3D 면적 = 실제 면적 × (f_가정 / f_실제)²
+    → f_실제 = f_가정 × √(GT / measured)
+
+    1-2회 반복으로 수렴.
+
+    JSON: 일반 analyze 와 동일 (token, polygons, ground_truth, unwrap_method='ppnet' 권장 등)
+    응답: { success, history: [...], recommended_f, fov_h_deg, final_measured, final_error_pct }
+    """
+    try:
+        data = request.json or {}
+        # unwrap_method 강제 ppnet (Calibrator/VP 는 f 영향 없음)
+        data['unwrap_method'] = 'ppnet'
+        data['log_enabled'] = False
+        # GT 검증
+        gt_list = data.get('ground_truth') or []
+        gt_pairs = []  # (idx, gt_area_mm2)
+        for i, g in enumerate(gt_list):
+            if isinstance(g, dict) and g.get('area_mm2'):
+                gt_pairs.append((i, float(g['area_mm2'])))
+        if not gt_pairs:
+            return jsonify({'success': False, 'error': 'ground_truth area 가 입력된 폴리곤이 최소 1개 필요'}), 400
+
+        # 시작 f
+        start_f = data.get('camera_f')
+        if start_f is None:
+            # 영상 크기로 기본 프리셋 결정
+            from gnu_mapping import CAMERA_PARAMS, detect_resolution
+            token = data.get('token')
+            sess = _quick_sizing_get_session(token)
+            w, h = sess.get('width', 1280), sess.get('height', 720)
+            res_key = detect_resolution(w, h)
+            start_f = float(CAMERA_PARAMS[res_key]['f'])
+
+        history = []
+        current_f = float(start_f)
+        max_iter = 6  # 직접 공식이지만 비선형 인자(자세, max_depth 등) 때문에 1-2회로 안 수렴할 수 있음
+        last_measured = None
+
+        for it in range(max_iter):
+            data['camera_f'] = current_f
+            body, status = _quick_sizing_analyze_impl(data)
+            if not body.get('success'):
+                return jsonify({'success': False, 'error': body.get('error') or 'analyze failed',
+                                  'iteration': it}), 500
+            # 측정 면적 — GT 가 있는 폴리곤들의 평균 비율 (geometric)
+            uw_defs = ((body.get('unwrap') or {}).get('defects')) or []
+            ratios = []
+            details = []
+            for idx, gt_area in gt_pairs:
+                if idx < len(uw_defs) and uw_defs[idx].get('area_mm2'):
+                    measured = float(uw_defs[idx]['area_mm2'])
+                    ratios.append(measured / gt_area)
+                    details.append({'idx': idx, 'measured': measured, 'gt': gt_area,
+                                     'ratio': round(measured / gt_area, 4)})
+            if not ratios:
+                return jsonify({'success': False, 'error': 'measured area unavailable',
+                                  'iteration': it, 'history': history}), 500
+
+            # 기하 평균 비율 (여러 GT 시 균형)
+            import math
+            geom_ratio = math.exp(sum(math.log(r) for r in ratios) / len(ratios))
+            err_pct = (geom_ratio - 1.0) * 100
+            history.append({
+                'iter': it, 'f_used': round(current_f, 2),
+                'geom_ratio': round(geom_ratio, 4),
+                'err_pct': round(err_pct, 2),
+                'details': details,
+            })
+            last_measured = details
+
+            # 수렴 판정
+            if abs(err_pct) < 1.0:
+                break
+            # 다음 f 추정
+            current_f = current_f * math.sqrt(1.0 / geom_ratio)
+
+        # FOV 계산 (수평)
+        w = sess.get('width', 1280) if 'sess' in dir() else 1280
+        import math
+        fov_h = math.degrees(2 * math.atan(w / (2 * current_f)))
+
+        return jsonify({
+            'success': True,
+            'history': history,
+            'recommended_f': round(current_f, 2),
+            'start_f': round(start_f, 2),
+            'fov_h_deg': round(fov_h, 1),
+            'final_details': last_measured,
+            'iterations': len(history),
+        })
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/batch-analyze', methods=['POST'])
+def quick_sizing_batch_analyze():
+    """동일 폴리곤을 여러 프레임에 적용 → 일관성 비교.
+
+    요청 JSON: {
+      token, frame_numbers: [int...],
+      polygons, pipe_diameter_mm, section_length_mm, max_depth_mm,
+      unwrap_method, use_depth, use_manual_pose, vp,
+      ground_truth, include_unwrap_image (기본 false)
+    }
+    응답: { success, count, frames: [...], summary: {pose_stability, per_polygon} }
+    """
+    try:
+        data = request.json or {}
+        frames = data.get('frame_numbers') or []
+        if not isinstance(frames, list) or not frames:
+            return jsonify({'success': False, 'error': 'frame_numbers required (non-empty list)'}), 400
+        include_uw_img = bool(data.get('include_unwrap_image', False))
+
+        per_frame = []
+        for fn in frames:
+            try:
+                d = {**data, 'frame_number': int(fn)}
+                d.pop('frame_numbers', None)
+                d['log_enabled'] = False  # batch 중 로깅 안 함
+                body, status = _quick_sizing_analyze_impl(d)
+            except Exception as e:
+                per_frame.append({'frame_number': fn, 'success': False, 'error': str(e)})
+                continue
+            if not body.get('success'):
+                per_frame.append({'frame_number': fn, 'success': False,
+                                   'error': body.get('error')})
+                continue
+            # 슬림화 (큰 이미지 base64 제외)
+            slim_uw = None
+            if body.get('unwrap'):
+                uw = body['unwrap']
+                slim_uw = {
+                    'defects': uw.get('defects'),
+                    'coordinate_system': uw.get('coordinate_system'),
+                    'visible_coverage_pct': uw.get('visible_coverage_pct'),
+                }
+                if include_uw_img:
+                    slim_uw['unwrapped_image'] = uw.get('unwrapped_image')
+            per_frame.append({
+                'success': True,
+                'frame_number': body.get('frame_number'),
+                'vp': body.get('vp'),
+                'ppnet_pose': body.get('ppnet_pose'),
+                'measurements': body.get('measurements'),
+                'unwrap': slim_uw,
+                'area_ratio': body.get('area_ratio'),
+                'frame_area_ratio': body.get('frame_area_ratio'),
+                'accuracy': body.get('accuracy'),
+            })
+
+        summary = _batch_summary(per_frame)
+        return jsonify({
+            'success': True,
+            'count': len(per_frame),
+            'frames': per_frame,
+            'summary': summary,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _batch_summary(per_frame):
+    """프레임별 결과에서 통계 산출."""
+    import statistics
+    valid = [r for r in per_frame if r.get('success')]
+    if not valid:
+        return None
+
+    # PPNet 자세 안정성
+    angles = [r['ppnet_pose']['angle'] for r in valid
+              if r.get('ppnet_pose') and r['ppnet_pose'].get('angle') is not None]
+    steps = [r['ppnet_pose']['step'] for r in valid
+             if r.get('ppnet_pose') and r['ppnet_pose'].get('step') is not None]
+    vp_xs = [r['ppnet_pose']['vp_x'] for r in valid if r.get('ppnet_pose')]
+    vp_ys = [r['ppnet_pose']['vp_y'] for r in valid if r.get('ppnet_pose')]
+
+    def stats(arr):
+        if not arr:
+            return None
+        return {
+            'mean': round(statistics.mean(arr), 3),
+            'std': round(statistics.stdev(arr), 3) if len(arr) >= 2 else 0.0,
+            'min': round(min(arr), 3),
+            'max': round(max(arr), 3),
+        }
+
+    pose_stab = None
+    if angles and steps:
+        pose_stab = {
+            'n': len(angles),
+            'vp_x': stats(vp_xs),
+            'vp_y': stats(vp_ys),
+            'angle': stats(angles),
+            'step': stats(steps),
+        }
+
+    # 폴리곤별 면적 일관성
+    n_polys = 0
+    for r in valid:
+        n_polys = max(n_polys, len(r.get('measurements') or []))
+
+    per_poly = []
+    for pi in range(n_polys):
+        cal_areas = []
+        uw_areas = []
+        uw_aspects = []
+        gt_area = None
+        for r in valid:
+            ms = r.get('measurements') or []
+            if pi < len(ms) and not ms[pi].get('error'):
+                a = ms[pi].get('real_area_mm2')
+                if a is not None:
+                    cal_areas.append(a)
+            uw_defs = ((r.get('unwrap') or {}).get('defects')) or []
+            if pi < len(uw_defs):
+                a = uw_defs[pi].get('area_mm2')
+                if a is not None:
+                    uw_areas.append(a)
+                asp = uw_defs[pi].get('aspect_wh')
+                if asp is not None:
+                    uw_aspects.append(asp)
+            # GT
+            acc = r.get('accuracy') or {}
+            for row in acc.get('rows') or []:
+                if row.get('index') == pi and gt_area is None:
+                    gt = row.get('gt') or {}
+                    if gt.get('area_mm2'):
+                        gt_area = gt['area_mm2']
+
+        entry = {'index': pi}
+        if cal_areas:
+            s = stats(cal_areas)
+            s['cv_pct'] = round(s['std'] / s['mean'] * 100, 2) if s['mean'] else None
+            if gt_area:
+                s['mape_pct'] = round(
+                    sum(abs(a - gt_area) / gt_area for a in cal_areas) /
+                    len(cal_areas) * 100, 2)
+            entry['calibrator'] = s
+        if uw_areas:
+            s = stats(uw_areas)
+            s['cv_pct'] = round(s['std'] / s['mean'] * 100, 2) if s['mean'] else None
+            if gt_area:
+                s['mape_pct'] = round(
+                    sum(abs(a - gt_area) / gt_area for a in uw_areas) /
+                    len(uw_areas) * 100, 2)
+            entry['unwrap'] = s
+        if uw_aspects:
+            entry['aspect_wh'] = stats(uw_aspects)
+        if gt_area:
+            entry['gt_area_mm2'] = gt_area
+        per_poly.append(entry)
+
+    return {'pose_stability': pose_stab, 'per_polygon': per_poly,
+            'n_frames_valid': len(valid), 'n_frames_total': len(per_frame)}
+
+
+@app.route('/api/quick-sizing/restore-session', methods=['POST'])
+def quick_sizing_restore_session():
+    """디스크에 남아 있는 영상 파일로 새 세션 부착.
+
+    요청: { video_path: str }
+    응답: { success, token, kind, frame_count, fps, width, height }
+    """
+    try:
+        data = request.json or {}
+        vpath = data.get('video_path')
+        if not vpath:
+            return jsonify({'success': False, 'error': 'video_path required'}), 400
+        # 보안: QUICK_SIZING_DIR 하위만 허용
+        try:
+            vpath_resolved = str(_Path(vpath).resolve())
+            qs_root = str(QUICK_SIZING_DIR.resolve())
+            if not vpath_resolved.startswith(qs_root):
+                return jsonify({'success': False, 'error': 'path outside quick_sizing dir'}), 403
+        except Exception:
+            return jsonify({'success': False, 'error': 'invalid path'}), 400
+        if not os.path.exists(vpath_resolved):
+            return jsonify({'success': False, 'error': 'video file no longer exists',
+                             'requires_reupload': True}), 404
+
+        # 이미 메모리에 같은 path 의 세션이 있으면 재사용
+        for t, s in QUICK_SIZING_SESSIONS.items():
+            if s.get('path') == vpath_resolved:
+                return jsonify({'success': True, 'token': t, 'kind': s['kind'],
+                                  'frame_count': s['frame_count'], 'fps': s['fps'],
+                                  'width': s['width'], 'height': s['height'],
+                                  'reused': True})
+
+        token, meta = _quick_sizing_attach_session(vpath_resolved)
+        return jsonify({'success': True, 'token': token, 'kind': meta['kind'],
+                          'frame_count': meta['frame_count'], 'fps': meta['fps'],
+                          'width': meta['width'], 'height': meta['height'],
+                          'reused': False})
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e), 'requires_reupload': True}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/snapshot', methods=['GET'])
+def quick_sizing_snapshot():
+    """저장된 분석 시점 프레임 스냅샷 반환 (base64 JSON).
+
+    Query: ?file=<filename> 또는 ?token=...&frame=...
+    """
+    try:
+        fname = request.args.get('file') or request.args.get('path')
+        if not fname:
+            token = request.args.get('token')
+            frame = request.args.get('frame')
+            if not token or frame is None:
+                return jsonify({'success': False, 'error': 'file or (token,frame) required'}), 400
+            fname = f'{token}_{int(frame):06d}.jpg'
+        if '/' in fname or '\\' in fname or '..' in fname:
+            return jsonify({'success': False, 'error': 'invalid filename'}), 400
+        path = QUICK_SIZING_SNAPSHOT_DIR / fname
+        if not path.exists():
+            return jsonify({'success': False, 'error': 'not found'}), 404
+        with open(path, 'rb') as f:
+            data = f.read()
+        return jsonify({
+            'success': True,
+            'frame_base64': base64.b64encode(data).decode('utf-8'),
+            'filename': fname,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/log', methods=['GET'])
+def quick_sizing_log_list():
+    """JSONL 분석 로그 조회. 쿼리: limit, since (iso 또는 ts)."""
+    try:
+        limit = int(request.args.get('limit', 200))
+        since = request.args.get('since')
+        since_ts = None
+        if since:
+            try:
+                since_ts = float(since)
+            except ValueError:
+                try:
+                    since_ts = time.mktime(time.strptime(since[:19], '%Y-%m-%dT%H:%M:%S'))
+                except Exception:
+                    since_ts = None
+
+        if not QUICK_SIZING_LOG_PATH.exists():
+            return jsonify({'success': True, 'records': [], 'total': 0})
+
+        records = []
+        with open(QUICK_SIZING_LOG_PATH, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    if since_ts is not None and r.get('ts', 0) < since_ts:
+                        continue
+                    records.append(r)
+                except json.JSONDecodeError:
+                    continue
+        total = len(records)
+        if limit > 0 and total > limit:
+            records = records[-limit:]
+        return jsonify({'success': True, 'records': records, 'total': total})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/log', methods=['DELETE'])
+def quick_sizing_log_clear():
+    """JSONL 분석 로그 비우기. 영상/이미지/스냅샷 파일도 함께 일괄 정리.
+
+    Query: ?keep_files=1 이면 파일은 남기고 로그만 비움.
+    """
+    try:
+        keep_files = request.args.get('keep_files') in ('1', 'true', 'yes')
+        if QUICK_SIZING_LOG_PATH.exists():
+            QUICK_SIZING_LOG_PATH.unlink()
+
+        n_videos = n_snap = 0
+        if not keep_files:
+            # 영상/이미지 파일 (확장자 무관, QUICK_SIZING_DIR 직속 파일만)
+            for f in QUICK_SIZING_DIR.iterdir():
+                if f.is_file() and f.name != 'analyze_log.jsonl':
+                    try:
+                        f.unlink(); n_videos += 1
+                    except Exception:
+                        pass
+            # 스냅샷
+            if QUICK_SIZING_SNAPSHOT_DIR.exists():
+                for snap in QUICK_SIZING_SNAPSHOT_DIR.glob('*.jpg'):
+                    try:
+                        snap.unlink(); n_snap += 1
+                    except Exception:
+                        pass
+            # 메모리 세션도 비움
+            QUICK_SIZING_SESSIONS.clear()
+
+        return jsonify({'success': True,
+                          'videos_removed': n_videos,
+                          'snapshots_removed': n_snap,
+                          'kept_files': keep_files})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/quick-sizing/release', methods=['POST'])
+def quick_sizing_release():
+    """세션 명시적 정리. 메모리 세션만 비움. 디스크 영상은 보존 (이력 복원용).
+
+    디스크 정리는 'log 비우기' 시 일괄 수행.
+    """
+    try:
+        data = request.json or {}
+        token = data.get('token')
+        if not token:
+            return jsonify({'success': False, 'error': 'token required'}), 400
+        QUICK_SIZING_SESSIONS.pop(token, None)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/ai/inference_raw', methods=['POST'])
 def run_inference_raw():
     """Base64 이미지로 직접 SegFormer 추론 (pipe_survey용)"""
@@ -1383,6 +2472,278 @@ def run_inference_raw():
             })
 
         except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            inference_stats['active_requests'] -= 1
+
+
+@app.route('/api/gnu-mapping/pipe-presets', methods=['GET'])
+def gnu_mapping_pipe_presets():
+    """관종별 직경 프리셋 (현장 관경 + 논문 시편)"""
+    from gnu_mapping import PIPE_DIMENSIONS, PIPE_GROUP_LABELS
+    return jsonify({
+        'success': True,
+        'presets': PIPE_DIMENSIONS,
+        'group_labels': PIPE_GROUP_LABELS,
+    })
+
+
+@app.route('/api/gnu-mapping/evaluate/sample', methods=['POST'])
+def gnu_mapping_evaluate_sample():
+    """단일 샘플 상세 결과 — 원본/전개도/오버레이 + 메트릭
+
+    Body:
+      img_path, mask_path: 샘플 파일 경로 (evaluate 응답에서 받은 값)
+      pipe_type or pipe_diameter_mm, water, pixel_per_mm, max_depth_mm
+    """
+    try:
+        from gnu_mapping import PerformanceEvaluator, PIPE_DIMENSIONS
+
+        data = request.json or {}
+        img_path = data.get('img_path')
+        mask_path = data.get('mask_path')
+        if not img_path or not os.path.exists(img_path):
+            return jsonify({'success': False, 'error': 'img_path not found'}), 400
+        if not mask_path or not os.path.exists(mask_path):
+            return jsonify({'success': False, 'error': 'mask_path not found'}), 400
+
+        pipe_type = data.get('pipe_type')
+        pipe_diameter = data.get('pipe_diameter_mm')
+        water = data.get('water')
+        pixel_per_mm = data.get('pixel_per_mm', 10.0)
+        max_depth_mm = data.get('max_depth_mm', 300)
+
+        if pipe_type and pipe_type in PIPE_DIMENSIONS:
+            preset = PIPE_DIMENSIONS[pipe_type]
+            if pipe_diameter is None:
+                pipe_diameter = preset['diameter_mm']
+            if water is None:
+                water = preset['water_default']
+        if pipe_diameter is None:
+            return jsonify({'success': False,
+                            'error': 'pipe_type or pipe_diameter_mm required'}), 400
+
+        ppnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'weights', 'ppnet.pt')
+        if not os.path.exists(ppnet_path):
+            return jsonify({'success': False, 'error': 'PPNet model not found'}), 400
+
+        evaluator = PerformanceEvaluator(
+            ppnet_model_path=ppnet_path,
+            pipe_diameter_mm=pipe_diameter,
+            water=bool(water),
+            pixel_per_mm=pixel_per_mm,
+            max_depth_mm=max_depth_mm,
+        )
+        detail = evaluator.evaluate_sample(img_path, mask_path)
+        return jsonify({'success': True, 'pipe_type': pipe_type, **detail})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/gnu-mapping/evaluate', methods=['POST'])
+def gnu_mapping_evaluate():
+    """MAPE 평가 — Reference Marker(19mm) 매핑 정확도
+
+    Body:
+      directory: 이미지/마스크 페어가 있는 절대 경로 (필수)
+      pipe_type: CIP|PVC|CP|PP (선택, diameter/water 자동 설정)
+      pipe_diameter_mm, water, pixel_per_mm, max_depth_mm (선택)
+    """
+    try:
+        from gnu_mapping import PerformanceEvaluator, PIPE_DIMENSIONS
+
+        data = request.json or {}
+        directory = data.get('directory')
+        if not directory or not os.path.isdir(directory):
+            return jsonify({'success': False, 'error': 'valid directory required'}), 400
+
+        pipe_type = data.get('pipe_type')
+        pipe_diameter = data.get('pipe_diameter_mm')
+        water = data.get('water')
+        pixel_per_mm = data.get('pixel_per_mm', 10.0)
+        max_depth_mm = data.get('max_depth_mm', 300)
+
+        if pipe_type and pipe_type in PIPE_DIMENSIONS:
+            preset = PIPE_DIMENSIONS[pipe_type]
+            if pipe_diameter is None:
+                pipe_diameter = preset['diameter_mm']
+            if water is None:
+                water = preset['water_default']
+
+        if pipe_diameter is None:
+            return jsonify({'success': False,
+                            'error': 'pipe_type or pipe_diameter_mm required'}), 400
+
+        ppnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'weights', 'ppnet.pt')
+        if not os.path.exists(ppnet_path):
+            return jsonify({'success': False, 'error': 'PPNet model not found'}), 400
+
+        evaluator = PerformanceEvaluator(
+            ppnet_model_path=ppnet_path,
+            pipe_diameter_mm=pipe_diameter,
+            water=bool(water),
+            pixel_per_mm=pixel_per_mm,
+            max_depth_mm=max_depth_mm,
+        )
+        result = evaluator.evaluate(directory)
+        return jsonify({
+            'success': True,
+            'pipe_type': pipe_type,
+            **result,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/gnu-mapping/process', methods=['POST'])
+def gnu_mapping_process():
+    """GNU Mapping — 영상에서 프레임 추출 + PPNet + 3D→2D 전개도"""
+    try:
+        from gnu_mapping import GNUMappingEngine
+        import math
+
+        data = request.json
+
+        # 입력: video_path + frame_number 또는 image_base64
+        video_path = data.get('video_path')
+        frame_number = data.get('frame_number', 0)
+        img_b64 = data.get('image_base64')
+
+        pipe_type = data.get('pipe_type')
+        pipe_diameter = data.get('pipe_diameter_mm', 80)
+        water = data.get('water', False)
+        pixel_per_mm = data.get('pixel_per_mm', 10.0)
+        max_depth_mm = data.get('max_depth_mm', 300)
+
+        # pipe_type 선택 시 프리셋 우선 적용
+        from gnu_mapping import PIPE_DIMENSIONS as _PRESETS
+        if pipe_type and pipe_type in _PRESETS:
+            preset = _PRESETS[pipe_type]
+            pipe_diameter = preset['diameter_mm']
+            if 'water' not in data:
+                water = preset['water_default']
+
+        # 프레임 로드
+        if video_path and os.path.exists(video_path):
+            cap = cv2.VideoCapture(video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame_bgr = cap.read()
+            cap.release()
+            if not ret:
+                return jsonify({'success': False, 'error': f'Failed to read frame {frame_number}'}), 400
+        elif img_b64:
+            img_bytes = base64.b64decode(img_b64)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame_bgr is None:
+                return jsonify({'success': False, 'error': 'Failed to decode image'}), 400
+        else:
+            return jsonify({'success': False, 'error': 'video_path or image_base64 required'}), 400
+
+        h, w = frame_bgr.shape[:2]
+
+        # PPNet 모델 경로
+        ppnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights', 'ppnet.pt')
+        if not os.path.exists(ppnet_path):
+            return jsonify({'success': False, 'error': 'PPNet model not found'}), 400
+
+        # ── 어노테이션 → 결함 마스크 변환 ──
+        defect_masks = []
+        annotations = data.get('annotations', [])
+        if annotations:
+            for ann in annotations:
+                polygon = ann.get('polygon', [])
+                label = ann.get('label', ann.get('category', 'defect'))
+                if not polygon or len(polygon) < 3:
+                    continue
+                mask = np.zeros((h, w), dtype=np.uint8)
+                pts = []
+                for p in polygon:
+                    if isinstance(p, dict):
+                        pts.append([int(p.get('x', 0)), int(p.get('y', 0))])
+                    elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                        pts.append([int(p[0]), int(p[1])])
+                if len(pts) >= 3:
+                    cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
+                    defect_masks.append({'label': label, 'mask': mask})
+
+        # ── GNU Mapping ──
+        engine = GNUMappingEngine(
+            ppnet_model_path=ppnet_path,
+            pipe_diameter_mm=pipe_diameter,
+            water=water,
+            pixel_per_mm=pixel_per_mm,
+            max_depth_mm=max_depth_mm,
+        )
+        include_depth_map = bool(data.get('include_depth_map', False))
+        gnu_result = engine.process_frame(frame_bgr, defect_masks or None,
+                                           include_depth_map=include_depth_map)
+
+        # 원본 프레임 (base64)
+        _, fbuf = cv2.imencode('.jpg', frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        frame_b64 = base64.b64encode(fbuf).decode('utf-8')
+
+        return jsonify({
+            'success': True,
+            **gnu_result,
+            'frame_b64': frame_b64,
+            'frame_width': w,
+            'frame_height': h,
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/survey/infer', methods=['POST'])
+def survey_yolo_infer():
+    """Survey용 YOLO instance segmentation 추론 — base64 이미지 입력"""
+    global yolo_model, yolo_initialized
+
+    with inference_lock:
+        inference_stats['total_requests'] += 1
+        inference_stats['active_requests'] += 1
+        try:
+            if not yolo_initialized or yolo_model is None:
+                # YOLO가 아직 초기화 안 된 경우 자동 로드 시도
+                if not load_yolo_model():
+                    return jsonify({'success': False, 'error': 'YOLO model not initialized'}), 400
+
+            data = request.json
+            img_b64 = data.get('image_base64')
+            if not img_b64:
+                return jsonify({'success': False, 'error': 'image_base64 required'}), 400
+
+            img_bytes = base64.b64decode(img_b64)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return jsonify({'success': False, 'error': 'Failed to decode image'}), 400
+
+            height, width = frame.shape[:2]
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # YOLO 추론
+            yolo_results = yolo_model(frame_rgb, verbose=False, stream=True)
+            result = next(yolo_results)
+
+            from pipe_survey import yolo_result_to_detections
+            detections = yolo_result_to_detections(result, width, height)
+
+            return jsonify({
+                'success': True,
+                'width': width,
+                'height': height,
+                'detections': detections,
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             return jsonify({'success': False, 'error': str(e)}), 500
         finally:
             inference_stats['active_requests'] -= 1

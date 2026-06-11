@@ -40,9 +40,10 @@ DEFECT_COLORS_BGR = {
 DEFAULT_COLOR_BGR = (255, 128, 0)  # cyan fallback
 
 
-def _get_defect_color(class_name):
+def _get_defect_color(class_name, colors=None):
+    palette = colors if colors is not None else DEFECT_COLORS_BGR
     lower = class_name.lower()
-    for key, color in DEFECT_COLORS_BGR.items():
+    for key, color in palette.items():
         if key in lower:
             return color
     return DEFAULT_COLOR_BGR
@@ -126,7 +127,7 @@ class PipeSurveyAnalyzer:
     """정지 구간 기반으로 영상을 분석하여 연속 전개도 + 결함 분포를 생성한다."""
 
     def __init__(self, gpu=True, gpu_server_url='http://localhost:5004',
-                 infer_fn=None, distance_fn=None):
+                 infer_fn=None, distance_fn=None, colors=None):
         """
         Args:
             gpu_server_url: infer_fn 미지정 시 사용할 GPU 서버 주소 (HTTP 경로)
@@ -134,10 +135,12 @@ class PipeSurveyAnalyzer:
                       로컬 추론으로 동작 (make_local_yolo_infer 참고)
             distance_fn: fn(frame_bgr) -> float|None. 지정하면 stop별 대표 프레임에서
                          OSD 거리(m)를 읽어 stop['distance_m']에 기록
+            colors: 결함 클래스 색상 팔레트 {부분문자열: BGR}. 미지정 시 모듈 기본값
         """
         self.gpu_server_url = gpu_server_url
         self.infer_fn = infer_fn
         self.distance_fn = distance_fn
+        self.colors = colors
 
     # ════════════════════════════════════════════
     #  메인 분석
@@ -650,7 +653,7 @@ class PipeSurveyAnalyzer:
     def _draw_defect_on_strip(self, strip, polygon, label, unwrapper,
                               y_start, y_end, strip_height, output_width):
         """전개 strip 위에 결함 폴리곤 오버레이"""
-        color = _get_defect_color(label)
+        color = _get_defect_color(label, self.colors)
 
         if isinstance(polygon[0], (list, tuple)):
             flat = []

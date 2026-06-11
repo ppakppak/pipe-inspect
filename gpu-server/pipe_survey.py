@@ -252,6 +252,7 @@ class PipeSurveyAnalyzer:
         strips_clean = []
         strips_overlay = []
         strips_annular = []
+        strip_stops = []      # strip과 1:1 대응하는 stop (프레임 read 실패 시 정렬 유지용)
         last_distance = None
 
         for si, stop in enumerate(stops):
@@ -314,6 +315,7 @@ class PipeSurveyAnalyzer:
 
             strips_clean.append(strip_clean)
             strips_overlay.append(strip_over)
+            strip_stops.append(stop)
 
             # Annular ring strip
             ann_strip = self._extract_annular_strip(frame, vp_x, vp_y, 3)
@@ -339,8 +341,8 @@ class PipeSurveyAnalyzer:
         stripmap_path = None
 
         if strips_clean:
-            panorama = np.vstack(strips_clean)
-            panorama_over = np.vstack(strips_overlay)
+            panorama = self._stack_strips_by_distance(strips_clean, strip_stops)
+            panorama_over = self._stack_strips_by_distance(strips_overlay, strip_stops)
             panorama_path = os.path.join(output_dir, f'{video_name}_unwrap.jpg')
             panorama_overlay_path = os.path.join(output_dir, f'{video_name}_unwrap_overlay.jpg')
             cv2.imwrite(panorama_path, panorama, [cv2.IMWRITE_JPEG_QUALITY, 92])
@@ -646,6 +648,58 @@ class PipeSurveyAnalyzer:
         blurred = cv2.GaussianBlur(gray, (w // 4 * 2 + 1, h // 4 * 2 + 1), 0)
         _, _, min_loc, _ = cv2.minMaxLoc(blurred)
         return min_loc
+
+    # ════════════════════════════════════════════
+    #  전개도 조립 (거리 비례 간격)
+    # ════════════════════════════════════════════
+    def _stack_strips_by_distance(self, strips, strip_stops,
+                                  gap_avg_px=36, label_w=64, bg=(24, 24, 24)):
+        """strip들을 stop 거리 간격에 비례한 세로 간격으로 쌓는다.
+
+        - 층(strip) 높이는 그대로 — 간격(빈 공간)이 거리 차에 비례
+        - 왼쪽 label_w 여백에 stop별 OSD 거리 라벨 표시
+        - 유효 거리(distance_m)가 2개 미만이면 간격 없이 쌓음 (기존 동작)
+        - 누락 거리는 이웃 stop 거리로 선형 보간
+
+        Args:
+            gap_avg_px: 간격 평균 픽셀 (총 간격 = gap_avg_px × (n-1)을 거리 비례 배분)
+        """
+        n = len(strips)
+        if n == 0:
+            return None
+
+        w = strips[0].shape[1]
+        dists = [s.get('distance_m') for s in strip_stops]
+        known = [(i, d) for i, d in enumerate(dists) if d is not None]
+
+        if len(known) >= 2:
+            xs = [i for i, _ in known]
+            ys = [d for _, d in known]
+            filled = list(np.interp(np.arange(n), xs, ys))
+            gaps_m = [abs(filled[i + 1] - filled[i]) for i in range(n - 1)]
+            total_m = sum(gaps_m)
+            if total_m > 0:
+                k = gap_avg_px * (n - 1) / total_m
+                gaps_px = [max(2, int(round(g * k))) for g in gaps_m]
+            else:
+                gaps_px = [2] * (n - 1)
+        else:
+            gaps_px = [0] * max(0, n - 1)
+
+        rows = []
+        for i, strip in enumerate(strips):
+            h = strip.shape[0]
+            row = np.full((h, label_w + w, 3), bg, dtype=np.uint8)
+            row[:, label_w:] = strip
+            d = dists[i]
+            label = f"{d:.2f}m" if d is not None else f"#{strip_stops[i].get('index', i)}"
+            cv2.putText(row, label, (2, h - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.35, (200, 200, 200), 1, cv2.LINE_AA)
+            rows.append(row)
+            if i < n - 1 and gaps_px[i] > 0:
+                rows.append(np.full((gaps_px[i], label_w + w, 3), bg, dtype=np.uint8))
+
+        return np.vstack(rows)
 
     # ════════════════════════════════════════════
     #  전개도 오버레이

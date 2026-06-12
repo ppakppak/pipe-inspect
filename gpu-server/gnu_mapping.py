@@ -494,6 +494,8 @@ class GNUMappingEngine:
         DEFECT_COLORS = {
             'rust': (60, 76, 231),      # BGR red
             'scale': (15, 196, 241),     # BGR yellow
+            'nodule': (0, 140, 255),     # BGR orange: corrosion_nodule
+            'peel': (255, 80, 80),       # BGR blue: coating_peel / peeling_silcoat
             'default': (0, 200, 255),    # BGR cyan
         }
         unwrapped_defects = []

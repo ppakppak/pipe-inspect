@@ -433,8 +433,11 @@ class GNUMappingEngine:
         self.max_depth_mm = max_depth_mm
 
     def process_frame(self, frame_bgr, defect_masks=None, include_depth_map=False,
-                      pose_override=None, camera_override=None):
+                      pose_override=None, camera_override=None, return_masks=False):
         """프레임 분석 — PPNet 추론 + 전개도 생성
+
+        return_masks=True면 결과에 전개 좌표 마스크(numpy bool, 행=축방향 깊이 z,
+        열=둘레)와 pixel_per_mm 추가 — z축 스티칭 통합 면적비(중복 제거)용.
 
         Args:
             frame_bgr: BGR numpy array
@@ -501,6 +504,7 @@ class GNUMappingEngine:
         unwrapped_defects = []
         overlay_img = unwrapped_bgr.copy()
         has_defects = False
+        defect_union = None   # 전개 좌표 결함 마스크 합집합 (return_masks용)
 
         # 전체 전개도 면적 (면적비 계산용)
         unwrap_total_px = mapper.out_w * mapper.out_h
@@ -580,6 +584,11 @@ class GNUMappingEngine:
                 mask_unwrapped = mapper.unwrap(mask, pose)
                 mask_binary = (mask_unwrapped > 0).astype(np.uint8) * 255
 
+                if return_masks:
+                    if defect_union is None:
+                        defect_union = np.zeros(mask_binary.shape, dtype=bool)
+                    defect_union |= (mask_binary > 0)
+
                 area_px = int(np.count_nonzero(mask_binary))
                 area_mm2 = round(area_px * mm_per_px * mm_per_px, 2)
 
@@ -658,7 +667,7 @@ class GNUMappingEngine:
 
         coord = mapper.get_coordinate_system()
 
-        return {
+        result = {
             'pose': {
                 'vp_x': round(vp_x, 2),
                 'vp_y': round(vp_y, 2),
@@ -688,6 +697,14 @@ class GNUMappingEngine:
             'depth_heatmap_b64': depth_heatmap_b64,
             'depth_stats': depth_stats,
         }
+
+        if return_masks:
+            result['unwrap_visible_mask'] = visible_mask_uw
+            result['unwrap_defect_mask'] = (defect_union if defect_union is not None
+                                            else np.zeros((mapper.out_h, mapper.out_w), dtype=bool))
+            result['pixel_per_mm'] = self.pixel_per_mm
+
+        return result
 
 
 # ═══════════════════════════════════════════

@@ -447,11 +447,17 @@ class PipeSurveyAnalyzer:
         ry1, ry2 = int(roi_ys.min()), int(roi_ys.max())
         rx1, rx2 = int(roi_xs.min()), int(roi_xs.max())
 
-        # 다운스케일된 ROI 마스크 (1/4 크기)
+        # 다운스케일된 ROI 마스크 (1/4 크기) — SSIM win_size(7) 이상 보장
         scale = 0.25
         roi_crop = roi_mask[ry1:ry2+1, rx1:rx2+1]
-        small_h, small_w = int(roi_crop.shape[0] * scale), int(roi_crop.shape[1] * scale)
+        small_h = max(7, int(roi_crop.shape[0] * scale))
+        small_w = max(7, int(roi_crop.shape[1] * scale))
         roi_crop_small = cv2.resize(roi_crop, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+        # 작은 ROI(작은 영상)에서도 안전한 홀수 win_size
+        ssim_win = min(7, small_h, small_w)
+        if ssim_win % 2 == 0:
+            ssim_win -= 1
+        ssim_win = max(3, ssim_win)
 
         prev_small = None
         frame_count = 0
@@ -473,7 +479,7 @@ class PipeSurveyAnalyzer:
                 small[roi_crop_small == 0] = 0
 
                 if prev_small is not None:
-                    score = ssim(prev_small, small)
+                    score = ssim(prev_small, small, win_size=ssim_win, data_range=255)
                     motion_profile.append({
                         'frame': frame_count,
                         'ssim_score': round(float(score), 4),

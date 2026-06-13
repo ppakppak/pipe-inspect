@@ -660,15 +660,12 @@ class PipeSurveyAnalyzer:
     # ════════════════════════════════════════════
     def _stack_strips_by_distance(self, strips, strip_stops,
                                   gap_avg_px=36, label_w=64, bg=(24, 24, 24)):
-        """strip들을 stop 거리 간격에 비례한 세로 간격으로 쌓는다.
+        """strip들을 거리(없으면 시각) 간격에 비례한 세로 간격으로 쌓는다.
 
-        - 층(strip) 높이는 그대로 — 간격(빈 공간)이 거리 차에 비례
-        - 왼쪽 label_w 여백에 stop별 OSD 거리 라벨 표시
-        - 유효 거리(distance_m)가 2개 미만이면 간격 없이 쌓음 (기존 동작)
-        - 누락 거리는 이웃 stop 거리로 선형 보간
-
-        Args:
-            gap_avg_px: 간격 평균 픽셀 (총 간격 = gap_avg_px × (n-1)을 거리 비례 배분)
+        - 축 우선순위: OSD 거리(distance_m, 단위 m) > 영상 시각(timestamp_sec, 단위 s)
+        - 층(strip) 높이는 그대로 — 간격(빈 공간)이 축값 차에 비례
+        - 왼쪽 label_w 여백에 축값 라벨(거리 m / 시각 s / 둘 다 없으면 #index)
+        - 유효 축값 2개 미만이면 간격 없이 쌓음
         """
         n = len(strips)
         if n == 0:
@@ -676,17 +673,26 @@ class PipeSurveyAnalyzer:
 
         w = strips[0].shape[1]
         dists = [s.get('distance_m') for s in strip_stops]
-        known = [(i, d) for i, d in enumerate(dists) if d is not None]
+        times = [s.get('timestamp_sec') for s in strip_stops]
 
+        # 거리 우선, 없으면 시각으로 fallback
+        if sum(d is not None for d in dists) >= 2:
+            axis, fmt = dists, lambda v: f"{v:.2f}m"
+        elif sum(t is not None for t in times) >= 2:
+            axis, fmt = times, lambda v: f"{v:.0f}s"
+        else:
+            axis, fmt = [None] * n, None
+
+        known = [(i, v) for i, v in enumerate(axis) if v is not None]
         if len(known) >= 2:
             xs = [i for i, _ in known]
-            ys = [d for _, d in known]
+            ys = [v for _, v in known]
             filled = list(np.interp(np.arange(n), xs, ys))
-            gaps_m = [abs(filled[i + 1] - filled[i]) for i in range(n - 1)]
-            total_m = sum(gaps_m)
-            if total_m > 0:
-                k = gap_avg_px * (n - 1) / total_m
-                gaps_px = [max(2, int(round(g * k))) for g in gaps_m]
+            gaps = [abs(filled[i + 1] - filled[i]) for i in range(n - 1)]
+            total = sum(gaps)
+            if total > 0:
+                k = gap_avg_px * (n - 1) / total
+                gaps_px = [max(2, int(round(g * k))) for g in gaps]
             else:
                 gaps_px = [2] * (n - 1)
         else:
@@ -697,8 +703,8 @@ class PipeSurveyAnalyzer:
             h = strip.shape[0]
             row = np.full((h, label_w + w, 3), bg, dtype=np.uint8)
             row[:, label_w:] = strip
-            d = dists[i]
-            label = f"{d:.2f}m" if d is not None else f"#{strip_stops[i].get('index', i)}"
+            v = axis[i]
+            label = fmt(v) if (v is not None and fmt) else f"#{strip_stops[i].get('index', i)}"
             cv2.putText(row, label, (2, h - 2), cv2.FONT_HERSHEY_SIMPLEX,
                         0.35, (200, 200, 200), 1, cv2.LINE_AA)
             rows.append(row)

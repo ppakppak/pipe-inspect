@@ -127,7 +127,7 @@ class PipeSurveyAnalyzer:
     """정지 구간 기반으로 영상을 분석하여 연속 전개도 + 결함 분포를 생성한다."""
 
     def __init__(self, gpu=True, gpu_server_url='http://localhost:5004',
-                 infer_fn=None, distance_fn=None, colors=None):
+                 infer_fn=None, distance_fn=None, colors=None, preprocess_fn=None):
         """
         Args:
             gpu_server_url: infer_fn 미지정 시 사용할 GPU 서버 주소 (HTTP 경로)
@@ -136,11 +136,13 @@ class PipeSurveyAnalyzer:
             distance_fn: fn(frame_bgr) -> float|None. 지정하면 stop별 대표 프레임에서
                          OSD 거리(m)를 읽어 stop['distance_m']에 기록
             colors: 결함 클래스 색상 팔레트 {부분문자열: BGR}. 미지정 시 모듈 기본값
+            preprocess_fn: fn(frame_bgr) -> frame_bgr. 대표 프레임 전처리(렌즈 왜곡 보정 등)
         """
         self.gpu_server_url = gpu_server_url
         self.infer_fn = infer_fn
         self.distance_fn = distance_fn
         self.colors = colors
+        self.preprocess_fn = preprocess_fn
 
     # ════════════════════════════════════════════
     #  메인 분석
@@ -264,6 +266,8 @@ class PipeSurveyAnalyzer:
             ret, frame = cap.read()
             if not ret:
                 continue
+            if self.preprocess_fn is not None:
+                frame = self.preprocess_fn(frame)   # 렌즈 왜곡 보정 등
 
             # OSD 거리 (주입 시) — 직전 유효값 대비 100m 이상 점프는 OCR 오독으로 버림
             if self.distance_fn is not None:

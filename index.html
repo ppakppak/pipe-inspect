@@ -1823,6 +1823,15 @@
                 </div>
             </div>
 
+            <!-- 빌드된 데이터셋 (프로젝트별 다운로드) -->
+            <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040; margin-bottom: 20px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:15px;">
+                    <h3 style="margin:0; color:#ccc;">📦 빌드된 데이터셋 (프로젝트별)</h3>
+                    <button onclick="loadBuiltDatasets()" style="background:#404040; color:#ddd; border:1px solid #555; border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px;">새로고침</button>
+                </div>
+                <div id="builtDatasetList" style="color:#999; font-size:13px;">로딩 중...</div>
+            </div>
+
             <!-- 빌드 로그 -->
             <div style="background: #2d2d2d; padding: 20px; border-radius: 8px; border: 1px solid #404040;">
                 <h3 style="margin: 0 0 15px 0; color: #ccc;">📋 빌드 로그</h3>
@@ -11741,6 +11750,64 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         // Initialize dataset tab (load available projects)
         async function initializeDatasetTab() {
             await loadDatasetProjects();
+            loadBuiltDatasets();
+        }
+
+        function escapeHtmlDs(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+        // 빌드된 데이터셋을 프로젝트별로 그룹핑해 표시 + ZIP 다운로드
+        async function loadBuiltDatasets() {
+            const el = document.getElementById('builtDatasetList');
+            if (!el) return;
+            el.innerHTML = '로딩 중...';
+            try {
+                const res = await authFetch('/api/dataset/list');
+                const data = await res.json();
+                if (!data.success || !data.datasets || data.datasets.length === 0) {
+                    el.innerHTML = '<span style="color:#777;">빌드된 데이터셋이 없습니다.</span>';
+                    return;
+                }
+                // 데이터셋이 여러 프로젝트에 속하면 각 프로젝트 그룹에 모두 표시
+                const groups = {};
+                data.datasets.forEach(ds => {
+                    const projs = (ds.projects && ds.projects.length) ? ds.projects
+                                  : [{ id: '_unknown', name: '(프로젝트 미지정 · 구버전 빌드)' }];
+                    projs.forEach(p => {
+                        const key = p.id || '_unknown';
+                        if (!groups[key]) groups[key] = { name: p.name || key, items: [] };
+                        groups[key].items.push(ds);
+                    });
+                });
+                const token = encodeURIComponent(localStorage.getItem('session_id') || '');
+                let html = '';
+                Object.keys(groups).sort().forEach(key => {
+                    const g = groups[key];
+                    html += '<div style="margin-bottom:14px;">'
+                        + '<div style="font-weight:700; color:#7db0ff; margin-bottom:6px;">📁 '
+                        + escapeHtmlDs(g.name) + ' <span style="color:#777; font-weight:400;">('
+                        + g.items.length + ')</span></div>';
+                    g.items.forEach(ds => {
+                        const frames = ds.total_frames || ((ds.train_count||0)+(ds.val_count||0)+(ds.test_count||0));
+                        const created = ds.created_at ? ds.created_at.replace('T',' ').slice(0,16) : '';
+                        const cls = (ds.class_names||[]).join(', ');
+                        const dlUrl = '/api/dataset/download?name=' + encodeURIComponent(ds.name) + '&token=' + token;
+                        html += '<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 12px; background:#1e1e1e; border:1px solid #444; border-radius:6px; margin-bottom:6px;">'
+                            + '<div style="min-width:0;">'
+                            + '<div style="color:#ddd; font-weight:600; font-size:13px;">' + escapeHtmlDs(ds.name) + '</div>'
+                            + '<div style="color:#888; font-size:11.5px; margin-top:2px;">'
+                            + frames + ' frames · train ' + (ds.train_count||0) + '/val ' + (ds.val_count||0) + '/test ' + (ds.test_count||0)
+                            + (created ? ' · ' + created : '')
+                            + (cls ? ' · ' + escapeHtmlDs(cls) : '')
+                            + '</div></div>'
+                            + '<a href="' + dlUrl + '" style="flex-shrink:0; background:#28a745; color:#fff; text-decoration:none; border-radius:6px; padding:7px 14px; font-size:12.5px; font-weight:600;">ZIP 다운로드</a>'
+                            + '</div>';
+                    });
+                    html += '</div>';
+                });
+                el.innerHTML = html;
+            } catch (e) {
+                el.innerHTML = '<span style="color:#e57373;">목록 로드 실패: ' + (e && e.message ? e.message : e) + '</span>';
+            }
         }
 
         // Load available projects into checkbox list
@@ -12881,6 +12948,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     progressBar.style.background = '#28a745';
                     progressText.textContent = '✅ 완료!';
                     addLog('✅ 데이터셋 빌드 완료!', '#28a745');
+                    if (typeof loadBuiltDatasets === 'function') loadBuiltDatasets();  // 다운로드 목록 갱신
                     addLog(`출력 디렉토리: ${data.output_dir}`, '#4a9eff');
                     addLog(`총 이미지: ${data.total_images || 0}개`, '#4a9eff');
                     addLog(`Train: ${data.train_count || 0}개`, '#4a9eff');

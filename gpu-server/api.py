@@ -4581,6 +4581,7 @@ def build_yolo_dataset():
 
         # 프로젝트별 클래스 정의 수집
         project_classes = {}  # project_dir -> class_id_to_name mapping
+        dataset_projects = {}  # project_id -> project_name (다운로드 시 프로젝트별 그룹핑용)
 
         # 실제 사용된 클래스 수집
         used_classes = set()
@@ -4593,6 +4594,8 @@ def build_yolo_dataset():
             video_id = anno_data.get('video_id', '')
             annotations = anno_data.get('annotations', {})
             project_dir = Path(anno_data.get('project_dir', ''))
+            if project_id and project_id not in dataset_projects:
+                dataset_projects[project_id] = project_id  # 이름은 project.json에서 갱신
 
             # 비디오 정보 및 클래스 정의 찾기
             project_file = project_dir / 'project.json'
@@ -4601,6 +4604,10 @@ def build_yolo_dataset():
             if project_file.exists():
                 with open(project_file, 'r', encoding='utf-8') as f:
                     project_json = json.load(f)
+
+                    # 프로젝트 표시 이름 기록 (다운로드 그룹핑용)
+                    if project_id:
+                        dataset_projects[project_id] = project_json.get('name') or project_id
 
                     # 프로젝트의 클래스 정의 읽기 (처음 한 번만)
                     project_dir_str = str(project_dir)
@@ -4883,7 +4890,9 @@ names: {class_names_list}
             'augment_multiplier': augment_multiplier,
             'num_classes': num_classes,
             'class_names': class_names_list,
-            'class_ids': sorted_class_ids
+            'class_ids': sorted_class_ids,
+            'project_ids': list(dataset_projects.keys()),
+            'projects': [{'id': pid, 'name': pname} for pid, pname in dataset_projects.items()],
         }
 
         with open(output_path / 'dataset_info.json', 'w', encoding='utf-8') as f:
@@ -5076,12 +5085,22 @@ def build_yolo_dataset_filtered():
         all_frames = []
         unique_keys = set()
         class_order = list(dict.fromkeys(selected_classes)) if selected_classes else []
+        dataset_projects = {}  # project_id -> project_name (다운로드 시 프로젝트별 그룹핑용)
 
         for anno_data in annotations_data:
             project_id = anno_data.get('project_id', '')
             video_id = anno_data.get('video_id', '')
             annotations = anno_data.get('annotations', {}) or {}
             project_dir = Path(anno_data.get('project_dir', ''))
+            if project_id and project_id not in dataset_projects:
+                dataset_projects[project_id] = project_id
+                try:
+                    _pf = project_dir / 'project.json'
+                    if _pf.exists():
+                        with open(_pf, 'r', encoding='utf-8') as _f:
+                            dataset_projects[project_id] = json.load(_f).get('name') or project_id
+                except Exception:
+                    pass
 
             video_path, class_map = resolve_video_path(project_dir, video_id)
             if not video_path:
@@ -5260,6 +5279,8 @@ def build_yolo_dataset_filtered():
             'class_names': class_order,
             'class_names_yaml': yaml_names,
             'selected_classes': selected_classes,
+            'project_ids': list(dataset_projects.keys()),
+            'projects': [{'id': pid, 'name': pname} for pid, pname in dataset_projects.items()],
             'cache': {
                 'cache_dir': str(frame_cache_root),
                 'hits': train_hits + val_hits + test_hits,
@@ -5720,6 +5741,59 @@ def list_datasets():
         'success': True,
         'datasets': sorted(datasets, key=lambda x: x['name'], reverse=True)
     })
+
+
+@app.route('/api/dataset/download', methods=['GET'])
+def download_dataset():
+    """빌드된 데이터셋 폴더를 ZIP으로 압축해 다운로드.
+
+    name 쿼리파라미터로 pipe_dataset* 폴더명을 받는다. 경로 탈출(traversal)은
+    이름 검증 + script_dir 하위 확인으로 차단한다.
+    """
+    import re
+    import zipfile
+    import tempfile
+
+    name = request.args.get('name', '')
+    # pipe_dataset 으로 시작하고 경로 구분자/상위참조 없는 안전한 이름만 허용
+    if not name.startswith('pipe_dataset') or not re.fullmatch(r'[A-Za-z0-9_.\-]+', name):
+        return jsonify({'success': False, 'error': 'Invalid dataset name'}), 400
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    ds_path = os.path.realpath(os.path.join(script_dir, name))
+    # script_dir 하위인지 재확인 (이중 방어)
+    if not ds_path.startswith(os.path.realpath(script_dir) + os.sep) or not os.path.isdir(ds_path):
+        return jsonify({'success': False, 'error': 'Dataset not found'}), 404
+
+    # 임시 ZIP 생성 (전송 후 자동 삭제)
+    tmp = tempfile.NamedTemporaryFile(prefix=f'{name}_', suffix='.zip', delete=False)
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp.name, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, _dirs, files in os.walk(ds_path):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    # ZIP 내부 경로는 데이터셋 폴더명을 루트로
+                    arcname = os.path.join(name, os.path.relpath(fp, ds_path))
+                    zf.write(fp, arcname)
+    except Exception as e:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        return jsonify({'success': False, 'error': f'zip failed: {e}'}), 500
+
+    resp = send_file(tmp.name, mimetype='application/zip',
+                     as_attachment=True, download_name=f'{name}.zip')
+
+    @resp.call_on_close
+    def _cleanup():
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    return resp
 
 
 if __name__ == '__main__':

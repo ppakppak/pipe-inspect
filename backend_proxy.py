@@ -2761,6 +2761,45 @@ def export_dataset():
     return jsonify(data), status_code
 
 
+@app.route('/api/dataset/list', methods=['GET'])
+@require_auth
+def list_built_datasets():
+    """빌드된 데이터셋 목록 (dataset_info.json의 프로젝트 정보 포함)"""
+    data, sc = forward_to_gpu('/api/ai/datasets', method='GET')
+    return jsonify(data), sc
+
+
+@app.route('/api/dataset/download', methods=['GET'])
+@require_auth
+def download_built_dataset():
+    """데이터셋 ZIP 스트리밍 프록시.
+
+    바이너리 응답이라 forward_to_gpu(.json())를 쓸 수 없어 직접 스트리밍한다.
+    <a href>/window.open 으로 호출되므로 require_auth는 ?token= 폴백을 사용.
+    """
+    name = request.args.get('name', '')
+    try:
+        r = requests.get(f"{GPU_SERVER_URL}/api/dataset/download",
+                         params={'name': name}, stream=True, timeout=600)
+    except requests.exceptions.RequestException as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+
+    if r.status_code != 200:
+        try:
+            return jsonify(r.json()), r.status_code
+        except Exception:
+            return Response(r.content, status=r.status_code)
+
+    headers = {
+        'Content-Type': r.headers.get('Content-Type', 'application/zip'),
+        'Content-Disposition': r.headers.get('Content-Disposition',
+                                             f'attachment; filename="{name}.zip"'),
+    }
+    if r.headers.get('Content-Length'):
+        headers['Content-Length'] = r.headers['Content-Length']
+    return Response(r.iter_content(chunk_size=65536), headers=headers, status=200)
+
+
 @app.route('/api/dataset/build', methods=['POST'])
 @require_auth
 def build_dataset():

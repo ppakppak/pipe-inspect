@@ -459,6 +459,12 @@ class PipeSurveyAnalyzer:
         # VP에서 프레임 가장자리까지 최소 거리
         max_r = min(vp_x, img_w - vp_x, vp_y, img_h - vp_y)
 
+        # ROI 붕괴 방지: VP가 다소 치우쳐도 ring이 비지 않도록 반경 하한 보장
+        # (off-center VP면 ring이 프레임 밖으로 일부 나가지만 cv2.circle이 자동 clip)
+        min_r = int(min(img_w, img_h) * 0.30)
+        if max_r < min_r:
+            max_r = min_r
+
         r_inner = int(max_r * 0.60)
         r_outer = int(max_r * 0.90)
 
@@ -687,14 +693,26 @@ class PipeSurveyAnalyzer:
 
         vp_x = int(np.median([v[0] for v in vp_frames]))
         vp_y = int(np.median([v[1] for v in vp_frames]))
+
+        # 퇴화 VP 방어: 가장자리(프레임 10% 이내)에 잡히면 탐지 실패로 보고 중심으로 폴백.
+        # (관 CCTV는 소실점이 대략 화면 안쪽 → 가장자리 VP는 휴리스틱 오작동)
+        cap_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH); cap_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        if cap_w > 0 and cap_h > 0:
+            mx, my = int(cap_w * 0.10), int(cap_h * 0.10)
+            if not (mx <= vp_x <= cap_w - mx and my <= vp_y <= cap_h - my):
+                print(f"[Survey] VP({vp_x},{vp_y}) 가장자리 → 중심 폴백")
+                vp_x, vp_y = int(cap_w / 2), int(cap_h / 2)
         return vp_x, vp_y
 
     def _detect_vp_simple(self, frame):
-        """간단한 VP(소실점) 탐지 — 가장 어두운 영역의 중심"""
+        """간단한 VP(소실점) 탐지 — 화면 내부의 가장 어두운 영역 중심.
+        상하좌우 가장자리 15%를 제외하여 비네팅/모서리 암부에 VP가 끌려가는 것을 방지."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
         gray[:int(h * 0.15), :] = 255
         gray[int(h * 0.85):, :] = 255
+        gray[:, :int(w * 0.15)] = 255
+        gray[:, int(w * 0.85):] = 255
         blurred = cv2.GaussianBlur(gray, (w // 4 * 2 + 1, h // 4 * 2 + 1), 0)
         _, _, min_loc, _ = cv2.minMaxLoc(blurred)
         return min_loc

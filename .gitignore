@@ -63,3 +63,14 @@ gpu-server/*.pt
 inference_results/
 cache_rebuild.log
 video_conversion*.log
+
+# Large data / training / output artifacts (not source)
+Performance_indicator/
+datasets/
+docs/
+runs/
+gpu-server/runs_osd_analyze/
+
+# Backups
+*.bak
+*.bak_*

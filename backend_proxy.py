@@ -5429,7 +5429,12 @@ def survey_global_area(job_id):
 
 @app.route('/api/survey/videos', methods=['GET'])
 def survey_list_videos():
-    nas_base = '/home/intu/nas2_kwater/Videos/\uad00\ub0b4\uc2dc\uacbd\uc601\uc0c1'
+    # mp4 \ud3f4\ub354 \uc6b0\uc120 (nas2_kwater\uc758 .avi\ub294 H.264 seek \uae68\uc9d0\uc73c\ub85c \ubd84\uc11d \uc2e4\ud328 \u2192 \uc7ac\uc778\ucf54\ub529 mp4 \uc0ac\uc6a9)
+    nas_candidates = [
+        '/home/intu/nas2/k_water/\uad00\ub0b4\uc2dc\uacbd\uc601\uc0c1',
+        '/home/intu/nas2_kwater/Videos/\uad00\ub0b4\uc2dc\uacbd\uc601\uc0c1',
+    ]
+    nas_base = next((b for b in nas_candidates if os.path.exists(b)), nas_candidates[0])
     videos = []
     if os.path.exists(nas_base):
         for pipe_dir in sorted(os.listdir(nas_base)):
@@ -5471,6 +5476,7 @@ def survey_list_videos():
 
 def _resolve_survey_stream_path(video_path: str):
     allowed_roots = [
+        '/home/intu/nas2/k_water/관내시경영상',
         '/home/intu/nas2_kwater/Videos/관내시경영상',
         '/home/intu/nas2_kwater/Videos/SAHARA',
         '/home/intu/nas2_kwater/Videos_web/관내시경영상',

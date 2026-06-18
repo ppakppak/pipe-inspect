@@ -5258,6 +5258,8 @@ def survey_start():
     data = request.json or {}
     video_path = data.get('video_path')
     pipe_diameter = data.get('pipe_diameter_mm', 300)
+    strip_axial_mm = data.get('strip_axial_mm')          # Global Area Ratio 튜닝 (None=관 직경)
+    global_px_per_mm = data.get('global_px_per_mm', 0.2)  # z축 해상도
 
     if not video_path or not os.path.exists(video_path):
         return jsonify({'success': False, 'error': 'Invalid video_path'}), 400
@@ -5290,6 +5292,8 @@ def survey_start():
                 ssim_threshold=0.92,
                 min_stop_frames=15,
                 scan_every_n=5,
+                strip_axial_mm=strip_axial_mm,
+                global_px_per_mm=global_px_per_mm,
                 progress_callback=progress_cb,
             )
 
@@ -5387,6 +5391,22 @@ def survey_panorama(job_id):
 
     if not img_path or not os.path.exists(img_path):
         return jsonify({'success': False, 'error': 'Panorama not found'}), 404
+    directory = os.path.dirname(img_path)
+    filename = os.path.basename(img_path)
+    return send_from_directory(directory, filename, mimetype='image/jpeg')
+
+
+@app.route('/api/survey/global-area/<job_id>', methods=['GET'])
+def survey_global_area(job_id):
+    """Global Area Ratio θ×z 누적 캔버스 이미지 서빙 (가시=회색, 결함=빨강)"""
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job or job['status'] != 'completed':
+        return jsonify({'success': False, 'error': 'Not ready'}), 404
+    ga = (job.get('result', {}) or {}).get('global_area_ratio') or {}
+    img_path = ga.get('canvas_path')
+    if not img_path or not os.path.exists(img_path):
+        return jsonify({'success': False, 'error': 'Global area canvas not found'}), 404
     directory = os.path.dirname(img_path)
     filename = os.path.basename(img_path)
     return send_from_directory(directory, filename, mimetype='image/jpeg')

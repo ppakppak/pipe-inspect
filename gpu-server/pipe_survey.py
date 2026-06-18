@@ -150,6 +150,7 @@ class PipeSurveyAnalyzer:
     def analyze_video(self, video_path, pipe_diameter_mm=300,
                       ssim_threshold=0.92, min_stop_frames=15,
                       scan_every_n=25,
+                      strip_axial_mm=None, global_px_per_mm=0.2,
                       progress_callback=None) -> dict:
         """영상 전체 분석
 
@@ -255,6 +256,8 @@ class PipeSurveyAnalyzer:
         strips_overlay = []
         strips_annular = []
         strip_stops = []      # strip과 1:1 대응하는 stop (프레임 read 실패 시 정렬 유지용)
+        vis_strips = []       # Global Area Ratio용 가시영역 이진 마스크 (band×θ)
+        def_strips = []       # Global Area Ratio용 결함 이진 마스크 (band×θ)
         last_distance = None
 
         for si, stop in enumerate(stops):
@@ -302,8 +305,8 @@ class PipeSurveyAnalyzer:
             })
 
             # PipeUnwrapper 전개
-            unwrapped = unwrapper.unwrap(frame)
-            unwrapped = self._color_correct(unwrapped)
+            unwrapped_raw = unwrapper.unwrap(frame)
+            unwrapped = self._color_correct(unwrapped_raw)
 
             crop = unwrapped[y_start:y_end, :, :]
             strip_clean = cv2.resize(crop, (output_width, strip_height))
@@ -320,6 +323,32 @@ class PipeSurveyAnalyzer:
             strips_clean.append(strip_clean)
             strips_overlay.append(strip_over)
             strip_stops.append(stop)
+
+            # ── Global Area Ratio용 이진 마스크 (전개 band의 θ×반경) ──
+            # 가시영역: remap이 원본 안쪽인 픽셀(검은 영역=이미지 밖 제외)
+            vis_full = (unwrapped_raw.sum(axis=2) > 12).astype(np.uint8)
+            def_full = np.zeros((unwrap_h, output_width), dtype=np.uint8)
+            for det in detections:
+                polygon = det.get('polygon', [])
+                if not polygon or len(polygon) < 3:
+                    continue
+                if isinstance(polygon[0], (list, tuple)):
+                    flat = []
+                    for pt in polygon:
+                        flat.extend([float(pt[0]), float(pt[1])])
+                else:
+                    flat = [float(v) for v in polygon]
+                transformed = unwrapper.transform_polygon(flat)
+                pts = []
+                for j in range(0, len(transformed), 2):
+                    tx = max(0, min(output_width - 1, transformed[j]))
+                    ty = max(0, min(unwrap_h - 1, transformed[j + 1]))
+                    pts.append([int(tx), int(ty)])
+                if len(pts) >= 3:
+                    cv2.fillPoly(def_full, [np.array(pts, dtype=np.int32)], 1)
+            def_full &= vis_full   # 가시영역 밖 결함은 제외
+            vis_strips.append(vis_full[y_start:y_end, :].copy())
+            def_strips.append(def_full[y_start:y_end, :].copy())
 
             # Annular ring strip
             ann_strip = self._extract_annular_strip(frame, vp_x, vp_y, 3)
@@ -357,6 +386,15 @@ class PipeSurveyAnalyzer:
             stripmap_path = os.path.join(output_dir, f'{video_name}_stripmap.jpg')
             cv2.imwrite(stripmap_path, strip_map, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
+        # ═══ Global Area Ratio — 구간 전체 중복 제거 통합 면적비 ═══
+        global_area_ratio = self._compute_global_area_ratio(
+            vis_strips, def_strips, strip_stops,
+            pipe_diameter_mm=pipe_diameter_mm,
+            strip_axial_mm=strip_axial_mm,
+            px_per_mm=global_px_per_mm,
+            output_dir=output_dir, video_name=video_name,
+        )
+
         coord_sys = unwrapper.get_coordinate_system()
 
         # 결함 통계
@@ -386,6 +424,7 @@ class PipeSurveyAnalyzer:
             'stop_ratio_pct': round(total_stop_time / total_video_time * 100, 1) if total_video_time > 0 else 0,
             'analyzed_frames': len(frame_results),
             'by_class': by_class_summary,
+            'global_area_ratio_pct': (global_area_ratio or {}).get('global_area_ratio_pct'),
         }
 
         if progress_callback:
@@ -403,6 +442,7 @@ class PipeSurveyAnalyzer:
             'panorama_path': panorama_path,
             'panorama_overlay_path': panorama_overlay_path,
             'stripmap_path': stripmap_path,
+            'global_area_ratio': global_area_ratio,
             'coordinate_system': coord_sys,
             'vp': {'x': vp_x, 'y': vp_y},
         }
@@ -716,6 +756,137 @@ class PipeSurveyAnalyzer:
                 rows.append(np.full((gaps_px[i], label_w + w, 3), bg, dtype=np.uint8))
 
         return np.vstack(rows)
+
+    # ════════════════════════════════════════════
+    #  Global Area Ratio — 구간 전체 중복 제거 통합 면적비
+    # ════════════════════════════════════════════
+    def _compute_global_area_ratio(self, vis_strips, def_strips, strip_stops,
+                                   pipe_diameter_mm=300, strip_axial_mm=None,
+                                   px_per_mm=0.2, output_dir=None, video_name=None):
+        """정지 구간 strip들을 거리(z)축에 중복 제거 누적 → 통합 면적비.
+
+            Global Area Ratio = Σ(unique 결함 셀) / Σ(unique 가시 셀)   [θ×z 캔버스]
+
+        같은 z 위치를 본 strip들은 같은 캔버스 행에 OR로 겹쳐져 중복이 제거된다.
+        전개 캔버스는 θ(원주) 균등 × z(축) metric → 각 셀의 실면적이 균일하므로
+        셀 개수 비 = 실면적 비.
+
+        축 우선순위:
+          - OSD 거리(distance_m) 2개 이상 → metric 모드 (mm 단위, 중복 제거 유효)
+          - 아니면 timestamp_sec 2개 이상 → time-fallback (저신뢰, 균등 간격)
+          - 둘 다 없으면 → strip 단순 연결 (중복 제거 없음)
+
+        strip_axial_mm: 정지 1장이 대표하는 관 축방향 길이(mm). 기본=관 직경.
+            (초점거리 미지로 정확한 축방향 스케일을 못 구하므로 휴리스틱 파라미터)
+        """
+        n = len(vis_strips)
+        if n == 0:
+            return None
+
+        band_h, w = vis_strips[0].shape
+        if strip_axial_mm is None or strip_axial_mm <= 0:
+            strip_axial_mm = float(pipe_diameter_mm)
+
+        # ── 축값 결정 (거리 mm 우선, 시각 fallback) ──
+        dists = [s.get('distance_m') for s in strip_stops]
+        times = [s.get('timestamp_sec') for s in strip_stops]
+        n_dist = sum(d is not None for d in dists)
+        n_time = sum(t is not None for t in times)
+
+        metric = False
+        axis = None
+        if n_dist >= 2:
+            metric = True
+            axis = [(d * 1000.0 if d is not None else None) for d in dists]  # m→mm
+        elif n_time >= 2:
+            axis = list(times)
+
+        # 결측 축값은 알려진 값으로 선형 보간
+        if axis is not None:
+            known = [(i, v) for i, v in enumerate(axis) if v is not None]
+            if len(known) >= 2:
+                xs = [i for i, _ in known]
+                ys = [float(v) for _, v in known]
+                axis = list(np.interp(np.arange(n), xs, ys))
+            else:
+                axis = None
+
+        # ── strip 1장의 축방향 픽셀 높이 ──
+        if metric and axis is not None:
+            strip_axial_px = max(1, int(round(strip_axial_mm * px_per_mm)))
+            z0 = min(axis)
+            tops = [int(round((z - z0) * px_per_mm)) for z in axis]
+            confidence = 'metric'
+            z_span_mm = float(max(axis) - z0)
+        else:
+            # time-fallback 또는 축값 없음 → 균등 간격 연결 (중복 제거 없음)
+            strip_axial_px = band_h
+            if axis is not None:
+                a0 = min(axis)
+                span = (max(axis) - a0) or 1.0
+                # 전체 높이를 n*band_h 로 정규화한 비례 배치
+                tops = [int(round((a - a0) / span * (n - 1) * strip_axial_px)) for a in axis]
+                confidence = 'low(time-fallback)'
+                z_span_mm = None
+            else:
+                tops = [i * strip_axial_px for i in range(n)]
+                confidence = 'low(no-axis)'
+                z_span_mm = None
+
+        canvas_rows = max(t + strip_axial_px for t in tops)
+        # 과도한 캔버스 방지 (>24000행이면 px_per_mm 자동 축소)
+        if canvas_rows > 24000:
+            shrink = 24000.0 / canvas_rows
+            tops = [int(round(t * shrink)) for t in tops]
+            strip_axial_px = max(1, int(round(strip_axial_px * shrink)))
+            px_per_mm = px_per_mm * shrink
+            canvas_rows = max(t + strip_axial_px for t in tops)
+
+        canvas_vis = np.zeros((canvas_rows, w), dtype=np.uint8)
+        canvas_def = np.zeros((canvas_rows, w), dtype=np.uint8)
+
+        raw_vis = 0   # 중복 제거 전 가시 셀 합 (overlap factor 계산용)
+        raw_def = 0
+        for i in range(n):
+            vs = cv2.resize(vis_strips[i], (w, strip_axial_px), interpolation=cv2.INTER_NEAREST)
+            ds = cv2.resize(def_strips[i], (w, strip_axial_px), interpolation=cv2.INTER_NEAREST)
+            t = tops[i]
+            sl = slice(t, t + strip_axial_px)
+            canvas_vis[sl] |= vs
+            canvas_def[sl] |= ds
+            raw_vis += int(vs.sum())
+            raw_def += int(ds.sum())
+
+        # 결함은 가시영역 안에서만 인정
+        canvas_def &= canvas_vis
+        visible = int(canvas_vis.sum())
+        defect = int(canvas_def.sum())
+        ratio = round(defect / visible * 100, 3) if visible > 0 else 0.0
+
+        # ── 시각화 저장 (가시=회색, 결함=빨강) ──
+        canvas_path = None
+        if output_dir and video_name:
+            viz = np.zeros((canvas_rows, w, 3), dtype=np.uint8)
+            viz[canvas_vis > 0] = (70, 70, 70)
+            viz[canvas_def > 0] = (40, 40, 220)
+            canvas_path = os.path.join(output_dir, f'{video_name}_global_area.jpg')
+            cv2.imwrite(canvas_path, viz, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+        return {
+            'global_area_ratio_pct': ratio,
+            'visible_cells': visible,
+            'defect_cells': defect,
+            'naive_sum_ratio_pct': round(raw_def / raw_vis * 100, 3) if raw_vis > 0 else 0.0,
+            'overlap_factor': round(raw_vis / visible, 2) if visible > 0 else None,
+            'metric': metric,
+            'confidence': confidence,
+            'strip_axial_mm': round(float(strip_axial_mm), 1),
+            'px_per_mm': round(float(px_per_mm), 4),
+            'z_span_mm': round(z_span_mm, 1) if z_span_mm is not None else None,
+            'num_stops': n,
+            'canvas_rows': int(canvas_rows),
+            'canvas_path': canvas_path,
+        }
 
     # ════════════════════════════════════════════
     #  전개도 오버레이

@@ -5293,8 +5293,55 @@ def survey_start():
             except Exception as _osd_e:
                 logging.warning(f"[survey] OSD reader unavailable, distance disabled: {_osd_e}")
 
+            # PPNet 기반 전개 주입 (극좌표 warp 대체) → GNU Mapping 엔진
+            unwrap_fn = None
+            try:
+                import numpy as _np
+                import cv2
+                import base64 as _b64
+                from gnu_mapping import GNUMappingEngine
+                _ppnet_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           'gpu-server', 'weights', 'ppnet.pt')
+                # 면적비용 저해상 전개(1px/mm) — 마스크 누적 메모리 절약, 비율 정확도 충분
+                _gnu_engine = GNUMappingEngine(_ppnet_path, pipe_diameter_mm=int(pipe_diameter),
+                                               pixel_per_mm=1.0, max_depth_mm=300)
+                def unwrap_fn(frame_bgr, detections, pipe_diameter_mm):
+                    h, w = frame_bgr.shape[:2]
+                    defect_masks = []
+                    for det in detections:
+                        poly = det.get('polygon') or []
+                        if len(poly) < 3:
+                            continue
+                        if isinstance(poly[0], (list, tuple)):
+                            pts = _np.array(poly, dtype=_np.int32).reshape(-1, 2)
+                        else:
+                            pts = _np.array(poly, dtype=_np.int32).reshape(-1, 2)
+                        m = _np.zeros((h, w), dtype=_np.uint8)
+                        cv2.fillPoly(m, [pts], 1)
+                        defect_masks.append({'label': det.get('label', 'unknown'), 'mask': m})
+                    r = _gnu_engine.process_frame(frame_bgr, defect_masks=defect_masks or None,
+                                                  return_masks=True)
+                    import base64 as _b64
+                    buf = _np.frombuffer(_b64.b64decode(r['unwrapped_rgb_b64']), dtype=_np.uint8)
+                    unwrapped_bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                    overlay_bgr = None
+                    if r.get('unwrapped_overlay_b64'):
+                        obuf = _np.frombuffer(_b64.b64decode(r['unwrapped_overlay_b64']), dtype=_np.uint8)
+                        overlay_bgr = cv2.imdecode(obuf, cv2.IMREAD_COLOR)
+                    return {
+                        'visible_mask': r['unwrap_visible_mask'],
+                        'defect_mask': r['unwrap_defect_mask'],
+                        'pixel_per_mm': r['pixel_per_mm'],
+                        'unwrapped_bgr': unwrapped_bgr,
+                        'overlay_bgr': overlay_bgr,
+                    }
+                logging.info(f"[survey] PPNet 전개 활성화 (pipe_diameter={pipe_diameter}mm)")
+            except Exception as _gnu_e:
+                import traceback as _tb
+                logging.warning(f"[survey] PPNet unwrap unavailable, 극좌표 fallback: {_gnu_e}\n{_tb.format_exc()}")
+
             analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL,
-                                          distance_fn=distance_fn)
+                                          distance_fn=distance_fn, unwrap_fn=unwrap_fn)
 
             def progress_cb(current, total, phase_msg):
                 with survey_lock:

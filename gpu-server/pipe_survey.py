@@ -127,7 +127,8 @@ class PipeSurveyAnalyzer:
     """정지 구간 기반으로 영상을 분석하여 연속 전개도 + 결함 분포를 생성한다."""
 
     def __init__(self, gpu=True, gpu_server_url='http://localhost:5004',
-                 infer_fn=None, distance_fn=None, colors=None, preprocess_fn=None):
+                 infer_fn=None, distance_fn=None, colors=None, preprocess_fn=None,
+                 unwrap_fn=None):
         """
         Args:
             gpu_server_url: infer_fn 미지정 시 사용할 GPU 서버 주소 (HTTP 경로)
@@ -137,12 +138,17 @@ class PipeSurveyAnalyzer:
                          OSD 거리(m)를 읽어 stop['distance_m']에 기록
             colors: 결함 클래스 색상 팔레트 {부분문자열: BGR}. 미지정 시 모듈 기본값
             preprocess_fn: fn(frame_bgr) -> frame_bgr. 대표 프레임 전처리(렌즈 왜곡 보정 등)
+            unwrap_fn: fn(frame_bgr, detections, pipe_diameter_mm) -> dict|None.
+                       지정하면 극좌표 전개 대신 PPNet 기반 전개(GNU Mapping) 사용.
+                       반환 dict: {visible_mask(HxW bool θ×z), defect_mask(HxW bool),
+                                   pixel_per_mm(float), unwrapped_bgr, overlay_bgr(옵션)}
         """
         self.gpu_server_url = gpu_server_url
         self.infer_fn = infer_fn
         self.distance_fn = distance_fn
         self.colors = colors
         self.preprocess_fn = preprocess_fn
+        self.unwrap_fn = unwrap_fn
 
     # ════════════════════════════════════════════
     #  메인 분석
@@ -259,6 +265,7 @@ class PipeSurveyAnalyzer:
         vis_strips = []       # Global Area Ratio용 가시영역 이진 마스크 (band×θ)
         def_strips = []       # Global Area Ratio용 결함 이진 마스크 (band×θ)
         last_distance = None
+        mask_ppm = None       # PPNet 전개 마스크의 pixel_per_mm (metric 스케일)
 
         for si, stop in enumerate(stops):
             # 가장 선명한 프레임 선택
@@ -304,51 +311,73 @@ class PipeSurveyAnalyzer:
                 'detections': detections,
             })
 
-            # PipeUnwrapper 전개
-            unwrapped_raw = unwrapper.unwrap(frame)
-            unwrapped = self._color_correct(unwrapped_raw)
-
-            crop = unwrapped[y_start:y_end, :, :]
-            strip_clean = cv2.resize(crop, (output_width, strip_height))
-
-            strip_over = strip_clean.copy()
-            for det in detections:
-                polygon = det.get('polygon', [])
-                if polygon and len(polygon) >= 3:
-                    self._draw_defect_on_strip(
-                        strip_over, polygon, det.get('label', 'unknown'),
-                        unwrapper, y_start, y_end, strip_height, output_width
-                    )
-
-            strips_clean.append(strip_clean)
-            strips_overlay.append(strip_over)
-            strip_stops.append(stop)
-
-            # ── Global Area Ratio용 이진 마스크 (전개 band의 θ×반경) ──
-            # 가시영역: remap이 원본 안쪽인 픽셀(검은 영역=이미지 밖 제외)
-            vis_full = (unwrapped_raw.sum(axis=2) > 12).astype(np.uint8)
-            def_full = np.zeros((unwrap_h, output_width), dtype=np.uint8)
-            for det in detections:
-                polygon = det.get('polygon', [])
-                if not polygon or len(polygon) < 3:
+            if self.unwrap_fn is not None:
+                # ══ PPNet 기반 전개 (GNU Mapping) ══
+                uw = None
+                try:
+                    uw = self.unwrap_fn(frame, detections, pipe_diameter_mm)
+                except Exception as e:
+                    print(f"[Survey] unwrap_fn error @stop {si}: {e}")
+                if uw is None:
                     continue
-                if isinstance(polygon[0], (list, tuple)):
-                    flat = []
-                    for pt in polygon:
-                        flat.extend([float(pt[0]), float(pt[1])])
-                else:
-                    flat = [float(v) for v in polygon]
-                transformed = unwrapper.transform_polygon(flat)
-                pts = []
-                for j in range(0, len(transformed), 2):
-                    tx = max(0, min(output_width - 1, transformed[j]))
-                    ty = max(0, min(unwrap_h - 1, transformed[j + 1]))
-                    pts.append([int(tx), int(ty)])
-                if len(pts) >= 3:
-                    cv2.fillPoly(def_full, [np.array(pts, dtype=np.int32)], 1)
-            def_full &= vis_full   # 가시영역 밖 결함은 제외
-            vis_strips.append(vis_full[y_start:y_end, :].copy())
-            def_strips.append(def_full[y_start:y_end, :].copy())
+                vis_m = uw['visible_mask'].astype(np.uint8)
+                def_m = uw['defect_mask'].astype(np.uint8) & vis_m
+                mask_ppm = uw.get('pixel_per_mm', mask_ppm)
+                vis_strips.append(vis_m)
+                def_strips.append(def_m)
+                strip_stops.append(stop)
+
+                # 파노라마 호환: 전개 전체를 thin-band(가로 output_width)로 축약
+                ub = uw['unwrapped_bgr']
+                ov = uw.get('overlay_bgr')
+                strips_clean.append(cv2.resize(ub, (output_width, strip_height)))
+                strips_overlay.append(cv2.resize(ov if ov is not None else ub,
+                                                 (output_width, strip_height)))
+            else:
+                # ══ 극좌표 전개 (PipeUnwrapper) — unwrap_fn 미주입 시 ══
+                unwrapped_raw = unwrapper.unwrap(frame)
+                unwrapped = self._color_correct(unwrapped_raw)
+
+                crop = unwrapped[y_start:y_end, :, :]
+                strip_clean = cv2.resize(crop, (output_width, strip_height))
+
+                strip_over = strip_clean.copy()
+                for det in detections:
+                    polygon = det.get('polygon', [])
+                    if polygon and len(polygon) >= 3:
+                        self._draw_defect_on_strip(
+                            strip_over, polygon, det.get('label', 'unknown'),
+                            unwrapper, y_start, y_end, strip_height, output_width
+                        )
+
+                strips_clean.append(strip_clean)
+                strips_overlay.append(strip_over)
+                strip_stops.append(stop)
+
+                # ── Global Area Ratio용 이진 마스크 (전개 band의 θ×반경) ──
+                vis_full = (unwrapped_raw.sum(axis=2) > 12).astype(np.uint8)
+                def_full = np.zeros((unwrap_h, output_width), dtype=np.uint8)
+                for det in detections:
+                    polygon = det.get('polygon', [])
+                    if not polygon or len(polygon) < 3:
+                        continue
+                    if isinstance(polygon[0], (list, tuple)):
+                        flat = []
+                        for pt in polygon:
+                            flat.extend([float(pt[0]), float(pt[1])])
+                    else:
+                        flat = [float(v) for v in polygon]
+                    transformed = unwrapper.transform_polygon(flat)
+                    pts = []
+                    for j in range(0, len(transformed), 2):
+                        tx = max(0, min(output_width - 1, transformed[j]))
+                        ty = max(0, min(unwrap_h - 1, transformed[j + 1]))
+                        pts.append([int(tx), int(ty)])
+                    if len(pts) >= 3:
+                        cv2.fillPoly(def_full, [np.array(pts, dtype=np.int32)], 1)
+                def_full &= vis_full   # 가시영역 밖 결함은 제외
+                vis_strips.append(vis_full[y_start:y_end, :].copy())
+                def_strips.append(def_full[y_start:y_end, :].copy())
 
             # Annular ring strip
             ann_strip = self._extract_annular_strip(frame, vp_x, vp_y, 3)
@@ -392,6 +421,7 @@ class PipeSurveyAnalyzer:
             pipe_diameter_mm=pipe_diameter_mm,
             strip_axial_mm=strip_axial_mm,
             px_per_mm=global_px_per_mm,
+            mask_pixel_per_mm=mask_ppm,
             output_dir=output_dir, video_name=video_name,
         )
 
@@ -780,7 +810,8 @@ class PipeSurveyAnalyzer:
     # ════════════════════════════════════════════
     def _compute_global_area_ratio(self, vis_strips, def_strips, strip_stops,
                                    pipe_diameter_mm=300, strip_axial_mm=None,
-                                   px_per_mm=0.2, output_dir=None, video_name=None):
+                                   px_per_mm=0.2, mask_pixel_per_mm=None,
+                                   output_dir=None, video_name=None):
         """정지 구간 strip들을 거리(z)축에 중복 제거 누적 → 통합 면적비.
 
             Global Area Ratio = Σ(unique 결함 셀) / Σ(unique 가시 셀)   [θ×z 캔버스]
@@ -794,16 +825,28 @@ class PipeSurveyAnalyzer:
           - 거리 없음 → aggregate 모드: 인위적 중복 없이 구간 가시면적 가중 평균
             (정지 반복 중복은 대표 프레임 1장으로 이미 제거, 공간 중복은 거리 없이 추정 불가)
 
-        strip_axial_mm: 정지 1장이 대표하는 관 축방향 길이(mm). 기본=관 직경.
-            (초점거리 미지로 정확한 축방향 스케일을 못 구하므로 휴리스틱 파라미터)
+        mask_pixel_per_mm: PPNet(GNU Mapping) 전개 마스크의 px/mm. 지정되면
+            마스크가 이미 metric θ×z(strip 높이 = max_depth_mm·ppm)이므로 resize 없이
+            그 스케일로 누적하고 strip_axial_mm을 마스크 높이에서 역산(=max_depth_mm).
+        strip_axial_mm: (극좌표 전개용) 정지 1장이 대표하는 관 축방향 길이(mm). 기본=관 직경.
         """
         n = len(vis_strips)
         if n == 0:
             return None
 
         band_h, w = vis_strips[0].shape
-        if strip_axial_mm is None or strip_axial_mm <= 0:
-            strip_axial_mm = float(pipe_diameter_mm)
+
+        # 캔버스 px/mm 결정. PPNet 마스크는 자체 metric 스케일을 그대로 사용.
+        ppnet_mode = mask_pixel_per_mm is not None and mask_pixel_per_mm > 0
+        if ppnet_mode:
+            canvas_ppm = float(mask_pixel_per_mm)
+            strip_axial_mm = band_h / canvas_ppm          # = max_depth_mm
+            strip_full_px = band_h                          # PPNet strip 높이 그대로
+        else:
+            canvas_ppm = px_per_mm
+            if strip_axial_mm is None or strip_axial_mm <= 0:
+                strip_axial_mm = float(pipe_diameter_mm)
+            strip_full_px = max(1, int(round(strip_axial_mm * canvas_ppm)))
 
         # ── 거리(z)축 결정: OSD 거리 2개 이상이면 metric, 아니면 aggregate ──
         dists = [s.get('distance_m') for s in strip_stops]
@@ -820,11 +863,11 @@ class PipeSurveyAnalyzer:
             ys = [float(v) for _, v in known]
             axis = list(np.interp(np.arange(n), xs, ys))
 
-        # ── strip 1장의 축방향 픽셀 높이 ──
+        # ── strip 배치 (top row) ──
         if metric and axis is not None:
-            strip_axial_px = max(1, int(round(strip_axial_mm * px_per_mm)))
+            strip_axial_px = strip_full_px
             z0 = min(axis)
-            tops = [int(round((z - z0) * px_per_mm)) for z in axis]
+            tops = [int(round((z - z0) * canvas_ppm)) for z in axis]
             confidence = 'metric'
             z_span_mm = float(max(axis) - z0)
         else:
@@ -832,18 +875,18 @@ class PipeSurveyAnalyzer:
             # (같은 자리 정지 반복 중복은 이미 대표 프레임 1장으로 제거된 상태이고,
             #  인접 stop 간 공간 중복은 거리 없이는 알 수 없으므로 중복 제거를 적용하지 않는다.
             #  timestamp 비례 배치는 정지 중에도 시각이 흘러 인위적 중복을 만들므로 사용하지 않음)
-            strip_axial_px = band_h
+            strip_axial_px = strip_full_px
             tops = [i * strip_axial_px for i in range(n)]
             confidence = 'aggregate(no-distance)'
             z_span_mm = None
 
         canvas_rows = max(t + strip_axial_px for t in tops)
-        # 과도한 캔버스 방지 (>24000행이면 px_per_mm 자동 축소)
+        # 과도한 캔버스 방지 (>24000행이면 자동 축소)
         if canvas_rows > 24000:
             shrink = 24000.0 / canvas_rows
             tops = [int(round(t * shrink)) for t in tops]
             strip_axial_px = max(1, int(round(strip_axial_px * shrink)))
-            px_per_mm = px_per_mm * shrink
+            canvas_ppm = canvas_ppm * shrink
             canvas_rows = max(t + strip_axial_px for t in tops)
 
         canvas_vis = np.zeros((canvas_rows, w), dtype=np.uint8)
@@ -884,8 +927,9 @@ class PipeSurveyAnalyzer:
             'overlap_factor': round(raw_vis / visible, 2) if visible > 0 else None,
             'metric': metric,
             'confidence': confidence,
+            'unwrap': 'ppnet' if ppnet_mode else 'polar',
             'strip_axial_mm': round(float(strip_axial_mm), 1),
-            'px_per_mm': round(float(px_per_mm), 4),
+            'px_per_mm': round(float(canvas_ppm), 4),
             'z_span_mm': round(z_span_mm, 1) if z_span_mm is not None else None,
             'num_stops': n,
             'canvas_rows': int(canvas_rows),

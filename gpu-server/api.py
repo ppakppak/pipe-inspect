@@ -5716,6 +5716,8 @@ def list_datasets():
                         'num_classes': info.get('num_classes', 0),
                         'class_names': info.get('class_names', []),
                         'created_at': info.get('created_at', ''),
+                        'project_ids': info.get('project_ids', []),
+                        'projects': info.get('projects', []),
                     })
                 except:
                     pass

@@ -341,7 +341,17 @@ def forward_to_gpu(path, method='GET', **kwargs):
         # 시간이 오래 걸리는 작업은 타임아웃을 길게 설정
         is_dataset_build = '/dataset/build' in path
         is_sizing = '/sizing/' in path
-        timeout = 600 if is_dataset_build else (120 if is_sizing else 30)
+        is_gnu = '/gnu-mapping/' in path
+        is_gnu_eval = '/gnu-mapping/evaluate' in path
+        is_batch = '/quick-sizing/batch-analyze' in path
+        is_calibrate = '/quick-sizing/calibrate-f' in path
+        is_quick_sizing = '/quick-sizing/' in path
+        if is_dataset_build or is_gnu_eval or is_batch or is_calibrate:
+            timeout = 600
+        elif is_sizing or is_gnu or is_quick_sizing:
+            timeout = 120
+        else:
+            timeout = 30
 
         if method == 'GET':
             response = requests.get(url, params=params, timeout=timeout)
@@ -5204,6 +5214,40 @@ def save_inference_as_annotations():
 
 
 
+# GNU Mapping API (독립 탭)
+# ============================================================
+@app.route('/api/gnu-mapping/process', methods=['POST'])
+def proxy_gnu_mapping():
+    """GNU Mapping — PPNet + 3D→2D 전개도 (GPU 서버 프록시)"""
+    data = request.get_json() or {}
+    # video_path 유효성 검사
+    video_path = data.get('video_path')
+    if video_path and not os.path.exists(video_path):
+        return jsonify({'success': False, 'error': 'Video file not found'}), 404
+    return forward_to_gpu('/api/gnu-mapping/process', method='POST',
+                          json=data)
+
+
+@app.route('/api/gnu-mapping/pipe-presets', methods=['GET'])
+def proxy_gnu_mapping_presets():
+    """관종별 직경 프리셋"""
+    return forward_to_gpu('/api/gnu-mapping/pipe-presets', method='GET')
+
+
+@app.route('/api/gnu-mapping/evaluate', methods=['POST'])
+def proxy_gnu_mapping_evaluate():
+    """MAPE 평가 (이미지/마스크 페어)"""
+    data = request.get_json() or {}
+    return forward_to_gpu('/api/gnu-mapping/evaluate', method='POST', json=data)
+
+
+@app.route('/api/gnu-mapping/evaluate/sample', methods=['POST'])
+def proxy_gnu_mapping_evaluate_sample():
+    """MAPE 평가 단일 샘플 상세"""
+    data = request.get_json() or {}
+    return forward_to_gpu('/api/gnu-mapping/evaluate/sample', method='POST', json=data)
+
+
 # Survey API
 # ============================================================
 survey_jobs = {}
@@ -5214,8 +5258,6 @@ def survey_start():
     data = request.json or {}
     video_path = data.get('video_path')
     pipe_diameter = data.get('pipe_diameter_mm', 300)
-    section_length = data.get('section_length_m', 5.0)
-    sample_interval = data.get('sample_interval', 75)
 
     if not video_path or not os.path.exists(video_path):
         return jsonify({'success': False, 'error': 'Invalid video_path'}), 400
@@ -5237,25 +5279,19 @@ def survey_start():
 
             analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL)
 
-            def progress_cb(frame_num, total, phase_msg):
+            def progress_cb(current, total, phase_msg):
                 with survey_lock:
-                    pct = int(frame_num / max(total, 1) * 100) if total > 0 else 0
-                    survey_jobs[job_id]['progress'] = pct
+                    survey_jobs[job_id]['progress'] = current
                     survey_jobs[job_id]['phase'] = phase_msg
 
             result = analyzer.analyze_video(
                 video_path,
                 pipe_diameter_mm=pipe_diameter,
-                sample_interval=sample_interval,
-                section_length_m=section_length,
+                ssim_threshold=0.92,
+                min_stop_frames=15,
+                scan_every_n=5,
                 progress_callback=progress_cb,
             )
-
-            if result.get('frame_distances'):
-                strip_path = analyzer.generate_strip_map_frames(
-                    video_path, result['frame_distances']
-                )
-                result['stripmap_path'] = strip_path
 
             with survey_lock:
                 survey_jobs[job_id]['status'] = 'completed'
@@ -5264,6 +5300,8 @@ def survey_start():
                 survey_jobs[job_id]['result'] = result
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             with survey_lock:
                 survey_jobs[job_id]['status'] = 'error'
                 survey_jobs[job_id]['error'] = str(e)
@@ -5294,7 +5332,9 @@ def survey_result(job_id):
         return jsonify({'success': False, 'error': 'Job not found'}), 404
     if job['status'] != 'completed':
         return jsonify({'success': False, 'error': f"Job status: {job['status']}"}), 400
-    return jsonify({'success': True, 'result': job['result']})
+    # frame_results 제외 (대용량 — 별도 엔드포인트 /api/survey/frame-results 사용)
+    result = {k: v for k, v in job['result'].items() if k != 'frame_results'}
+    return jsonify({'success': True, 'result': result})
 
 
 @app.route('/api/survey/stripmap/<job_id>', methods=['GET'])
@@ -5309,6 +5349,46 @@ def survey_stripmap(job_id):
         return jsonify({'success': False, 'error': 'Stripmap not found'}), 404
     directory = os.path.dirname(strip_path)
     filename = os.path.basename(strip_path)
+    return send_from_directory(directory, filename, mimetype='image/jpeg')
+
+
+@app.route('/api/survey/frame-results/<job_id>', methods=['GET'])
+def survey_frame_results(job_id):
+    """프레임별 YOLO 결과 — 비디오 오버레이용"""
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job or job['status'] != 'completed':
+        return jsonify({'success': False, 'error': 'Not ready'}), 404
+    result = job.get('result', {})
+    frame_results = result.get('frame_results', [])
+    fps = result.get('fps', 25)
+    return jsonify({
+        'success': True,
+        'fps': fps,
+        'count': len(frame_results),
+        'frame_results': frame_results,
+    })
+
+
+@app.route('/api/survey/panorama/<job_id>', methods=['GET'])
+def survey_panorama(job_id):
+    """연속 전개도 이미지 서빙 — overlay 파라미터로 오버레이 유무 선택"""
+    with survey_lock:
+        job = survey_jobs.get(job_id)
+    if not job or job['status'] != 'completed':
+        return jsonify({'success': False, 'error': 'Not ready'}), 404
+    result = job.get('result', {})
+
+    overlay = request.args.get('overlay', '1') == '1'
+    if overlay:
+        img_path = result.get('panorama_overlay_path')
+    else:
+        img_path = result.get('panorama_path')
+
+    if not img_path or not os.path.exists(img_path):
+        return jsonify({'success': False, 'error': 'Panorama not found'}), 404
+    directory = os.path.dirname(img_path)
+    filename = os.path.basename(img_path)
     return send_from_directory(directory, filename, mimetype='image/jpeg')
 
 
@@ -5690,6 +5770,105 @@ def proxy_sizing_results():
         '/api/sizing/results', method='GET',
         params={'project_dir': request.args.get('project_dir'), 'video_id': request.args.get('video_id')}
     )
+    return jsonify(data), status_code
+
+
+# ─── Quick Sizing (프로젝트 없는 임의 영상/프레임 분석) ───
+@app.route('/api/quick-sizing/upload', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_upload():
+    """영상/이미지 업로드 → 토큰 반환. multipart `file` 필드 필요."""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'multipart file required'}), 400
+    f = request.files['file']
+    files = {'file': (f.filename, f.stream, f.content_type or 'application/octet-stream')}
+    data, status_code = forward_to_gpu('/api/quick-sizing/upload', method='POST', files=files)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/frame', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_frame():
+    """토큰 + 프레임 번호 → 프레임 base64 + 자동 VP."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/frame', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/analyze', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_analyze():
+    """토큰 + 폴리곤 → 사이징/면적비/전개도 결과."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/analyze', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/batch-analyze', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_batch_analyze():
+    """다중 프레임 일괄 분석."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/batch-analyze',
+                                         method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/calibrate-f', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_calibrate_f():
+    """카메라 f 자동 캘리브레이션."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/calibrate-f',
+                                         method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/release', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_release():
+    """세션 정리."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/release', method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/restore-session', methods=['POST'])
+@require_auth
+def proxy_quick_sizing_restore_session():
+    """이력의 video_path 로 새 세션 부착."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/restore-session',
+                                         method='POST', json=request.json)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/snapshot', methods=['GET'])
+@require_auth
+def proxy_quick_sizing_snapshot():
+    """저장된 프레임 스냅샷 반환 (base64)."""
+    params = {
+        'file': request.args.get('file'),
+        'path': request.args.get('path'),
+        'token': request.args.get('token'),
+        'frame': request.args.get('frame'),
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+    data, status_code = forward_to_gpu('/api/quick-sizing/snapshot', method='GET', params=params)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/log', methods=['GET'])
+@require_auth
+def proxy_quick_sizing_log_list():
+    """분석 이력 조회."""
+    params = {
+        'limit': request.args.get('limit'),
+        'since': request.args.get('since'),
+    }
+    data, status_code = forward_to_gpu('/api/quick-sizing/log', method='GET', params=params)
+    return jsonify(data), status_code
+
+
+@app.route('/api/quick-sizing/log', methods=['DELETE'])
+@require_auth
+def proxy_quick_sizing_log_clear():
+    """분석 이력 비우기."""
+    data, status_code = forward_to_gpu('/api/quick-sizing/log', method='DELETE')
     return jsonify(data), status_code
 
 

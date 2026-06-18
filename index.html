@@ -18296,13 +18296,12 @@ async function loadSurveyResult() {
 
     const ga = result.global_area_ratio || {};
     const gaPct = (ga.global_area_ratio_pct != null) ? ga.global_area_ratio_pct : null;
-    const gaConf = ga.confidence || '';
     const gaIsMetric = ga.metric === true;
-    const gaColor = gaIsMetric ? '#2ecc71' : '#95a5a6';
+    const gaColor = gaIsMetric ? '#2ecc71' : '#5dade2';
     const gaSub = gaPct == null ? 'n/a'
         : gaIsMetric
-            ? `dedup ×${ga.overlap_factor ?? '-'} · z ${((ga.z_span_mm||0)/1000).toFixed(1)}m`
-            : `${gaConf}`;
+            ? `거리 dedup ×${ga.overlap_factor ?? '-'} · z ${((ga.z_span_mm||0)/1000).toFixed(1)}m`
+            : `구간 가중평균 (거리없음)`;
 
     const cardsDiv = document.getElementById('surveySummaryCards');
     cardsDiv.innerHTML = `
@@ -18412,12 +18411,15 @@ function loadSurveyGlobalArea(result) {
     }
     wrap.style.display = 'block';
 
+    const modeHtml = ga.metric
+        ? `<span style="margin-right:16px;"><b>모드:</b> <span style="color:#2ecc71;">거리기반 중복제거(metric)</span> · z ${((ga.z_span_mm||0)/1000).toFixed(1)}m · ${ga.strip_axial_mm}mm/strip</span>
+           <span style="margin-right:16px;"><b>Naïve(중복포함):</b> ${(ga.naive_sum_ratio_pct ?? 0).toFixed(3)}%</span>
+           <span style="margin-right:16px;"><b>중복도:</b> ×${ga.overlap_factor ?? '-'}</span>`
+        : `<span style="margin-right:16px;"><b>모드:</b> <span style="color:#5dade2;">구간 가시면적 가중평균 (OSD 거리없음 — 공간 중복제거 미적용)</span></span>`;
     info.innerHTML = `
-        <span style="margin-right:16px;"><b>Global Area Ratio:</b> <span style="color:#2ecc71;">${ga.global_area_ratio_pct.toFixed(3)}%</span></span>
-        <span style="margin-right:16px;"><b>Naïve(중복포함):</b> ${(ga.naive_sum_ratio_pct ?? 0).toFixed(3)}%</span>
-        <span style="margin-right:16px;"><b>중복도:</b> ×${ga.overlap_factor ?? '-'}</span>
+        <span style="margin-right:16px;"><b>Global Area Ratio:</b> <span style="color:${ga.metric ? '#2ecc71' : '#5dade2'};font-size:14px;">${ga.global_area_ratio_pct.toFixed(3)}%</span></span>
         <span style="margin-right:16px;"><b>가시/결함 셀:</b> ${(ga.visible_cells||0).toLocaleString()} / ${(ga.defect_cells||0).toLocaleString()}</span>
-        <span style="margin-right:16px;"><b>축:</b> ${ga.metric ? `metric (z ${((ga.z_span_mm||0)/1000).toFixed(1)}m, ${ga.strip_axial_mm}mm/strip)` : ga.confidence}</span>
+        ${modeHtml}
     `;
 
     img.style.display = 'none';

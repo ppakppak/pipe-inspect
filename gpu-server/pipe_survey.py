@@ -771,10 +771,10 @@ class PipeSurveyAnalyzer:
         전개 캔버스는 θ(원주) 균등 × z(축) metric → 각 셀의 실면적이 균일하므로
         셀 개수 비 = 실면적 비.
 
-        축 우선순위:
-          - OSD 거리(distance_m) 2개 이상 → metric 모드 (mm 단위, 중복 제거 유효)
-          - 아니면 timestamp_sec 2개 이상 → time-fallback (저신뢰, 균등 간격)
-          - 둘 다 없으면 → strip 단순 연결 (중복 제거 없음)
+        모드:
+          - OSD 거리(distance_m) 2개 이상 → metric 모드 (mm 단위 거리축 중복 제거)
+          - 거리 없음 → aggregate 모드: 인위적 중복 없이 구간 가시면적 가중 평균
+            (정지 반복 중복은 대표 프레임 1장으로 이미 제거, 공간 중복은 거리 없이 추정 불가)
 
         strip_axial_mm: 정지 1장이 대표하는 관 축방향 길이(mm). 기본=관 직경.
             (초점거리 미지로 정확한 축방향 스케일을 못 구하므로 휴리스틱 파라미터)
@@ -787,29 +787,20 @@ class PipeSurveyAnalyzer:
         if strip_axial_mm is None or strip_axial_mm <= 0:
             strip_axial_mm = float(pipe_diameter_mm)
 
-        # ── 축값 결정 (거리 mm 우선, 시각 fallback) ──
+        # ── 거리(z)축 결정: OSD 거리 2개 이상이면 metric, 아니면 aggregate ──
         dists = [s.get('distance_m') for s in strip_stops]
-        times = [s.get('timestamp_sec') for s in strip_stops]
         n_dist = sum(d is not None for d in dists)
-        n_time = sum(t is not None for t in times)
 
         metric = False
         axis = None
         if n_dist >= 2:
             metric = True
             axis = [(d * 1000.0 if d is not None else None) for d in dists]  # m→mm
-        elif n_time >= 2:
-            axis = list(times)
-
-        # 결측 축값은 알려진 값으로 선형 보간
-        if axis is not None:
+            # 결측 거리는 알려진 값으로 선형 보간
             known = [(i, v) for i, v in enumerate(axis) if v is not None]
-            if len(known) >= 2:
-                xs = [i for i, _ in known]
-                ys = [float(v) for _, v in known]
-                axis = list(np.interp(np.arange(n), xs, ys))
-            else:
-                axis = None
+            xs = [i for i, _ in known]
+            ys = [float(v) for _, v in known]
+            axis = list(np.interp(np.arange(n), xs, ys))
 
         # ── strip 1장의 축방향 픽셀 높이 ──
         if metric and axis is not None:
@@ -819,19 +810,14 @@ class PipeSurveyAnalyzer:
             confidence = 'metric'
             z_span_mm = float(max(axis) - z0)
         else:
-            # time-fallback 또는 축값 없음 → 균등 간격 연결 (중복 제거 없음)
+            # 거리 정보 없음 → 인위적 공간 중복 없이 구간 가시면적 가중 평균.
+            # (같은 자리 정지 반복 중복은 이미 대표 프레임 1장으로 제거된 상태이고,
+            #  인접 stop 간 공간 중복은 거리 없이는 알 수 없으므로 중복 제거를 적용하지 않는다.
+            #  timestamp 비례 배치는 정지 중에도 시각이 흘러 인위적 중복을 만들므로 사용하지 않음)
             strip_axial_px = band_h
-            if axis is not None:
-                a0 = min(axis)
-                span = (max(axis) - a0) or 1.0
-                # 전체 높이를 n*band_h 로 정규화한 비례 배치
-                tops = [int(round((a - a0) / span * (n - 1) * strip_axial_px)) for a in axis]
-                confidence = 'low(time-fallback)'
-                z_span_mm = None
-            else:
-                tops = [i * strip_axial_px for i in range(n)]
-                confidence = 'low(no-axis)'
-                z_span_mm = None
+            tops = [i * strip_axial_px for i in range(n)]
+            confidence = 'aggregate(no-distance)'
+            z_span_mm = None
 
         canvas_rows = max(t + strip_axial_px for t in tops)
         # 과도한 캔버스 방지 (>24000행이면 px_per_mm 자동 축소)

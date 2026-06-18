@@ -5279,7 +5279,22 @@ def survey_start():
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gpu-server'))
             from pipe_survey import PipeSurveyAnalyzer
 
-            analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL)
+            # OSD 거리 OCR 주입 → Global Area Ratio metric 모드(거리기반 중복제거) 활성화
+            distance_fn = None
+            try:
+                from osd_ocr import OSDDistanceReader
+                _osd_reader = OSDDistanceReader(gpu=True)
+                def distance_fn(frame_bgr):
+                    try:
+                        d = _osd_reader.read_distance(frame_bgr)
+                        return d.get('distance_m') if isinstance(d, dict) else None
+                    except Exception:
+                        return None
+            except Exception as _osd_e:
+                logging.warning(f"[survey] OSD reader unavailable, distance disabled: {_osd_e}")
+
+            analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL,
+                                          distance_fn=distance_fn)
 
             def progress_cb(current, total, phase_msg):
                 with survey_lock:

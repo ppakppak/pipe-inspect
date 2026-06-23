@@ -70,6 +70,7 @@ datasets/
 docs/
 runs/
 gpu-server/runs_osd_analyze/
+gpu-server/runs_track_proto/
 
 # Backups
 *.bak

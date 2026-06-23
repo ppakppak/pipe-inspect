@@ -16992,7 +16992,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                 <div id="surveyVideoMeta" style="color:#9aa0a6; font-size:12px; margin-bottom:10px;">영상 재생 시 분석된 YOLO 결함 결과가 오버레이됩니다.</div>
                 <div style="background:#1e1e1e; border:1px solid #555; border-radius:6px; padding:10px;">
                     <div style="position:relative; display:inline-block; width:100%;">
-                        <video id="surveyVideoPreview" controls preload="metadata" style="width:100%; max-height:420px; background:#000; border-radius:4px;"></video>
+                        <video id="surveyVideoPreview" controls preload="metadata" style="width:100%; max-height:420px; background:#000; border-radius:4px; object-fit:contain; display:block;"></video>
                         <canvas id="surveyVideoCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; border-radius:4px;"></canvas>
                     </div>
                 </div>
@@ -18587,12 +18587,16 @@ let _surveyFps = 25;
 let _surveyOverlayEnabled = true;
 
 const SURVEY_DEFECT_COLORS = {
-    'rust':  'rgba(231, 76, 60, 0.6)',
-    'scale': 'rgba(241, 196, 15, 0.6)',
+    'rust':   'rgba(231, 76, 60, 0.6)',
+    'scale':  'rgba(241, 196, 15, 0.6)',
+    'nodule': 'rgba(255, 140, 0, 0.6)',   // corrosion_nodule (orange)
+    'peel':   'rgba(80, 130, 255, 0.6)',  // coating_peel (blue)
 };
 const SURVEY_DEFECT_STROKE = {
-    'rust':  '#E74C3C',
-    'scale': '#F1C40F',
+    'rust':   '#E74C3C',
+    'scale':  '#F1C40F',
+    'nodule': '#FF8C00',
+    'peel':   '#5082FF',
 };
 
 function getSurveyDefectColor(label, type) {
@@ -18615,6 +18619,10 @@ async function loadSurveyFrameResults() {
             // 오버레이 토글 표시
             document.getElementById('surveyOverlayLabel').style.display =
                 _surveyFrameResults.length > 0 ? 'flex' : 'none';
+            // 결과 로드 직후(정지 상태)에도 즉시 오버레이 그리기 — 재생/seek 전에도 보이도록
+            const _detFrames = _surveyFrameResults.filter(f => (f.detections || []).length).length;
+            console.log(`[survey] frame results: ${_surveyFrameResults.length} (detections in ${_detFrames})`);
+            requestAnimationFrame(drawSurveyVideoOverlay);
         }
     } catch(e) { console.error('Failed to load frame results:', e); }
 }
@@ -18661,11 +18669,23 @@ function drawSurveyVideoOverlay() {
         return;
     }
 
-    // 비디오 원본 크기 → 표시 크기 스케일 계산
+    // 비디오 원본 크기 → 실제 렌더 영역 매핑 (object-fit:contain 레터박스 보정)
     const vw = video.videoWidth || 1;
     const vh = video.videoHeight || 1;
-    const scaleX = canvas.width / vw;
-    const scaleY = canvas.height / vh;
+    const videoAR = vw / vh;
+    const elemAR = canvas.width / canvas.height;
+    let renderW, renderH, offX, offY;
+    if (videoAR > elemAR) {           // 좌우 꽉 참, 상하 레터박스
+        renderW = canvas.width;
+        renderH = canvas.width / videoAR;
+        offX = 0; offY = (canvas.height - renderH) / 2;
+    } else {                          // 상하 꽉 참, 좌우 레터박스
+        renderH = canvas.height;
+        renderW = canvas.height * videoAR;
+        offY = 0; offX = (canvas.width - renderW) / 2;
+    }
+    const scaleX = renderW / vw;
+    const scaleY = renderH / vh;
 
     // 프레임 정보 표시
     if (info) {
@@ -18682,7 +18702,7 @@ function drawSurveyVideoOverlay() {
         if (polygon && polygon.length >= 3) {
             // 폴리곤 (반투명 채우기 + 외곽선)
             ctx.beginPath();
-            const pts = polygon.map(pt => [pt[0] * scaleX, pt[1] * scaleY]);
+            const pts = polygon.map(pt => [pt[0] * scaleX + offX, pt[1] * scaleY + offY]);
             ctx.moveTo(pts[0][0], pts[0][1]);
             for (let k = 1; k < pts.length; k++) {
                 ctx.lineTo(pts[k][0], pts[k][1]);
@@ -18709,12 +18729,12 @@ function drawSurveyVideoOverlay() {
             const [bx, by, bw, bh] = det.box;
             ctx.strokeStyle = getSurveyDefectColor(label, 'stroke');
             ctx.lineWidth = 2;
-            ctx.strokeRect(bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY);
+            ctx.strokeRect(bx * scaleX + offX, by * scaleY + offY, bw * scaleX, bh * scaleY);
 
             const text = `${label} ${(conf * 100).toFixed(0)}%`;
             ctx.font = 'bold 12px monospace';
             ctx.fillStyle = getSurveyDefectColor(label, 'stroke');
-            ctx.fillText(text, bx * scaleX + 3, by * scaleY - 5);
+            ctx.fillText(text, bx * scaleX + offX + 3, by * scaleY + offY - 5);
         }
     }
 }

@@ -2727,8 +2727,14 @@ def survey_yolo_infer():
             height, width = frame.shape[:2]
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+            # 추론 파라미터 (미지정 시 기본값)
+            conf = float(data.get('conf', 0.25))
+            iou = float(data.get('iou', 0.7))
+            imgsz = int(data.get('imgsz', 640))
+
             # YOLO 추론
-            yolo_results = yolo_model(frame_rgb, verbose=False, stream=True)
+            yolo_results = yolo_model(frame_rgb, conf=conf, iou=iou, imgsz=imgsz,
+                                      verbose=False, stream=True)
             result = next(yolo_results)
 
             from pipe_survey import yolo_result_to_detections

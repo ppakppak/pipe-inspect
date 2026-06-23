@@ -5260,6 +5260,9 @@ def survey_start():
     pipe_diameter = data.get('pipe_diameter_mm', 300)
     strip_axial_mm = data.get('strip_axial_mm')          # Global Area Ratio 튜닝 (None=관 직경)
     global_px_per_mm = data.get('global_px_per_mm', 0.2)  # z축 해상도
+    infer_conf = float(data.get('conf', 0.25))           # YOLO confidence 임계값
+    infer_iou = float(data.get('iou', 0.7))              # YOLO NMS IoU
+    infer_imgsz = int(data.get('imgsz', 640))            # YOLO 입력 크기
 
     if not video_path or not os.path.exists(video_path):
         return jsonify({'success': False, 'error': 'Invalid video_path'}), 400
@@ -5342,6 +5345,9 @@ def survey_start():
 
             analyzer = PipeSurveyAnalyzer(gpu=True, gpu_server_url=GPU_SERVER_URL,
                                           distance_fn=distance_fn, unwrap_fn=unwrap_fn)
+            analyzer.infer_conf = infer_conf
+            analyzer.infer_iou = infer_iou
+            analyzer.infer_imgsz = infer_imgsz
 
             def progress_cb(current, total, phase_msg):
                 with survey_lock:

@@ -16974,6 +16974,34 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         </button>
                     </div>
                 </div>
+                <!-- 검출 파라미터 (분석 + 실시간 프리뷰 공통) -->
+                <div style="display:flex; gap:18px; align-items:center; margin-top:12px; flex-wrap:wrap; color:#aaa; font-size:12px;">
+                    <span style="color:#777;">YOLO 검출:</span>
+                    <label style="display:flex; align-items:center; gap:6px;">
+                        conf
+                        <input type="range" id="surveyConf" min="0.05" max="0.9" step="0.05" value="0.25"
+                               oninput="document.getElementById('surveyConfVal').textContent=(+this.value).toFixed(2); onSurveyInferParamChange()"
+                               style="width:120px; accent-color:#4a9eff;">
+                        <span id="surveyConfVal" style="color:#fff; width:30px;">0.25</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px;">
+                        IoU
+                        <input type="range" id="surveyIou" min="0.1" max="0.95" step="0.05" value="0.70"
+                               oninput="document.getElementById('surveyIouVal').textContent=(+this.value).toFixed(2); onSurveyInferParamChange()"
+                               style="width:120px; accent-color:#4a9eff;">
+                        <span id="surveyIouVal" style="color:#fff; width:30px;">0.70</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px;">
+                        imgsz
+                        <select id="surveyImgsz" onchange="onSurveyInferParamChange()"
+                                style="padding:5px; background:#1e1e1e; border:1px solid #555; color:white; border-radius:4px;">
+                            <option value="640">640</option>
+                            <option value="960">960</option>
+                            <option value="1280">1280</option>
+                        </select>
+                    </label>
+                    <span style="color:#666;">(conf↓·imgsz↑ = 더 민감, 프리뷰 느려짐)</span>
+                </div>
             </div>
 
             <!-- 영상 미리보기 + YOLO 오버레이 -->
@@ -18212,6 +18240,7 @@ async function startSurvey() {
     if (!videoPath) { alert('Select a video first'); return; }
 
     const pipeMm = parseInt(document.getElementById('surveyPipeDiameter').value) || 300;
+    const ip = getSurveyInferParams();
 
     document.getElementById('surveyStartBtn').disabled = true;
     document.getElementById('surveyProgress').style.display = 'block';
@@ -18227,6 +18256,9 @@ async function startSurvey() {
             body: JSON.stringify({
                 video_path: videoPath,
                 pipe_diameter_mm: pipeMm,
+                conf: ip.conf,
+                iou: ip.iou,
+                imgsz: ip.imgsz,
             })
         });
         const data = await resp.json();
@@ -18608,6 +18640,19 @@ function _captureCurrentFrameB64() {
     } catch(e) { console.error('[survey] frame capture failed:', e); return null; }
 }
 
+function getSurveyInferParams() {
+    return {
+        conf: parseFloat(document.getElementById('surveyConf')?.value) || 0.25,
+        iou: parseFloat(document.getElementById('surveyIou')?.value) || 0.7,
+        imgsz: parseInt(document.getElementById('surveyImgsz')?.value) || 640,
+    };
+}
+
+// 파라미터 변경 시 현재 프레임 재추론 (효과 즉시 확인)
+function onSurveyInferParamChange() {
+    if (_surveyOverlayEnabled) requestLiveInference();
+}
+
 async function requestLiveInference() {
     if (!_surveyOverlayEnabled) return;
     if (_liveInferBusy) return;                 // 응답 올 때까지 1건만 → 자연 스로틀
@@ -18615,10 +18660,11 @@ async function requestLiveInference() {
     if (!b64) return;
     _liveInferBusy = true;
     try {
+        const p = getSurveyInferParams();
         const resp = await fetch('/api/survey/infer', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({image_base64: b64})
+            body: JSON.stringify({image_base64: b64, conf: p.conf, iou: p.iou, imgsz: p.imgsz})
         });
         const data = await resp.json();
         _surveyLiveDets = (data && data.success) ? (data.detections || []) : [];

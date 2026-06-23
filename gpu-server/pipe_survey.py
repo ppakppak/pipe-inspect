@@ -149,6 +149,10 @@ class PipeSurveyAnalyzer:
         self.colors = colors
         self.preprocess_fn = preprocess_fn
         self.unwrap_fn = unwrap_fn
+        # YOLO 추론 파라미터 (GPU 서버 호출 시 전달)
+        self.infer_conf = 0.25
+        self.infer_iou = 0.7
+        self.infer_imgsz = 640
 
     # ════════════════════════════════════════════
     #  메인 분석
@@ -665,7 +669,9 @@ class PipeSurveyAnalyzer:
 
             resp = requests.post(
                 f'{self.gpu_server_url}/api/survey/infer',
-                json={'image_base64': img_b64},
+                json={'image_base64': img_b64,
+                      'conf': self.infer_conf, 'iou': self.infer_iou,
+                      'imgsz': self.infer_imgsz},
                 timeout=30
             )
 

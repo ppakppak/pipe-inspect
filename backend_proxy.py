@@ -5458,6 +5458,12 @@ def survey_panorama(job_id):
     return send_from_directory(directory, filename, mimetype='image/jpeg')
 
 
+@app.route('/api/survey/infer', methods=['POST'])
+def proxy_survey_infer():
+    """프리뷰 실시간 오버레이용 — 단일 프레임 YOLO 추론을 GPU 서버로 포워딩"""
+    return forward_to_gpu('/api/survey/infer', method='POST', json=request.json)
+
+
 @app.route('/api/survey/global-area/<job_id>', methods=['GET'])
 def survey_global_area(job_id):
     """Global Area Ratio θ×z 누적 캔버스 이미지 서빙 (가시=회색, 결함=빨강)"""

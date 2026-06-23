@@ -18184,9 +18184,14 @@ function updateSurveyVideoPreview() {
     openLink.href = previewUrl;
     openLink.style.display = 'inline';
 
+    // 실시간 추론은 분석 전에도 동작 → 오버레이 토글 항상 표시
+    const ovLabel = document.getElementById('surveyOverlayLabel');
+    if (ovLabel) ovLabel.style.display = 'flex';
+
     if (video.dataset.currentSrc !== previewUrl) {
         video.dataset.currentSrc = previewUrl;
         video.src = previewUrl;
+        _surveyLiveDets = [];
         video.load();
     }
 }
@@ -18586,6 +18591,45 @@ let _surveyFrameResults = [];  // [{frame_number, distance_m, timestamp_sec, det
 let _surveyFps = 25;
 let _surveyOverlayEnabled = true;
 
+// 실시간 온디맨드 추론 (프리뷰 전 프레임 오버레이)
+let _surveyLiveDets = [];       // 현재 표시 프레임의 검출 결과
+let _liveInferBusy = false;     // 추론 1건씩만 (자연 스로틀)
+let _liveInferCanvas = null;    // 프레임 캡처용 오프스크린 캔버스
+
+function _captureCurrentFrameB64() {
+    const video = document.getElementById('surveyVideoPreview');
+    if (!video || !video.videoWidth) return null;
+    if (!_liveInferCanvas) _liveInferCanvas = document.createElement('canvas');
+    _liveInferCanvas.width = video.videoWidth;
+    _liveInferCanvas.height = video.videoHeight;
+    try {
+        _liveInferCanvas.getContext('2d').drawImage(video, 0, 0, _liveInferCanvas.width, _liveInferCanvas.height);
+        return _liveInferCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+    } catch(e) { console.error('[survey] frame capture failed:', e); return null; }
+}
+
+async function requestLiveInference() {
+    if (!_surveyOverlayEnabled) return;
+    if (_liveInferBusy) return;                 // 응답 올 때까지 1건만 → 자연 스로틀
+    const b64 = _captureCurrentFrameB64();
+    if (!b64) return;
+    _liveInferBusy = true;
+    try {
+        const resp = await fetch('/api/survey/infer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({image_base64: b64})
+        });
+        const data = await resp.json();
+        _surveyLiveDets = (data && data.success) ? (data.detections || []) : [];
+    } catch(e) {
+        console.error('[survey] live infer failed:', e);
+    } finally {
+        _liveInferBusy = false;
+        drawSurveyVideoOverlay();
+    }
+}
+
 const SURVEY_DEFECT_COLORS = {
     'rust':   'rgba(231, 76, 60, 0.6)',
     'scale':  'rgba(241, 196, 15, 0.6)',
@@ -18622,7 +18666,7 @@ async function loadSurveyFrameResults() {
             // 결과 로드 직후(정지 상태)에도 즉시 오버레이 그리기 — 재생/seek 전에도 보이도록
             const _detFrames = _surveyFrameResults.filter(f => (f.detections || []).length).length;
             console.log(`[survey] frame results: ${_surveyFrameResults.length} (detections in ${_detFrames})`);
-            requestAnimationFrame(drawSurveyVideoOverlay);
+            requestLiveInference();   // 현재 프레임 실시간 오버레이
         }
     } catch(e) { console.error('Failed to load frame results:', e); }
 }
@@ -18658,16 +18702,13 @@ function drawSurveyVideoOverlay() {
     canvas.height = rect.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (!_surveyOverlayEnabled || !_surveyFrameResults.length) {
+    if (!_surveyOverlayEnabled) {
         if (info) info.textContent = '';
         return;
     }
 
-    const fr = findNearestFrameResult(video.currentTime);
-    if (!fr) {
-        if (info) info.textContent = '';
-        return;
-    }
+    // 실시간 온디맨드 추론 결과 사용 (현재 표시 중인 프레임)
+    const dets = _surveyLiveDets || [];
 
     // 비디오 원본 크기 → 실제 렌더 영역 매핑 (object-fit:contain 레터박스 보정)
     const vw = video.videoWidth || 1;
@@ -18689,12 +18730,13 @@ function drawSurveyVideoOverlay() {
 
     // 프레임 정보 표시
     if (info) {
-        const detCount = (fr.detections || []).length;
-        info.textContent = `F${fr.frame_number} | ${fr.distance_m}m | ${detCount} detections`;
+        const t = video.currentTime || 0;
+        info.textContent = `t=${t.toFixed(1)}s | ${dets.length} detections (live)` +
+            (_liveInferBusy ? ' …' : '');
     }
 
     // 결함 폴리곤 그리기
-    for (const det of (fr.detections || [])) {
+    for (const det of dets) {
         const polygon = det.polygon;
         const label = det.label || 'unknown';
         const conf = det.confidence || 0;
@@ -18741,26 +18783,31 @@ function drawSurveyVideoOverlay() {
 
 function toggleSurveyVideoOverlay() {
     _surveyOverlayEnabled = document.getElementById('surveyVideoOverlayToggle').checked;
-    drawSurveyVideoOverlay();
+    if (_surveyOverlayEnabled) requestLiveInference();
+    else { _surveyLiveDets = []; drawSurveyVideoOverlay(); }
 }
 
-// 비디오 timeupdate 이벤트에 오버레이 연결
+// 비디오 이벤트 → 실시간 온디맨드 추론 + 오버레이
 (function() {
     const video = document.getElementById('surveyVideoPreview');
-    if (video) {
-        video.addEventListener('timeupdate', drawSurveyVideoOverlay);
-        video.addEventListener('seeked', drawSurveyVideoOverlay);
-        video.addEventListener('play', function() {
-            // 재생 중일 때는 requestAnimationFrame으로 더 부드럽게
-            function rafLoop() {
-                if (!video.paused && !video.ended) {
-                    drawSurveyVideoOverlay();
-                    requestAnimationFrame(rafLoop);
-                }
+    if (!video) return;
+    // 정지/탐색 시: 현재 프레임 정확히 추론
+    video.addEventListener('seeked', requestLiveInference);
+    video.addEventListener('pause', requestLiveInference);
+    video.addEventListener('loadeddata', requestLiveInference);
+    // 재생 중: rAF로 마지막 결과를 부드럽게 다시 그리고, busy 가드로 자연 스로틀 추론
+    video.addEventListener('play', function() {
+        function rafLoop() {
+            if (!video.paused && !video.ended) {
+                requestLiveInference();      // busy면 즉시 반환(스로틀)
+                drawSurveyVideoOverlay();    // 마지막 검출을 현재 캔버스에 다시 그림
+                requestAnimationFrame(rafLoop);
             }
-            rafLoop();
-        });
-    }
+        }
+        rafLoop();
+    });
+    // 창 크기 변경 시 캔버스 재정렬
+    window.addEventListener('resize', drawSurveyVideoOverlay);
 })();
 
 // Auto-load videos when survey/gnu-mapping tab opens

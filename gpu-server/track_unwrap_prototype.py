@@ -80,13 +80,32 @@ def iou_box(a, b):
     return inter / ua if ua > 0 else 0.0
 
 
-def phase_shift_z(prev_gray, cur_gray, hann):
-    """위상상관으로 cur→prev 정렬 시 (dx, dy) 추정. dy = z(축) 변위 px, resp=신뢰도."""
-    try:
-        (dx, dy), resp = cv2.phaseCorrelate(prev_gray, cur_gray, hann)
-        return float(dx), float(dy), float(resp)
-    except Exception:
-        return 0.0, 0.0, 0.0
+def small_gray(frame_bgr, w=160, h=90):
+    """SSIM 정지판별용 다운스케일 그레이."""
+    g = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(g, (w, h), interpolation=cv2.INTER_AREA)
+
+
+def estimate_dz_flow(prev_u8, cur_u8, vis_u8):
+    """전개공간 희소 광학흐름 → z변위 합의(median dy) 추정.
+
+    카메라 전진이 전개도(θ×z)에서 ~z축 평행이동이 되는 점을 이용.
+    가시영역 특징점만 추적해 median으로 이상치 제거.
+    반환: (dz_px, n_inlier)
+    """
+    pts = cv2.goodFeaturesToTrack(prev_u8, maxCorners=300, qualityLevel=0.01,
+                                  minDistance=8, mask=vis_u8)
+    if pts is None or len(pts) < 8:
+        return 0.0, 0
+    nxt, st, _ = cv2.calcOpticalFlowPyrLK(prev_u8, cur_u8, pts, None,
+                                          winSize=(21, 21), maxLevel=3)
+    if nxt is None:
+        return 0.0, 0
+    good = st.flatten() == 1
+    if int(good.sum()) < 8:
+        return 0.0, int(good.sum())
+    dy = (nxt[good] - pts[good])[:, 0, 1]
+    return float(np.median(dy)), int(good.sum())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -102,6 +121,8 @@ def main():
     ap.add_argument('--iou', type=float, default=0.7)
     ap.add_argument('--imgsz', type=int, default=640)
     ap.add_argument('--track-iou', type=float, default=0.2, help='트랙 매칭 IoU 임계')
+    ap.add_argument('--ssim-stop', type=float, default=0.90, help='정지 판별 SSIM 임계(원본프레임)')
+    ap.add_argument('--min-move-px', type=float, default=0.8, help='이동 최소 z변위(px, 미만은 정지로 간주)')
     ap.add_argument('--yolo', default=None, help='YOLO 가중치 (기본: ../yolo_best.pt)')
     ap.add_argument('--ppnet', default=None, help='PPNet 가중치 (기본: weights/ppnet.pt)')
     ap.add_argument('--outdir', default=None)
@@ -123,6 +144,7 @@ def main():
           f'conf={args.conf} iou={args.iou} imgsz={args.imgsz}')
 
     from ultralytics import YOLO
+    from skimage.metrics import structural_similarity as ssim
     yolo = YOLO(yolo_path)
 
     cap = cv2.VideoCapture(args.video)
@@ -137,14 +159,16 @@ def main():
     eng, mapper = build_engine_and_mapper(ppnet_path, frame0.shape, args.pipe_mm,
                                           args.ppm, args.max_depth_mm)
     out_h, out_w = mapper.out_h, mapper.out_w
-    hann = cv2.createHanningWindow((out_w, out_h), cv2.CV_32F)
     print(f'[proto] unwrap canvas per-frame: {out_h}x{out_w} (max_depth={args.max_depth_mm}mm @ {args.ppm}px/mm)')
+    print(f'[proto] motion: SSIM gate={args.ssim_stop} (정지판별), flow median dz (이동 시)')
 
-    # ── Phase A: 프레임별 전개 + 검출 + 위상상관 z변위 ──
-    frames = []          # [{idx, vis(bool out_h×out_w), dets:[{label,conf,uw_mask,lbbox}], dz}]
-    prev_gray = None
-    cum_offsets = []     # 프레임별 누적 z offset(px)
+    # ── Phase A: 프레임별 전개 + 검출 + 모션게이팅 z변위 ──
+    frames = []          # [{idx, vis(bool out_h×out_w), dets:[...], dz, moving}]
+    prev_uw_gray = None  # 직전 전개 그레이(uint8) — 광학흐름용
+    prev_small = None    # 직전 원본 다운스케일 그레이 — SSIM 정지판별용
+    cum_offsets = []
     cum = 0.0
+    n_moving = n_static = 0
     sampled = 0
     fidx = 0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -166,17 +190,25 @@ def main():
             print(f'  [skip {fidx}] ppnet: {e}'); continue
         unwrapped = mapper.unwrap(rgb, pose)              # (out_h,out_w,3)
         vis = np.any(unwrapped > 0, axis=-1)
-        gray = cv2.cvtColor(unwrapped, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        uw_gray = cv2.cvtColor(unwrapped, cv2.COLOR_RGB2GRAY)
+        cur_small = small_gray(frame)
 
-        # 위상상관 z변위
+        # 모션 게이팅: ① 원본 SSIM으로 정지/이동 판별 ② 이동 시 전개 광학흐름 median dz
         dz = 0.0
-        if prev_gray is not None:
-            _, dy, resp = phase_shift_z(prev_gray, gray, hann)
-            # 비정상 변위(전개 높이의 절반 초과)·저신뢰는 0 처리
-            if resp < 0.05 or abs(dy) > out_h * 0.5:
-                dy = 0.0
-            dz = dy
-        prev_gray = gray
+        moving = False
+        if prev_small is not None:
+            s = ssim(prev_small, cur_small)
+            if s < args.ssim_stop:                         # 이동 후보
+                dzf, ninl = estimate_dz_flow(prev_uw_gray, uw_gray,
+                                             (vis.astype(np.uint8) * 255))
+                if abs(dzf) >= args.min_move_px and ninl >= 8:
+                    dz = dzf; moving = True
+        if moving:
+            n_moving += 1
+        else:
+            n_static += 1
+        prev_uw_gray = uw_gray
+        prev_small = cur_small
         cum += dz
         cum_offsets.append(cum)
 
@@ -194,11 +226,15 @@ def main():
             dets.append({'label': d['label'], 'conf': d['conf'],
                          'uw_mask': uwb, 'lbbox': lb})
 
-        frames.append({'idx': fidx, 'vis': vis, 'dets': dets, 'dz': dz})
+        frames.append({'idx': fidx, 'vis': vis, 'dets': dets, 'dz': dz, 'moving': moving})
         sampled += 1
         if sampled % 20 == 0:
-            print(f'  sampled {sampled} (frame {fidx}/{total}) cum_z={cum:.0f}px dets={len(dets)}')
+            print(f'  sampled {sampled} (frame {fidx}/{total}) cum_z={cum:.0f}px '
+                  f'moving={n_moving} static={n_static} dets={len(dets)}')
     cap.release()
+    stop_ratio = round(n_static / max(1, n_moving + n_static) * 100, 1)
+    print(f'[proto] motion gate: moving={n_moving} static={n_static} (정지율 {stop_ratio}% '
+          f'/ survey 참고 ~84%)')
 
     if not frames:
         print('[ERR] no frames processed'); sys.exit(1)
@@ -301,7 +337,9 @@ def main():
         'sampled_frames': len(frames), 'stride': args.stride, 'ppm': args.ppm,
         'max_depth_mm': args.max_depth_mm,
         'infer': {'conf': args.conf, 'iou': args.iou, 'imgsz': args.imgsz},
-        'z_registration': 'phase_correlation(unwrap-space)',
+        'z_registration': 'ssim_gate + optical_flow_median(unwrap-space)',
+        'ssim_stop': args.ssim_stop, 'min_move_px': args.min_move_px,
+        'moving_frames': n_moving, 'static_frames': n_static, 'stop_ratio_pct': stop_ratio,
         'z_span_mm_estimated': round(z_span_mm, 1),
         'canvas': [canvas_rows, out_w],
         'area_ratio_pct': {

@@ -5972,6 +5972,98 @@ def proxy_quick_sizing_log_clear():
     return jsonify(data), status_code
 
 
+# ============================================================
+# K-water 관내시경영상: 관종/관경 분류 스캔 + 서버 파일 로드
+# (pipe-field의 /api/kwater/scan과 동일한 폴더명 파싱 규약)
+# ============================================================
+KWATER_VIDEO_ROOT = os.environ.get(
+    'KWATER_VIDEO_ROOT', '/home/intu/nas2/k_water/관내시경영상')
+_KWATER_VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov'}
+
+
+def _parse_kwater_folder(name):
+    """폴더명(번호-권역-관경-관종) 파싱. '=' 오타 정규화·순서 무관 견고 파싱."""
+    import re as _re
+    site = region = material = None
+    diameter_mm = None
+    for tok in (t for t in name.replace('=', '-').split('-') if t):
+        m = _re.match(r'^(\d+)\s*MM$', tok, _re.IGNORECASE)
+        if m:
+            diameter_mm = int(m.group(1))
+        elif tok in ('지방', '광역'):
+            region = tok
+        elif _re.fullmatch(r'\d+', tok) and site is None:
+            site = tok
+        else:
+            material = tok
+    return site, region, diameter_mm, material
+
+
+@app.route('/api/kwater/scan', methods=['GET'])
+@require_auth
+def kwater_scan():
+    """KWATER_VIDEO_ROOT 하위폴더를 관종/관경으로 분류 (폴더별 영상 목록 포함)."""
+    root = Path(KWATER_VIDEO_ROOT)
+    if not root.is_dir():
+        return jsonify({'success': False,
+                        'error': f'영상 폴더 없음: {KWATER_VIDEO_ROOT}'}), 404
+    folders, materials, diameters = [], set(), set()
+    for child in sorted(root.iterdir(), key=lambda x: x.name.lower()):
+        if not child.is_dir() or child.name.startswith(('.', '$')):
+            continue
+        site, region, diameter_mm, material = _parse_kwater_folder(child.name)
+        videos = []
+        try:
+            for f in sorted(child.iterdir()):
+                if f.is_file() and f.suffix.lower() in _KWATER_VIDEO_EXTS:
+                    try:
+                        sz = round(f.stat().st_size / (1024 ** 2))
+                    except OSError:
+                        sz = 0
+                    videos.append({'name': f.name, 'path': str(f), 'size_mb': sz})
+        except OSError:
+            pass
+        if material:
+            materials.add(material)
+        if diameter_mm:
+            diameters.add(diameter_mm)
+        folders.append({'name': child.name, 'path': str(child), 'site': site,
+                        'region': region, 'diameter_mm': diameter_mm,
+                        'material': material, 'count': len(videos),
+                        'videos': videos})
+    return jsonify({'success': True, 'root': str(root), 'total': len(folders),
+                    'folders': folders, 'materials': sorted(materials),
+                    'diameters': sorted(diameters)})
+
+
+@app.route('/api/quick-sizing/load-server-file', methods=['POST'])
+@require_auth
+def quick_sizing_load_server_file():
+    """서버(NAS)의 영상 파일을 Quick Sizing 세션으로 로드.
+
+    json {path} → KWATER_VIDEO_ROOT 하위 검증 → 파일 스트림을 gpu-server
+    /api/quick-sizing/upload에 multipart로 전달(업로드와 동일한 토큰 반환).
+    """
+    body = request.json or {}
+    raw = body.get('path', '')
+    if not raw:
+        return jsonify({'success': False, 'error': 'path required'}), 400
+    p = Path(raw).resolve()
+    root = Path(KWATER_VIDEO_ROOT).resolve()
+    if not str(p).startswith(str(root) + os.sep):
+        return jsonify({'success': False,
+                        'error': '허용 경로 밖 파일'}), 403
+    if not p.is_file() or p.suffix.lower() not in _KWATER_VIDEO_EXTS:
+        return jsonify({'success': False, 'error': f'영상 파일 아님: {p.name}'}), 404
+    with open(p, 'rb') as fh:
+        files = {'file': (p.name, fh, 'video/mp4')}
+        data, status_code = forward_to_gpu('/api/quick-sizing/upload',
+                                           method='POST', files=files)
+    if isinstance(data, dict):
+        data['source_path'] = str(p)
+    return jsonify(data), status_code
+
+
 if __name__ == '__main__':
     # 세션 정리 스레드 시작
     cleanup_thread = threading.Thread(target=cleanup_sessions, daemon=True)

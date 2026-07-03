@@ -18022,6 +18022,18 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         </div>
                     </div>
                     <div id="qsUploadStatus" style="margin-top:10px; font-size:12px; color:#888;"></div>
+                    <!-- NAS 관종·관경 선택 -->
+                    <div style="margin-top:12px; border-top:1px solid #333; padding-top:10px;">
+                        <button id="qsNasPickBtn" onclick="qsToggleNasPicker()" style="padding:7px 14px; background:#2d3a4a; border:1px solid #4a9eff; border-radius:4px; color:#9cf; cursor:pointer; font-size:12px;">📁 NAS 관종·관경에서 선택</button>
+                        <div id="qsNasPicker" style="display:none; margin-top:10px;">
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <select id="qsNasRegion" onchange="qsNasRenderList()" style="flex:1; min-width:90px; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;"><option value="">권역(전체)</option></select>
+                                <select id="qsNasMat" onchange="qsNasRenderList()" style="flex:1; min-width:100px; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;"><option value="">관종(전체)</option></select>
+                                <select id="qsNasDia" onchange="qsNasRenderList()" style="flex:1; min-width:100px; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;"><option value="">관경(전체)</option></select>
+                            </div>
+                            <div id="qsNasList" style="max-height:280px; overflow:auto; margin-top:8px; background:#111; border:1px solid #333; border-radius:4px; font-size:12px;"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- 2) 프레임 + 폴리곤 -->
@@ -21784,24 +21796,108 @@ async function qsUpload() {
             status.textContent = `실패: ${j.error || '알 수 없는 오류'}`;
             return;
         }
-        qsState.token = j.token;
-        qsState.kind = j.kind;
-        qsState.frameCount = j.frame_count;
-        qsState.fps = j.fps;
-        qsState.width = j.width;
-        qsState.height = j.height;
-        qsState.polygons = [];
-        qsState.currentPoints = [];
-        status.textContent = `업로드 완료 · ${j.kind} · ${j.width}×${j.height} · ${j.frame_count} 프레임${j.fps ? ' @ ' + j.fps.toFixed(1) + ' fps' : ''}`;
+        await qsApplyLoadResult(j, '업로드 완료');
+    } catch (e) {
+        status.textContent = `오류: ${e.message}`;
+    }
+}
 
-        document.getElementById('qsWorkArea').style.display = 'grid';
-        const slider = document.getElementById('qsFrameSlider');
-        slider.max = Math.max(0, j.frame_count - 1);
-        slider.value = 0;
-        document.getElementById('qsFrameNumber').value = 0;
-        document.getElementById('qsFrameNumber').max = Math.max(0, j.frame_count - 1);
-        document.getElementById('qsFrameTotal').textContent = `/ ${j.frame_count}`;
-        await qsLoadFrame();
+// 업로드/서버로드 공통: 세션 상태 반영 + 작업영역 초기화
+async function qsApplyLoadResult(j, label) {
+    const status = document.getElementById('qsUploadStatus');
+    qsState.token = j.token;
+    qsState.kind = j.kind;
+    qsState.frameCount = j.frame_count;
+    qsState.fps = j.fps;
+    qsState.width = j.width;
+    qsState.height = j.height;
+    qsState.polygons = [];
+    qsState.currentPoints = [];
+    status.textContent = `${label} · ${j.kind} · ${j.width}×${j.height} · ${j.frame_count} 프레임${j.fps ? ' @ ' + j.fps.toFixed(1) + ' fps' : ''}`;
+
+    document.getElementById('qsWorkArea').style.display = 'grid';
+    const slider = document.getElementById('qsFrameSlider');
+    slider.max = Math.max(0, j.frame_count - 1);
+    slider.value = 0;
+    document.getElementById('qsFrameNumber').value = 0;
+    document.getElementById('qsFrameNumber').max = Math.max(0, j.frame_count - 1);
+    document.getElementById('qsFrameTotal').textContent = `/ ${j.frame_count}`;
+    await qsLoadFrame();
+}
+
+// ─── NAS 관종·관경 선택 ───
+let qsNasData = null;
+async function qsToggleNasPicker() {
+    const panel = document.getElementById('qsNasPicker');
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    if (!qsNasData) {
+        document.getElementById('qsNasList').innerHTML = '<div style="padding:10px; color:#888;">NAS 폴더 스캔 중...</div>';
+        try {
+            const r = await authFetch('/api/kwater/scan');
+            const j = await r.json();
+            if (!j.success) throw new Error(j.error || 'scan 실패');
+            qsNasData = j;
+            qsNasFillFilters();
+        } catch (e) {
+            document.getElementById('qsNasList').innerHTML = `<div style="padding:10px; color:#f66;">스캔 실패: ${e.message}</div>`;
+            return;
+        }
+    }
+    qsNasRenderList();
+}
+function qsNasFillFilters() {
+    const withVids = qsNasData.folders.filter(f => f.count > 0);
+    const fill = (id, vals, fmt) => {
+        const sel = document.getElementById(id);
+        const cur = sel.value;
+        sel.innerHTML = sel.options[0].outerHTML + vals.map(v => `<option value="${v}">${fmt ? fmt(v) : v}</option>`).join('');
+        sel.value = cur;
+    };
+    fill('qsNasRegion', [...new Set(withVids.map(f => f.region).filter(Boolean))].sort());
+    fill('qsNasMat', [...new Set(withVids.map(f => f.material).filter(Boolean))].sort());
+    fill('qsNasDia', [...new Set(withVids.map(f => f.diameter_mm).filter(Boolean))].sort((a, b) => a - b), v => v + 'MM');
+}
+function qsNasRenderList() {
+    if (!qsNasData) return;
+    const reg = document.getElementById('qsNasRegion').value;
+    const mat = document.getElementById('qsNasMat').value;
+    const dia = document.getElementById('qsNasDia').value;
+    const list = document.getElementById('qsNasList');
+    const fs = qsNasData.folders.filter(f => f.count > 0
+        && (!reg || f.region === reg) && (!mat || f.material === mat)
+        && (!dia || String(f.diameter_mm) === dia));
+    if (!fs.length) { list.innerHTML = '<div style="padding:10px; color:#888;">해당 조건 폴더 없음</div>'; return; }
+    list.innerHTML = fs.map((f, i) =>
+        `<div style="border-bottom:1px solid #222;">
+           <div style="padding:7px 10px; color:#9cf; cursor:pointer;" onclick="const v=this.nextElementSibling; v.style.display=v.style.display==='none'?'block':'none';">📁 ${f.name} <span style="color:#666;">(${f.count}개)</span></div>
+           <div style="display:none; padding-left:14px;">
+             ${f.videos.map(v => `<div style="padding:5px 10px; cursor:pointer; color:#ddd;" onmouseover="this.style.background='#1a2a3a'" onmouseout="this.style.background=''" onclick="qsNasPick('${v.path.replace(/'/g, "\\'")}', '${v.name.replace(/'/g, "\\'")}', ${f.diameter_mm || 'null'})">🎬 ${v.name} <span style="color:#666;">${v.size_mb}MB</span></div>`).join('')}
+           </div>
+         </div>`).join('');
+}
+async function qsNasPick(path, name, diameterMm) {
+    const status = document.getElementById('qsUploadStatus');
+    status.textContent = `서버 파일 로드 중: ${name}...`;
+    try {
+        const r = await authFetch('/api/quick-sizing/load-server-file', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path })
+        });
+        const j = await r.json();
+        if (!j.success) { status.textContent = `실패: ${j.error || '알 수 없는 오류'}`; return; }
+        // 관경 프리셋 자동 선택 (폴더 관경과 일치/최근접)
+        if (diameterMm) {
+            const sel = document.getElementById('qsPipePreset');
+            let best = null, bestDiff = Infinity;
+            for (const o of sel.options) {
+                const d = Math.abs(parseFloat(o.value) - diameterMm);
+                if (d < bestDiff) { bestDiff = d; best = o; }
+            }
+            if (best) best.selected = true;
+        }
+        await qsApplyLoadResult(j, `NAS 로드 완료 (${name}${diameterMm ? ' · 관경 ' + diameterMm + 'mm 자동' : ''})`);
+        document.getElementById('qsNasPicker').style.display = 'none';
     } catch (e) {
         status.textContent = `오류: ${e.message}`;
     }

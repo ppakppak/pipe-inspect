@@ -921,6 +921,7 @@
                         <button class="tab" onclick="showTab('gnu-mapping')">🔬 GNU Mapping</button>
                         <button class="tab" onclick="showTab('area-ratio')">📊 Area Ratio</button>
                         <button class="tab" onclick="showTab('quick-sizing')">⚡ Quick Sizing</button>
+                        <button class="tab" onclick="showTab('recon3d')">🧊 3D 복원 <span style="font-size:9px;color:#f80;">Beta</span></button>
             <button id="adminTab" class="tab" onclick="showTab('admin')" style="display: none;" data-i18n="tab.admin">👥 Admin</button>
         </div>
 
@@ -3204,7 +3205,7 @@
             } else {
                 // 프로그램적으로 호출된 경우 - 탭 이름으로 버튼 찾기
                 const tabButtons = document.querySelectorAll('.tab');
-                const tabIndex = {'project': 0, 'annotation': 1, 'sizing': 2, 'unwrap': 3, 'dataset': 4, 'training': 5, 'inference': 6, 'survey': 7, 'gnu-mapping': 8, 'area-ratio': 9, 'quick-sizing': 10, 'admin': 11};
+                const tabIndex = {'project': 0, 'annotation': 1, 'sizing': 2, 'unwrap': 3, 'dataset': 4, 'training': 5, 'inference': 6, 'survey': 7, 'gnu-mapping': 8, 'area-ratio': 9, 'quick-sizing': 10, 'recon3d': 11, 'admin': 12};
                 if (tabIndex[tabName] !== undefined && tabButtons[tabIndex[tabName]]) {
                     tabButtons[tabIndex[tabName]].classList.add('active');
                 }
@@ -3244,6 +3245,9 @@
             }
 
             // Quick Sizing 탭 클릭 시 초기화
+            if (tabName === 'recon3d' && typeof initRecon3dTab === 'function') {
+                initRecon3dTab();
+            }
             if (tabName === 'quick-sizing' && typeof initQuickSizingTab === 'function') {
                 initQuickSizingTab();
             }
@@ -17987,6 +17991,48 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
         </div>
 
         <!-- ═══ Quick Sizing 탭 ═══ -->
+        <!-- ===== 3D 복원 (recon3d, Beta) 탭 ===== -->
+        <div id="recon3d-tab" class="tab-content" style="display:none;">
+            <div style="max-width:1200px;">
+                <div style="background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:16px; margin-bottom:16px;">
+                    <h3 style="margin-top:0; color:#4a9eff; font-size:14px;">🧊 3D 복원 (VGGT) — 관내부 3D 성립 실험 <span id="r3Health" style="font-size:11px; color:#888; margin-left:10px;"></span></h3>
+                    <div style="display:grid; grid-template-columns:2fr 2fr 1fr 1fr 1fr auto auto; gap:10px; align-items:end;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;">폴더 (관종·관경)</label>
+                            <select id="r3Folder" onchange="r3FillVideos()" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;"></select>
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;">영상</label>
+                            <select id="r3Video" onchange="r3VideoInfo()" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;"></select>
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;">중심 프레임 <span id="r3Total" style="color:#666;"></span></label>
+                            <input type="number" id="r3Center" value="3000" min="0" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;" title="VRAM 예산상 최대 6">프레임 수</label>
+                            <input type="number" id="r3N" value="5" min="2" max="6" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;" title="프레임 간격(베이스라인). 넓을수록 시차↑">간격</label>
+                            <input type="number" id="r3Step" value="12" min="1" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
+                        <label style="font-size:12px; color:#aaa; white-space:nowrap;"><input type="checkbox" id="r3Clahe"> CLAHE</label>
+                        <button id="r3RunBtn" onclick="r3Run()" style="padding:8px 16px; background:#4a9eff; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">실행</button>
+                    </div>
+                    <div id="r3Status" style="margin-top:10px; font-size:12px; color:#888;"></div>
+                </div>
+                <div id="r3Result" style="display:none; background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:16px;">
+                    <div id="r3Verdict" style="font-size:14px; font-weight:bold; margin-bottom:10px;"></div>
+                    <div id="r3Metrics" style="font-size:12px; color:#aaa; margin-bottom:12px;"></div>
+                    <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px;">
+                        <div><div style="font-size:11px; color:#888; margin-bottom:4px;">원본 | depth (TURBO: 빨강=멀리)</div><img id="r3Depth" style="width:100%; border-radius:4px;"></div>
+                        <div><div style="font-size:11px; color:#888; margin-bottom:4px;">포인트클라우드 단면 (원=성립)</div><img id="r3Cross" style="width:100%; border-radius:4px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="quick-sizing-tab" class="tab-content" style="display:none;">
             <div style="padding:20px; color:#e0e0e0;">
                 <h2 style="margin:0 0 6px; color:#4a9eff;">⚡ Quick Sizing — 임의 영상/프레임 즉시 분석</h2>
@@ -21544,6 +21590,87 @@ const qsState = {
     historyRecords: [],    // 이력 패널에 표시된 record 목록 (더블클릭 복원용)
     lastBatchResult: null, // 일괄 분석 결과 (CSV 저장용)
 };
+
+// ─── 3D 복원 (recon3d, Beta) ───
+let r3Data = null, r3Inited = false;
+async function initRecon3dTab() {
+    if (r3Inited) return;
+    r3Inited = true;
+    try {
+        const h = await (await authFetch('/api/recon3d/health')).json();
+        document.getElementById('r3Health').textContent = h.success
+            ? `서비스 OK · VRAM ${h.vram_free_gb}GB 여유 · 모델 ${h.model_loaded ? '로드됨' : '미로드(첫 실행 시 ~20s)'}`
+            : `⚠ ${h.error || '서비스 미가동'}`;
+    } catch (e) {
+        document.getElementById('r3Health').textContent = '⚠ recon3d 서비스 확인 실패';
+    }
+    try {
+        const j = await (await authFetch('/api/kwater/scan')).json();
+        if (!j.success) throw new Error(j.error);
+        r3Data = j;
+        const sel = document.getElementById('r3Folder');
+        sel.innerHTML = j.folders.filter(f => f.count > 0)
+            .map((f, i) => `<option value="${f.name}">${f.name} (${f.count})</option>`).join('');
+        r3FillVideos();
+    } catch (e) {
+        document.getElementById('r3Status').textContent = 'NAS 스캔 실패: ' + e.message;
+    }
+}
+function r3FillVideos() {
+    if (!r3Data) return;
+    const f = r3Data.folders.find(x => x.name === document.getElementById('r3Folder').value);
+    const sel = document.getElementById('r3Video');
+    sel.innerHTML = (f ? f.videos : []).map(v =>
+        `<option value="${v.path.replace(/"/g, '&quot;')}">${v.name} (${v.size_mb}MB)</option>`).join('');
+    r3VideoInfo();
+}
+async function r3VideoInfo() {
+    const p = document.getElementById('r3Video').value;
+    if (!p) return;
+    try {
+        const j = await (await authFetch('/api/recon3d/video-info?path=' + encodeURIComponent(p))).json();
+        if (j.success) {
+            document.getElementById('r3Total').textContent = `/ ${j.total_frames}f`;
+            const c = document.getElementById('r3Center');
+            c.max = j.total_frames - 1;
+            if (+c.value >= j.total_frames) c.value = Math.floor(j.total_frames / 2);
+        }
+    } catch (e) {}
+}
+async function r3Run() {
+    const path = document.getElementById('r3Video').value;
+    if (!path) { document.getElementById('r3Status').textContent = '영상을 선택하세요'; return; }
+    const btn = document.getElementById('r3RunBtn'), st = document.getElementById('r3Status');
+    btn.disabled = true;
+    st.textContent = 'VGGT 실행 중... (첫 실행은 모델 로드 포함 ~30s)';
+    try {
+        const r = await authFetch('/api/recon3d/run', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                video_path: path,
+                center_frame: +document.getElementById('r3Center').value || 0,
+                n_frames: +document.getElementById('r3N').value || 5,
+                step: +document.getElementById('r3Step').value || 12,
+                clahe: document.getElementById('r3Clahe').checked,
+            })
+        });
+        const j = await r.json();
+        if (!j.success) { st.textContent = '실패: ' + (j.error || '알 수 없음'); return; }
+        st.textContent = '';
+        document.getElementById('r3Result').style.display = 'block';
+        const v = document.getElementById('r3Verdict');
+        v.textContent = `conf ${j.conf_mean} — ${j.verdict}`;
+        v.style.color = j.conf_mean > 2 ? '#7bffaa' : (j.conf_mean > 1.3 ? '#fc8' : '#f66');
+        document.getElementById('r3Metrics').textContent =
+            `프레임 ${j.n_frames}개 [${j.frames_used.join(', ')}] · 추론 ${j.infer_sec}s · 궤적길이 ${j.traj_len} (직선이탈 ${j.traj_dev_pct}%)`;
+        document.getElementById('r3Depth').src = 'data:image/jpeg;base64,' + j.depth_b64;
+        document.getElementById('r3Cross').src = 'data:image/jpeg;base64,' + j.crosssec_b64;
+    } catch (e) {
+        st.textContent = '오류: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
 
 async function initQuickSizingTab() {
     await qsLoadPresets();

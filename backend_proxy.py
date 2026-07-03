@@ -6064,6 +6064,48 @@ def quick_sizing_load_server_file():
     return jsonify(data), status_code
 
 
+# ============================================================
+# 3D 복원 (recon3d) — VGGT 마이크로서비스(127.0.0.1:5006) 프록시
+# ============================================================
+RECON3D_URL = os.environ.get('RECON3D_URL', 'http://127.0.0.1:5006')
+
+
+@app.route('/api/recon3d/health', methods=['GET'])
+@require_auth
+def recon3d_health():
+    try:
+        r = requests.get(f'{RECON3D_URL}/health', timeout=10)
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        return jsonify({'success': False,
+                        'error': 'recon3d 서비스(5006) 미가동'}), 503
+
+
+@app.route('/api/recon3d/video-info', methods=['GET'])
+@require_auth
+def recon3d_video_info():
+    try:
+        r = requests.get(f'{RECON3D_URL}/video-info',
+                         params={'path': request.args.get('path', '')}, timeout=30)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 503
+
+
+@app.route('/api/recon3d/run', methods=['POST'])
+@require_auth
+def recon3d_run():
+    try:
+        # 첫 실행은 모델 로드(~20s) 포함 — 타임아웃 여유
+        r = requests.post(f'{RECON3D_URL}/run', json=request.json, timeout=600)
+        return jsonify(r.json()), r.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({'success': False,
+                        'error': 'recon3d 서비스(5006) 미가동'}), 503
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     # 세션 정리 스레드 시작
     cleanup_thread = threading.Thread(target=cleanup_sessions, daemon=True)

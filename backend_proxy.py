@@ -6041,8 +6041,9 @@ def kwater_scan():
 def quick_sizing_load_server_file():
     """서버(NAS)의 영상 파일을 Quick Sizing 세션으로 로드.
 
-    json {path} → KWATER_VIDEO_ROOT 하위 검증 → 파일 스트림을 gpu-server
-    /api/quick-sizing/upload에 multipart로 전달(업로드와 동일한 토큰 반환).
+    json {path} → KWATER_VIDEO_ROOT 하위 검증 → gpu-server restore-session에
+    경로 부착(무복사 — 파일이 이미 같은 머신에 있으므로 업로드/복사 없이
+    NAS 원본을 그대로 열어 세션 생성. 업로드와 동일한 토큰 반환).
     """
     body = request.json or {}
     raw = body.get('path', '')
@@ -6055,10 +6056,9 @@ def quick_sizing_load_server_file():
                         'error': '허용 경로 밖 파일'}), 403
     if not p.is_file() or p.suffix.lower() not in _KWATER_VIDEO_EXTS:
         return jsonify({'success': False, 'error': f'영상 파일 아님: {p.name}'}), 404
-    with open(p, 'rb') as fh:
-        files = {'file': (p.name, fh, 'video/mp4')}
-        data, status_code = forward_to_gpu('/api/quick-sizing/upload',
-                                           method='POST', files=files)
+    data, status_code = forward_to_gpu('/api/quick-sizing/restore-session',
+                                       method='POST',
+                                       json={'video_path': str(p)})
     if isinstance(data, dict):
         data['source_path'] = str(p)
     return jsonify(data), status_code

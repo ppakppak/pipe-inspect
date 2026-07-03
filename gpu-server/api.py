@@ -2266,12 +2266,20 @@ def quick_sizing_restore_session():
         vpath = data.get('video_path')
         if not vpath:
             return jsonify({'success': False, 'error': 'video_path required'}), 400
-        # 보안: QUICK_SIZING_DIR 하위만 허용
+        # 보안: QUICK_SIZING_DIR 또는 KWATER 영상 루트(읽기전용 소스) 하위만 허용
+        # NAS 원본은 세션이 경로만 참조 — log 비우기 등 디스크 정리는
+        # QUICK_SIZING_DIR 직속 파일만 지우므로 원본 삭제 위험 없음.
+        _kwater_root = os.environ.get(
+            'KWATER_VIDEO_ROOT', '/home/intu/nas2/k_water/관내시경영상')
         try:
             vpath_resolved = str(_Path(vpath).resolve())
             qs_root = str(QUICK_SIZING_DIR.resolve())
-            if not vpath_resolved.startswith(qs_root):
-                return jsonify({'success': False, 'error': 'path outside quick_sizing dir'}), 403
+            kw_root = str(_Path(_kwater_root).resolve())
+            allowed = (vpath_resolved.startswith(qs_root + os.sep)
+                       or vpath_resolved == qs_root
+                       or vpath_resolved.startswith(kw_root + os.sep))
+            if not allowed:
+                return jsonify({'success': False, 'error': 'path outside allowed roots'}), 403
         except Exception:
             return jsonify({'success': False, 'error': 'invalid path'}), 400
         if not os.path.exists(vpath_resolved):

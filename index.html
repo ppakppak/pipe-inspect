@@ -18022,6 +18022,19 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     </div>
                     <div id="r3Status" style="margin-top:10px; font-size:12px; color:#888;"></div>
                 </div>
+                <div style="background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:16px; margin-bottom:16px;">
+                    <h3 style="margin-top:0; color:#7bffaa; font-size:13px;">📈 conf 스캐너 <span style="font-size:11px; color:#888; font-weight:normal;">— 영상 전체를 훑어 3D 성립 구간을 찾음. 그래프 클릭 = 중심 프레임 설정</span></h3>
+                    <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+                        <div>
+                            <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;">스캔 포인트 수</label>
+                            <input type="number" id="r3ScanN" value="40" min="5" max="100" style="width:90px; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
+                        <button id="r3ScanBtn" onclick="r3Scan()" style="padding:8px 16px; background:#2a6a4a; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">영상 스캔</button>
+                        <span id="r3ScanStatus" style="font-size:12px; color:#888;"></span>
+                    </div>
+                    <canvas id="r3ScanCanvas" width="1140" height="220" style="width:100%; margin-top:12px; background:#111; border:1px solid #333; border-radius:4px; cursor:crosshair; display:none;" onclick="r3ScanClick(event)"></canvas>
+                    <div id="r3ScanBest" style="margin-top:8px;"></div>
+                </div>
                 <div id="r3Result" style="display:none; background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:16px;">
                     <div id="r3Verdict" style="font-size:14px; font-weight:bold; margin-bottom:10px;"></div>
                     <div id="r3Metrics" style="font-size:12px; color:#aaa; margin-bottom:12px;"></div>
@@ -21670,6 +21683,94 @@ async function r3Run() {
     } finally {
         btn.disabled = false;
     }
+}
+
+// ─── conf 스캐너 ───
+let r3ScanRes = null;
+async function r3Scan() {
+    const path = document.getElementById('r3Video').value;
+    if (!path) { document.getElementById('r3ScanStatus').textContent = '영상을 선택하세요'; return; }
+    const btn = document.getElementById('r3ScanBtn'), st = document.getElementById('r3ScanStatus');
+    const npts = Math.max(5, Math.min(+document.getElementById('r3ScanN').value || 40, 100));
+    btn.disabled = true;
+    st.textContent = `스캔 중... (${npts}포인트, 약 ${Math.round(npts * 0.8)}초)`;
+    try {
+        const r = await authFetch('/api/recon3d/scan', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                video_path: path, n_points: npts, n_frames: 2,
+                step: +document.getElementById('r3Step').value || 12,
+                clahe: document.getElementById('r3Clahe').checked,
+            })
+        });
+        const j = await r.json();
+        if (!j.success) { st.textContent = '실패: ' + (j.error || '알 수 없음'); return; }
+        r3ScanRes = j;
+        st.textContent = `완료 · ${j.scan_sec}s · 최고 conf ${j.best.length ? j.best[0].conf : '-'}`;
+        r3DrawScan();
+        const bestDiv = document.getElementById('r3ScanBest');
+        bestDiv.innerHTML = '<span style="font-size:11px; color:#888;">상위 구간:</span> ' +
+            j.best.map(b => `<button onclick="r3GoFrame(${b.frame})" style="margin:2px; padding:4px 10px; background:${b.conf > 2 ? '#2a6a4a' : '#5a4a2a'}; border:0; border-radius:12px; color:#fff; cursor:pointer; font-size:11px;">f${b.frame} · ${b.conf}</button>`).join('');
+    } catch (e) {
+        st.textContent = '오류: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+function r3DrawScan() {
+    const j = r3ScanRes; if (!j) return;
+    const cv = document.getElementById('r3ScanCanvas');
+    cv.style.display = 'block';
+    const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, PAD = 28;
+    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+    const valid = j.points.filter(p => p.conf !== null);
+    const maxC = Math.max(3.5, ...valid.map(p => p.conf));
+    const X = f => PAD + (f / Math.max(j.total_frames - 1, 1)) * (W - 2 * PAD);
+    const Y = c => H - PAD - (c / maxC) * (H - 2 * PAD);
+    // 임계선 (2.0 성립 / 1.3 불확실)
+    for (const [thr, col, lab] of [[2.0, '#2a6a4a', '성립 2.0'], [1.3, '#5a4a2a', '1.3']]) {
+        ctx.strokeStyle = col; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(PAD, Y(thr)); ctx.lineTo(W - PAD, Y(thr)); ctx.stroke();
+        ctx.setLineDash([]); ctx.fillStyle = col; ctx.font = '10px sans-serif';
+        ctx.fillText(lab, W - PAD + 2, Y(thr) + 3);
+    }
+    // 곡선
+    ctx.strokeStyle = '#4a9eff'; ctx.lineWidth = 1.5; ctx.beginPath();
+    let started = false;
+    for (const p of j.points) {
+        if (p.conf === null) continue;
+        const x = X(p.frame), y = Y(p.conf);
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // 포인트 (색 = 판정)
+    for (const p of j.points) {
+        if (p.conf === null) continue;
+        ctx.fillStyle = p.conf > 2 ? '#7bffaa' : (p.conf > 1.3 ? '#fc8' : '#555');
+        ctx.beginPath(); ctx.arc(X(p.frame), Y(p.conf), 3.2, 0, 7); ctx.fill();
+    }
+    // 축 라벨
+    ctx.fillStyle = '#666'; ctx.font = '10px sans-serif';
+    ctx.fillText('f0', PAD, H - 8);
+    ctx.fillText('f' + j.total_frames, W - PAD - 40, H - 8);
+    // 현재 중심 프레임 마커
+    const cur = +document.getElementById('r3Center').value || 0;
+    ctx.strokeStyle = '#f80'; ctx.beginPath();
+    ctx.moveTo(X(cur), PAD / 2); ctx.lineTo(X(cur), H - PAD); ctx.stroke();
+}
+function r3ScanClick(ev) {
+    if (!r3ScanRes) return;
+    const cv = document.getElementById('r3ScanCanvas');
+    const rect = cv.getBoundingClientRect();
+    const fx = (ev.clientX - rect.left) / rect.width * cv.width;
+    const PAD = 28;
+    const frame = Math.round(Math.max(0, Math.min(1, (fx - PAD) / (cv.width - 2 * PAD))) * (r3ScanRes.total_frames - 1));
+    r3GoFrame(frame);
+}
+function r3GoFrame(frame) {
+    document.getElementById('r3Center').value = frame;
+    document.getElementById('r3ScanStatus').textContent = `중심 프레임 → f${frame} (실행 버튼으로 정밀 분석)`;
+    r3DrawScan();
 }
 
 async function initQuickSizingTab() {

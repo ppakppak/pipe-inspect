@@ -181,6 +181,87 @@ def run(req: RunReq):
             'depth_b64': b64jpg(depth_img), 'crosssec_b64': b64jpg(cs)}
 
 
+class ScanReq(BaseModel):
+    video_path: str
+    start_frame: int = 0
+    end_frame: int = 0        # 0 = 끝까지
+    n_points: int = 40
+    n_frames: int = 2         # 포인트당 프레임(저비용 스캔용 2)
+    step: int = 12
+    clahe: bool = False
+
+
+@app.post('/scan')
+def scan(req: ScanReq):
+    """영상 전체를 균등 스윕해 conf 프로파일(3D 성립 구간 지도) 생성.
+
+    포인트당 n_frames(기본 2)로 가볍게 VGGT를 돌려 depth_conf 평균만 수집.
+    40포인트 기준 ~30초. 성립 섬(island)을 찾은 뒤 /run으로 정밀 실행.
+    """
+    p = os.path.realpath(req.video_path)
+    if not any(p.startswith(os.path.realpath(r) + os.sep) for r in ALLOWED_ROOTS):
+        return {'success': False, 'error': '허용 경로 밖 파일'}
+    if not os.path.isfile(p):
+        return {'success': False, 'error': f'파일 없음: {p}'}
+
+    cap = cv2.VideoCapture(p)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    s = max(0, min(int(req.start_frame), max(total - 1, 0)))
+    e = int(req.end_frame) if req.end_frame and int(req.end_frame) > s else total - 1
+    e = min(e, total - 1)
+    npts = max(5, min(int(req.n_points), 100))
+    nfr = max(2, min(int(req.n_frames), 4))
+    step = max(1, int(req.step))
+    centers = np.linspace(s, e, npts).astype(int)
+    clahe_op = cv2.createCLAHE(2.0, (8, 8)) if req.clahe else None
+
+    from vggt.utils.load_fn import load_and_preprocess_images
+    model = get_model()
+    tmpd = f"/tmp/recon3d_scan_{uuid.uuid4().hex[:8]}"
+    os.makedirs(tmpd, exist_ok=True)
+    points = []
+    t0 = time.time()
+    for ci, c in enumerate(centers):
+        paths = []
+        for i in range(nfr):
+            fi = min(max(int(c) + (i - nfr // 2) * step, 0), total - 1)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            ret, fr = cap.read()
+            if not ret:
+                continue
+            if clahe_op is not None:
+                lab = cv2.cvtColor(fr, cv2.COLOR_BGR2LAB)
+                lab[:, :, 0] = clahe_op.apply(lab[:, :, 0])
+                fr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            fp = f"{tmpd}/{ci:03d}_{i}.jpg"
+            cv2.imwrite(fp, fr)
+            paths.append(fp)
+        if len(paths) < 2:
+            points.append({'frame': int(c), 'conf': None})
+            continue
+        try:
+            images = load_and_preprocess_images(paths).to("cuda")
+            with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred = model(images)
+            cmean = float(pred['depth_conf'].float().mean())
+            del pred, images
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            points.append({'frame': int(c), 'conf': None})
+            continue
+        if ci % 8 == 7:
+            torch.cuda.empty_cache()
+        points.append({'frame': int(c), 'conf': round(cmean, 2)})
+    cap.release()
+    torch.cuda.empty_cache()
+
+    valid = [pt for pt in points if pt['conf'] is not None]
+    best = sorted(valid, key=lambda x: -x['conf'])[:5]
+    return {'success': True, 'total_frames': total, 'points': points,
+            'best': best, 'scan_sec': round(time.time() - t0, 1),
+            'n_frames': nfr, 'step': step}
+
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host='127.0.0.1', port=5006)

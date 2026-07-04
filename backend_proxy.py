@@ -6092,6 +6092,20 @@ def recon3d_video_info():
         return jsonify({'success': False, 'error': str(e)}), 503
 
 
+@app.route('/api/recon3d/scan', methods=['POST'])
+@require_auth
+def recon3d_scan():
+    """conf 스캐너 — 영상 전체 균등 스윕(40pt ≈ 30초, 최대 100pt)."""
+    try:
+        r = requests.post(f'{RECON3D_URL}/scan', json=request.json, timeout=900)
+        return jsonify(r.json()), r.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({'success': False,
+                        'error': 'recon3d 서비스(5006) 미가동'}), 503
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/recon3d/run', methods=['POST'])
 @require_auth
 def recon3d_run():

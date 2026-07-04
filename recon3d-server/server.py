@@ -173,14 +173,15 @@ def run(req: RunReq):
 
     cmean = float(conf.mean())
     cam_fwd = extri[mid][:3, :3].T @ np.array([0., 0., 1.])
-    met = _pipe_metrics(wp[mid], conf[mid], cam_forward=cam_fwd)
+    _lap, _bore = _frame_stats(paths[mid])
+    met = _pipe_metrics(wp[mid], conf[mid], cam_forward=cam_fwd, lapvar=_lap, bore_frac=_bore)
     score = met['pipe_score']
     # 판정은 pipe_score 우선 (conf 단독은 탁수/벽클로즈업을 고평가하는 함정)
     verdict = ('성립 — 관벽 링 구조 확인 (원통 피팅 가능)' if score >= 50
                else '불확실 — 링 부분 검출. 구간/베이스라인/CLAHE 재시도' if score >= 25
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     return {'success': True, 'conf_mean': round(cmean, 2), 'verdict': verdict,
-            'pipe_score': score, 'cyl_res': met['cyl_res'], 'ang_cov': met['ang_cov'], 'axis': met.get('axis'),
+            'pipe_score': score, 'cyl_res': met['cyl_res'], 'ang_cov': met['ang_cov'], 'axis': met.get('axis'), 'slab_ratio': met.get('slab_ratio'), 'lapvar': met.get('lapvar'), 'bore_frac': met.get('bore_frac'),
             'infer_sec': round(infer_s, 1), 'n_frames': S, 'frames_used': used,
             'traj_len': round(seglen, 4), 'traj_dev_pct': round(traj_dev_pct, 1),
             'depth_b64': b64jpg(depth_img), 'crosssec_b64': b64jpg(cs)}
@@ -221,12 +222,42 @@ def _ring_fit(pts, ax):
         rel_res = float(np.sqrt(np.mean((r_in - R) ** 2)) / max(R, 1e-9))
         ang = np.arctan2(y[inl] - cy, x[inl] - cx) if inl.any() else np.arctan2(y - cy, x - cx)
         bins = np.unique(((ang + np.pi) / (2 * np.pi) * 36).astype(int) % 36)
-        return rel_res, float(len(bins) / 36.0), inlier_frac
+        # 축방향 2슬랩 반경 일관성 — 원통=1.0, 안개 원뿔/그릇=낮음
+        slab_ratio = 0.0
+        t = q @ ax
+        if inl.sum() > 600:
+            tm = np.median(t[inl])
+            Ra = Rb = None
+            for half in (inl & (t <= tm), inl & (t > tm)):
+                if half.sum() > 300:
+                    fh = kasa(x[half], y[half])
+                    if fh is not None:
+                        if Ra is None:
+                            Ra = fh[2]
+                        else:
+                            Rb = fh[2]
+            if Ra and Rb:
+                slab_ratio = float(min(Ra, Rb) / max(Ra, Rb))
+        return rel_res, float(len(bins) / 36.0), inlier_frac, slab_ratio
     except np.linalg.LinAlgError:
         return None
 
 
-def _pipe_metrics(wp, conf, cam_forward=None):
+def _frame_stats(path):
+    """프레임 신호: (lapvar, bore_frac). bore_frac=암부(<60) 비율(OSD 상하 10% 제외).
+    열린 보어 뷰=원거리 암흑 구멍 존재(수십%), 안개/탁수=산란광으로 전체가 밝아 ~0%."""
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None, None
+    h = int(img.shape[0] * 640 / img.shape[1])
+    img = cv2.resize(img, (640, h))
+    lap = float(cv2.Laplacian(img, cv2.CV_64F).var())
+    core = img[int(h * 0.1):int(h * 0.9)]
+    bore = float((core < 60).mean())
+    return lap, bore
+
+
+def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
     """'관다움' 측정 — conf만으론 탁수/벽클로즈업이 고평가되는 문제 보정.
 
     depth_conf는 '모델 확신'이지 '관벽 노출'이 아님(균일한 탁수 덩어리에 높게 나옴).
@@ -258,13 +289,19 @@ def _pipe_metrics(wp, conf, cam_forward=None):
             best = (name, r)
     if best is None:
         return {'cyl_res': None, 'ang_cov': 0.0, 'pipe_score': 0, 'axis': None}
-    name, (rel_res, ang_cov, inlier_frac) = best
+    name, (rel_res, ang_cov, inlier_frac, slab_ratio) = best
     cmean = float(conf.mean())
     cfac = min(max((cmean - 1.0) / 1.5, 0.0), 1.0)
     ring = max(0.0, 1.0 - rel_res / 0.4)
-    score = int(round(100 * ring * (ang_cov ** 0.5)
+    # 하드 게이트: 미세 호(커버리지)·안개 원뿔(슬랩)·저주파 죽(텍스처) 차단
+    cov_gate = min(max((ang_cov - 0.25) / 0.5, 0.0), 1.0)
+    cyl_gate = min(max((slab_ratio - 0.55) / 0.30, 0.0), 1.0)
+    tex_gate = 1.0 if lapvar is None else min(max(lapvar / 50.0, 0.0), 1.0)
+    bore_gate = 1.0 if bore_frac is None else min(max(bore_frac / 0.08, 0.0), 1.0)
+    score = int(round(100 * ring * cov_gate * cyl_gate * tex_gate * bore_gate
                       * (0.3 + 0.7 * inlier_frac) * (0.5 + 0.5 * cfac)))
     return {'cyl_res': round(rel_res, 3), 'ang_cov': round(ang_cov, 2),
+            'slab_ratio': round(slab_ratio, 2), 'lapvar': None if lapvar is None else round(lapvar, 1), 'bore_frac': None if bore_frac is None else round(bore_frac, 3),
             'pipe_score': score, 'axis': name}
 
 
@@ -338,7 +375,8 @@ def scan(req: ScanReq):
             _ex = _ex.squeeze(0).float().cpu().numpy()
             _mid = wp_np.shape[0] // 2
             _fwd = _ex[_mid][:3, :3].T @ np.array([0., 0., 1.])
-            met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd)
+            _lap2, _bore2 = _frame_stats(paths[_mid])
+            met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd, lapvar=_lap2, bore_frac=_bore2)
             del pred, images
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()

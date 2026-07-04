@@ -172,13 +172,100 @@ def run(req: RunReq):
     cs[yi[ok], xi[ok]] = (80, 220, 80)
 
     cmean = float(conf.mean())
-    verdict = ('성립 (원통 피팅 가능성 높음)' if cmean > 2.0
-               else '불확실 — 구간/베이스라인/CLAHE 바꿔 재시도' if cmean > 1.3
-               else '실패 가능성 높음 (장면 정보 빈곤)')
+    cam_fwd = extri[mid][:3, :3].T @ np.array([0., 0., 1.])
+    met = _pipe_metrics(wp[mid], conf[mid], cam_forward=cam_fwd)
+    score = met['pipe_score']
+    # 판정은 pipe_score 우선 (conf 단독은 탁수/벽클로즈업을 고평가하는 함정)
+    verdict = ('성립 — 관벽 링 구조 확인 (원통 피팅 가능)' if score >= 50
+               else '불확실 — 링 부분 검출. 구간/베이스라인/CLAHE 재시도' if score >= 25
+               else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     return {'success': True, 'conf_mean': round(cmean, 2), 'verdict': verdict,
+            'pipe_score': score, 'cyl_res': met['cyl_res'], 'ang_cov': met['ang_cov'], 'axis': met.get('axis'),
             'infer_sec': round(infer_s, 1), 'n_frames': S, 'frames_used': used,
             'traj_len': round(seglen, 4), 'traj_dev_pct': round(traj_dev_pct, 1),
             'depth_b64': b64jpg(depth_img), 'crosssec_b64': b64jpg(cs)}
+
+
+def _ring_fit(pts, ax):
+    """주어진 축으로 직교평면 투영 → Kasa 원피팅(아웃라이어 1회 제거 재적합).
+    반환: (rel_res, ang_cov, inlier_frac) 또는 None."""
+    q = pts - pts.mean(0)
+    tmp = np.array([1., 0, 0]) if abs(ax[0]) < 0.9 else np.array([0, 1., 0])
+    u = np.cross(ax, tmp); u /= np.linalg.norm(u)
+    vv = np.cross(ax, u)
+    x, y = q @ u, q @ vv
+    def kasa(x, y):
+        A = np.stack([x, y, np.ones_like(x)], 1)
+        b = -(x ** 2 + y ** 2)
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        cx, cy = -sol[0] / 2, -sol[1] / 2
+        R2 = cx * cx + cy * cy - sol[2]
+        return (cx, cy, float(np.sqrt(R2))) if R2 > 0 else None
+    try:
+        f = kasa(x, y)
+        if f is None:
+            return None
+        cx, cy, R = f
+        r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+        inl = np.abs(r - R) < 0.3 * R
+        inlier_frac = float(inl.mean())
+        if inl.sum() > 300:
+            f2 = kasa(x[inl], y[inl])
+            if f2 is not None:
+                cx, cy, R = f2
+                r_in = np.sqrt((x[inl] - cx) ** 2 + (y[inl] - cy) ** 2)
+            else:
+                r_in = r[inl]
+        else:
+            r_in = r[inl] if inl.any() else r
+        rel_res = float(np.sqrt(np.mean((r_in - R) ** 2)) / max(R, 1e-9))
+        ang = np.arctan2(y[inl] - cy, x[inl] - cx) if inl.any() else np.arctan2(y - cy, x - cx)
+        bins = np.unique(((ang + np.pi) / (2 * np.pi) * 36).astype(int) % 36)
+        return rel_res, float(len(bins) / 36.0), inlier_frac
+    except np.linalg.LinAlgError:
+        return None
+
+
+def _pipe_metrics(wp, conf, cam_forward=None):
+    """'관다움' 측정 — conf만으론 탁수/벽클로즈업이 고평가되는 문제 보정.
+
+    depth_conf는 '모델 확신'이지 '관벽 노출'이 아님(균일한 탁수 덩어리에 높게 나옴).
+    관축 후보(카메라 광학축=검사 카메라는 보어를 향함 / PCA 1주축)별로 직교평면
+    원피팅을 시도해 최저 잔차 채택. 링(관벽)=잔차 낮음, 탁수 덩어리/벽 평면=높음.
+    pipe_score(0~100) = 100 × ring × √커버리지 × (0.3+0.7×inlier) × (0.5+0.5×conf정규화)
+    """
+    pts = wp.reshape(-1, 3)
+    cf = conf.reshape(-1)
+    sel = cf > np.percentile(cf, 50)
+    pts = pts[sel]
+    if len(pts) < 500:
+        return {'cyl_res': None, 'ang_cov': 0.0, 'pipe_score': 0, 'axis': None}
+    axes = []
+    if cam_forward is not None:
+        axes.append(('cam', cam_forward / np.linalg.norm(cam_forward)))
+    try:
+        q = pts - pts.mean(0)
+        w, v = np.linalg.eigh(np.cov(q.T))
+        axes.append(('pca', v[:, -1]))
+    except np.linalg.LinAlgError:
+        pass
+    best = None
+    for name, ax in axes:
+        r = _ring_fit(pts, ax)
+        if r is None:
+            continue
+        if best is None or r[0] < best[1][0]:
+            best = (name, r)
+    if best is None:
+        return {'cyl_res': None, 'ang_cov': 0.0, 'pipe_score': 0, 'axis': None}
+    name, (rel_res, ang_cov, inlier_frac) = best
+    cmean = float(conf.mean())
+    cfac = min(max((cmean - 1.0) / 1.5, 0.0), 1.0)
+    ring = max(0.0, 1.0 - rel_res / 0.4)
+    score = int(round(100 * ring * (ang_cov ** 0.5)
+                      * (0.3 + 0.7 * inlier_frac) * (0.5 + 0.5 * cfac)))
+    return {'cyl_res': round(rel_res, 3), 'ang_cov': round(ang_cov, 2),
+            'pipe_score': score, 'axis': name}
 
 
 class ScanReq(BaseModel):
@@ -244,19 +331,29 @@ def scan(req: ScanReq):
             with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
                 pred = model(images)
             cmean = float(pred['depth_conf'].float().mean())
+            wp_np = pred['world_points'].squeeze(0).float().cpu().numpy()
+            cf_np = pred['depth_conf'].squeeze(0).float().cpu().numpy()
+            from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+            _ex, _ = pose_encoding_to_extri_intri(pred['pose_enc'], images.shape[-2:])
+            _ex = _ex.squeeze(0).float().cpu().numpy()
+            _mid = wp_np.shape[0] // 2
+            _fwd = _ex[_mid][:3, :3].T @ np.array([0., 0., 1.])
+            met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd)
             del pred, images
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
-            points.append({'frame': int(c), 'conf': None})
+            points.append({'frame': int(c), 'conf': None, 'score': None})
             continue
         if ci % 8 == 7:
             torch.cuda.empty_cache()
-        points.append({'frame': int(c), 'conf': round(cmean, 2)})
+        points.append({'frame': int(c), 'conf': round(cmean, 2),
+                       'score': met['pipe_score'], 'cyl_res': met['cyl_res'],
+                       'ang_cov': met['ang_cov']})
     cap.release()
     torch.cuda.empty_cache()
 
-    valid = [pt for pt in points if pt['conf'] is not None]
-    best = sorted(valid, key=lambda x: -x['conf'])[:5]
+    valid = [pt for pt in points if pt.get('score') is not None]
+    best = sorted(valid, key=lambda x: -x['score'])[:5]
     return {'success': True, 'total_frames': total, 'points': points,
             'best': best, 'scan_sec': round(time.time() - t0, 1),
             'n_frames': nfr, 'step': step}

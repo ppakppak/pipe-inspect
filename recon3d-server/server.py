@@ -74,6 +74,22 @@ def _photometric_panel(frame_path, W, H):
 
 INV_CORR_THR = 0.25
 
+_yolo = None
+DEFECT_MODEL = os.environ.get(
+    "DEFECT_MODEL",
+    "/home/intu/projects/pipe-field-nex/models/pipe_nodule_peel_2class_img960.pt")
+DEFECT_NAMES_KO = {"corrosion_nodule": "결절", "coating_peel": "박리"}
+DEFECT_COLORS = {"corrosion_nodule": (0, 0, 255), "coating_peel": (0, 200, 0)}
+DEFECT_LABEL_EN = {"corrosion_nodule": "NODULE", "coating_peel": "PEEL"}  # cv2 putText는 ASCII만
+
+
+def _get_yolo():
+    global _yolo
+    if _yolo is None:
+        from ultralytics import YOLO
+        _yolo = YOLO(DEFECT_MODEL)
+    return _yolo
+
 
 class RunReq(BaseModel):
     video_path: str
@@ -83,6 +99,7 @@ class RunReq(BaseModel):
     clahe: bool = False
     debug_depth: bool = False   # depth/conf/gray 원본 배열(npz) 반환 — 분석용
     diameter_mm: int = 0        # >0이면 부분원호 원통 피팅+metric 전개 수행
+    measure_defects: bool = True  # 피팅 시 YOLO 결함 마스크를 표면 투영해 실면적(mm²) 산출
 
 
 @app.get('/health')
@@ -234,7 +251,8 @@ def run(req: RunReq):
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
             cyl = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
                                         cam_fwd, int(req.diameter_mm),
-                                        cam_center=cam_c)
+                                        cam_center=cam_c,
+                                        measure_defects=req.measure_defects)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
         except Exception as e:
             resp_extra['cyl_fit'] = {'error': f'피팅 예외: {e}'}
@@ -375,7 +393,7 @@ def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
 
 # ═══ 부분원호 원통 피팅 + metric 전개 (A4 본론) ═══
 def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
-                          cam_center=None):
+                          cam_center=None, measure_defects=True):
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
     부분 원호(원주 일부만 노출)에서도 성립. 반환: 피팅 파라미터(mm)·품질지표·
@@ -491,7 +509,76 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         if 0 <= py < Hc:
             cv2.line(unwrap, (0, py), (Wc - 1, py), (60, 60, 200), 1)
 
+    # ── 결함 마스크 투영 → 실면적(mm²) ──
+    defects = []
+    if measure_defects:
+        try:
+            frame_full = cv2.imread(frame_path)
+            oh, ow = frame_full.shape[:2]
+            res_y = _get_yolo().predict(frame_full, imgsz=960, conf=0.30,
+                                        verbose=False)[0]
+            names = res_y.names
+            if res_y.masks is not None:
+                theta_full = theta   # (H*W,) 이미 계산됨
+                t_full = t_ax
+                for k in range(len(res_y.boxes)):
+                    cls = names[int(res_y.boxes.cls[k])]
+                    dconf = float(res_y.boxes.conf[k])
+                    poly_list = res_y.masks.xy[k]
+                    if poly_list is None or len(poly_list) < 3:
+                        continue
+                    mimg = np.zeros((H, W), np.uint8)
+                    pl = np.asarray(poly_list, np.float32)
+                    pl[:, 0] *= W / ow
+                    pl[:, 1] *= H / oh
+                    cv2.fillPoly(mimg, [pl.astype(np.int32)], 1)
+                    inst = mimg.reshape(-1).astype(bool)
+                    on_wall = inst & wall
+                    wall_frac = float(on_wall.sum() / max(inst.sum(), 1))
+                    if on_wall.sum() < 30:
+                        defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
+                                        "conf": round(dconf, 2),
+                                        "area_mm2": None,
+                                        "wall_frac": round(wall_frac, 2),
+                                        "note": "벽면 인라이어 부족(측정불가)"})
+                        continue
+                    dx = np.clip(((theta_full[on_wall] * (diameter_mm / 2.0)
+                                   - x0) * ppm).astype(int), 0, Wc - 1)
+                    dy = np.clip(((t_full[on_wall] * scale - y0) * ppm)
+                                 .astype(int), 0, Hc - 1)
+                    occ = np.zeros((Hc, Wc), np.uint8)
+                    occ[dy, dx] = 1
+                    occ = cv2.morphologyEx(occ, cv2.MORPH_CLOSE,
+                                           cv2.getStructuringElement(
+                                               cv2.MORPH_ELLIPSE, (7, 7)))
+                    area_mm2 = float(occ.sum()) / (ppm * ppm)
+                    col = DEFECT_COLORS.get(cls, (0, 255, 255))
+                    cts, _ = cv2.findContours(occ, cv2.RETR_EXTERNAL,
+                                              cv2.CHAIN_APPROX_SIMPLE)
+                    ov = unwrap.copy()
+                    cv2.drawContours(ov, cts, -1, col, -1)
+                    unwrap[:] = cv2.addWeighted(ov, 0.30, unwrap, 0.70, 0)
+                    cv2.drawContours(unwrap, cts, -1, col, 2)
+                    ys, xs = np.where(occ > 0)
+                    label = "%s %.0fcm2" % (DEFECT_LABEL_EN.get(cls, cls),
+                                            area_mm2 / 100.0)
+                    cv2.putText(unwrap, label,
+                                (max(int(xs.min()), 2),
+                                 max(int(ys.min()) - 6, 14)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+                    defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
+                                    "conf": round(dconf, 2),
+                                    "area_mm2": round(area_mm2, 0),
+                                    "wall_frac": round(wall_frac, 2)})
+        except Exception as e:
+            defects = [{"error": f"결함 투영 실패: {e}"}]
+
     out = {
+        "defects": defects,
+        "defect_total_mm2": {c: round(sum(d["area_mm2"] for d in defects
+                                          if d.get("area_mm2") and d.get("cls") == c), 0)
+                             for c in set(d.get("cls") for d in defects
+                                          if d.get("area_mm2"))},
         "scale_mm_per_unit": round(scale, 2),
         "radius_est_units": round(R, 5),
         "residual_mm_rms": round(fit["rel"] * (diameter_mm / 2.0), 1),

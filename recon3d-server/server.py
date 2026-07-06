@@ -573,8 +573,12 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
             frame_full = cv2.imread(frame_path)
             oh, ow = frame_full.shape[:2]
             _ym = _get_yolo()
+            try:
+                _ym.model.to("cuda")   # 오프로딩 복귀 — predictor는 초기화 후 모델 이동을 안 함
+            except Exception:
+                pass
             res_y = _ym.predict(frame_full, imgsz=960, conf=0.30,
-                                verbose=False)[0]
+                                verbose=False, device=0)[0]
             try:
                 _ym.model.to("cpu")               # 상주 VRAM 최소화
                 torch.cuda.empty_cache()

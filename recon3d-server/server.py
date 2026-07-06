@@ -213,7 +213,8 @@ def run(req: RunReq):
     v = np.cross(axd, u)
     pts = wp[mid].reshape(-1, 3)
     cf = conf[mid].reshape(-1)
-    pts = pts[cf > np.percentile(cf, 50)]
+    selm = cf > np.percentile(cf, 50)
+    pts = pts[selm]
     pu, pv = pts @ u, pts @ v
     cs = np.zeros((640, 640, 3), np.uint8)
     x1, x2 = np.percentile(pu, 1), np.percentile(pu, 99)
@@ -222,7 +223,7 @@ def run(req: RunReq):
     xi = ((pu - x1) / r * 620 + 10).astype(int)
     yi = ((pv - y1) / r * 620 + 10).astype(int)
     ok = (xi >= 0) & (xi < 640) & (yi >= 0) & (yi < 640)
-    cs[yi[ok], xi[ok]] = (80, 220, 80)
+    cs[yi[ok], xi[ok]] = (150, 150, 150)
 
     cmean = float(conf.mean())
     cam_fwd = extri[mid][:3, :3].T @ np.array([0., 0., 1.])
@@ -249,11 +250,29 @@ def run(req: RunReq):
     if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
         try:
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
-            cyl = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
+            ret = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
                                         cam_fwd, int(req.diameter_mm),
                                         cam_center=cam_c,
                                         measure_defects=req.measure_defects)
+            cyl, viz_masks = ret if ret else (None, [])
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
+            # 결함 위치를 원본 패널·단면 산점도에도 표시
+            left = np.ascontiguousarray(depth_img[:, :W])
+            for cls_raw, mimg in viz_masks:
+                col = DEFECT_COLORS.get(cls_raw, (0, 255, 255))
+                cts, _ = cv2.findContours(mimg.astype(np.uint8),
+                                          cv2.RETR_EXTERNAL,
+                                          cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(left, cts, -1, col, 2)
+                df = mimg.reshape(-1)[selm]
+                sel2 = ok & df
+                cs[yi[sel2], xi[sel2]] = col
+            depth_img[:, :W] = left
+            if viz_masks:
+                cv2.putText(cs, "NODULE", (10, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, DEFECT_COLORS["corrosion_nodule"], 2)
+                cv2.putText(cs, "PEEL", (95, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, DEFECT_COLORS["coating_peel"], 2)
         except Exception as e:
             resp_extra['cyl_fit'] = {'error': f'피팅 예외: {e}'}
     if req.debug_depth:
@@ -511,6 +530,7 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
 
     # ── 결함 마스크 투영 → 실면적(mm²) ──
     defects = []
+    viz_masks = []   # [(cls_raw, (H,W) bool)] — 원본/단면 오버레이용
     if measure_defects:
         try:
             frame_full = cv2.imread(frame_path)
@@ -532,6 +552,7 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
                     pl[:, 0] *= W / ow
                     pl[:, 1] *= H / oh
                     cv2.fillPoly(mimg, [pl.astype(np.int32)], 1)
+                    viz_masks.append((cls, mimg.astype(bool)))
                     inst = mimg.reshape(-1).astype(bool)
                     on_wall = inst & wall
                     wall_frac = float(on_wall.sum() / max(inst.sum(), 1))
@@ -596,7 +617,7 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         ecc = np.linalg.norm(d - (d @ ax) * ax) * scale
         out["cam_ecc_mm"] = round(float(ecc), 1)
         out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
-    return out
+    return out, viz_masks
 
 
 class ScanReq(BaseModel):

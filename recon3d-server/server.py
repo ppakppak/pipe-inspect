@@ -41,12 +41,47 @@ def b64jpg(img, q=85):
     return base64.b64encode(buf).decode()
 
 
+def _brightness_corr(depth_mid, frame_path):
+    """밝기↔depth 상관(OSD 상하 12/10% 제외) — 반전 감지 시그니처.
+
+    관내부=손전등 물리(밝음=가까움)라 정상 프레임은 강한 음수(≈-0.7).
+    양수(>+0.25)면 모델이 '밝음=멀다' 일반사진 prior로 폴백한 반전 의심.
+    """
+    g = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
+    if g is None:
+        return None
+    H, W = depth_mid.shape
+    g = cv2.resize(g, (W, H)).astype(np.float32)
+    sl = slice(int(H * 0.12), int(H * 0.9))
+    try:
+        return float(np.corrcoef(g[sl].ravel(), depth_mid[sl].ravel())[0, 1])
+    except Exception:
+        return None
+
+
+def _photometric_panel(frame_path, W, H):
+    """photometric depth 컬러맵(1/√조명성분) — 반전 프레임 보조 표시용."""
+    g = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
+    if g is None:
+        return None
+    g = cv2.resize(g, (W, H)).astype(np.float32)
+    I = cv2.GaussianBlur(g, (0, 0), 21)
+    dp = 1.0 / np.sqrt(np.clip(I, 2, None))
+    lo, hi = np.percentile(dp, 2), np.percentile(dp, 98)
+    dn = np.clip((dp - lo) / max(hi - lo, 1e-9), 0, 1)
+    return cv2.applyColorMap((dn * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+
+
+INV_CORR_THR = 0.25
+
+
 class RunReq(BaseModel):
     video_path: str
     center_frame: int = 0
     n_frames: int = 5
     step: int = 12
     clahe: bool = False
+    debug_depth: bool = False   # depth/conf/gray 원본 배열(npz) 반환 — 분석용
 
 
 @app.get('/health')
@@ -175,13 +210,34 @@ def run(req: RunReq):
     cam_fwd = extri[mid][:3, :3].T @ np.array([0., 0., 1.])
     _lap, _bore = _frame_stats(paths[mid])
     met = _pipe_metrics(wp[mid], conf[mid], cam_forward=cam_fwd, lapvar=_lap, bore_frac=_bore)
+    # 반전 감지: 밝기↔depth 상관 양수 = 조명 prior 폴백 의심 → 감점 + photometric 패널
+    photo_corr = _brightness_corr(depth[mid, :, :, 0], paths[mid])
+    depth_inverted = photo_corr is not None and photo_corr > INV_CORR_THR
+    if depth_inverted:
+        met['pipe_score'] = min(met['pipe_score'], 10)
+        pm = _photometric_panel(paths[mid], W, H)
+        if pm is not None:
+            depth_img = np.hstack([depth_img, pm])
     score = met['pipe_score']
     # 판정은 pipe_score 우선 (conf 단독은 탁수/벽클로즈업을 고평가하는 함정)
-    verdict = ('성립 — 관벽 링 구조 확인 (원통 피팅 가능)' if score >= 50
+    if depth_inverted:
+        verdict = ('실패 — ⚠️depth 방향 반전 의심(밝기상관 %+.2f, '
+                   '3번째 패널 photometric 참조)' % photo_corr)
+    else:
+        verdict = ('성립 — 관벽 링 구조 확인 (원통 피팅 가능)' if score >= 50
                else '불확실 — 링 부분 검출. 구간/베이스라인/CLAHE 재시도' if score >= 25
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
-    return {'success': True, 'conf_mean': round(cmean, 2), 'verdict': verdict,
-            'pipe_score': score, 'cyl_res': met['cyl_res'], 'ang_cov': met['ang_cov'], 'axis': met.get('axis'), 'slab_ratio': met.get('slab_ratio'), 'lapvar': met.get('lapvar'), 'bore_frac': met.get('bore_frac'),
+    resp_extra = {}
+    if req.debug_depth:
+        import io as _io
+        buf = _io.BytesIO()
+        gray_mid = cv2.cvtColor(cv2.imread(paths[mid]), cv2.COLOR_BGR2GRAY)
+        np.savez_compressed(buf, depth=depth[mid, :, :, 0].astype(np.float32),
+                            conf=conf[mid].astype(np.float32),
+                            gray=cv2.resize(gray_mid, (W, H)))
+        resp_extra['debug_npz_b64'] = base64.b64encode(buf.getvalue()).decode()
+    return {**resp_extra, 'success': True, 'conf_mean': round(cmean, 2), 'verdict': verdict,
+            'pipe_score': score, 'cyl_res': met['cyl_res'], 'ang_cov': met['ang_cov'], 'axis': met.get('axis'), 'slab_ratio': met.get('slab_ratio'), 'lapvar': met.get('lapvar'), 'bore_frac': met.get('bore_frac'), 'photo_corr': None if photo_corr is None else round(photo_corr, 3), 'depth_inverted': bool(depth_inverted),
             'infer_sec': round(infer_s, 1), 'n_frames': S, 'frames_used': used,
             'traj_len': round(seglen, 4), 'traj_dev_pct': round(traj_dev_pct, 1),
             'depth_b64': b64jpg(depth_img), 'crosssec_b64': b64jpg(cs)}
@@ -377,6 +433,11 @@ def scan(req: ScanReq):
             _fwd = _ex[_mid][:3, :3].T @ np.array([0., 0., 1.])
             _lap2, _bore2 = _frame_stats(paths[_mid])
             met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd, lapvar=_lap2, bore_frac=_bore2)
+            _dmid = pred['depth'].squeeze(0).float().cpu().numpy()[_mid, :, :, 0]
+            _pc = _brightness_corr(_dmid, paths[_mid])
+            if _pc is not None and _pc > INV_CORR_THR:
+                met['pipe_score'] = min(met['pipe_score'], 10)
+                met['inv'] = True
             del pred, images
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
@@ -386,7 +447,7 @@ def scan(req: ScanReq):
             torch.cuda.empty_cache()
         points.append({'frame': int(c), 'conf': round(cmean, 2),
                        'score': met['pipe_score'], 'cyl_res': met['cyl_res'],
-                       'ang_cov': met['ang_cov']})
+                       'ang_cov': met['ang_cov'], 'inv': bool(met.get('inv', False))})
     cap.release()
     torch.cuda.empty_cache()
 

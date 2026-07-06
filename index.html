@@ -18023,6 +18023,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                         </div>
                         <label style="font-size:12px; color:#aaa; white-space:nowrap;"><input type="checkbox" id="r3Clahe"> CLAHE</label>
                         <button id="r3RunBtn" onclick="r3Run()" style="padding:8px 16px; background:#4a9eff; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">실행</button>
+                        <button id="r3PanoBtn" onclick="r3Pano()" title="영상 전체를 균등 스톱으로 원통피팅·전개 후 이어붙임 (관경 필수, 스톱당 ~10초)" style="padding:8px 12px; background:#2e7d57; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">🧵 전관 전개</button>
                     </div>
                     <div id="r3Status" style="margin-top:10px; font-size:12px; color:#888;"></div>
                 </div>
@@ -18049,6 +18050,11 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <div id="r3CylInfo" style="font-size:12px; color:#9fd; margin-bottom:4px;"></div>
                             <div id="r3DefInfo" style="font-size:12px; color:#fda; margin-bottom:4px;"></div>
                             <img id="r3Unwrap" style="width:100%; border-radius:4px; background:#111;">
+                        </div>
+                        <div id="r3PanoBox" style="display:none; grid-column:1/-1;">
+                            <div style="font-size:11px; color:#888; margin:6px 0 4px;">🧵 전관 컬러 전개 시트 — 원주(가로)는 공통 θ기준 metric, 세로는 프레임 순서 스택(스톱 간 거리 미상)</div>
+                            <div id="r3PanoInfo" style="font-size:12px; color:#9fd; margin-bottom:4px;"></div>
+                            <img id="r3Pano" style="width:100%; border-radius:4px; background:#111;">
                         </div>
                         <div id="r3CloudBox" style="display:none; grid-column:1/-1;">
                             <div style="font-size:11px; color:#888; margin:6px 0 4px;">🌀 포인트클라우드 3D 뷰어 — 드래그=회전 · 휠=줌 · 더블클릭=초기화 (결절 빨강 · 박리 초록)</div>
@@ -21713,6 +21719,44 @@ function r3DrawCloud() {
             Object.assign(r3pc, { yaw: 0.6, pitch: 0.35, zoom: 1.0 }); r3DrawCloud(); });
     });
 })();
+async function r3Pano() {
+    const path = document.getElementById('r3Video').value;
+    const dia = +document.getElementById('r3Dia').value || 0;
+    const st = document.getElementById('r3Status');
+    if (!path) { st.textContent = '영상을 선택하세요'; return; }
+    if (!dia) { st.textContent = '전관 전개는 관경(mm)이 필요합니다'; return; }
+    const btn = document.getElementById('r3PanoBtn');
+    btn.disabled = true;
+    st.textContent = '🧵 전관 전개 생성 중... (스톱 8개 × ~10초, 수 분 소요)';
+    try {
+        const r = await authFetch('/api/recon3d/panorama', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify((() => {
+                const base = { video_path: path, diameter_mm: dia,
+                    n_stops: 8, n_frames: +document.getElementById('r3N').value || 4,
+                    step: +document.getElementById('r3Step').value || 12 };
+                const sc = window.r3LastScan;
+                if (sc && sc.video === path) {  // 스캔 성립 후보를 스톱으로 (균등보다 적중률↑)
+                    let cand = sc.points.filter(p => p.score >= 25).sort((a,b)=>a.frame-b.frame);
+                    const picked = [];
+                    for (const p of cand) if (!picked.length || p.frame - picked[picked.length-1] > 150) picked.push(p.frame);
+                    if (picked.length >= 2) { base.frames = picked.slice(0, 12); st.textContent = '🧵 스캔 성립 구간 ' + base.frames.length + '개 스톱으로 전관 전개 생성 중...'; }
+                }
+                return base;
+            })())
+        });
+        const j = await r.json();
+        if (!j.success) { st.textContent = '실패: ' + (j.error || '알 수 없음'); return; }
+        document.getElementById('r3Pano').src = 'data:image/jpeg;base64,' + j.pano_b64;
+        const tot = Object.entries(j.defect_total_mm2||{}).map(([c,v])=>`${c} ${(v/100).toFixed(1)}cm²`).join(' · ') || '결함 없음';
+        document.getElementById('r3PanoInfo').innerHTML =
+            `성립 스톱 ${j.n_strips}개 · 제외 ${(j.skipped||[]).length}개 · ∑ ${tot}` +
+            ((j.skipped||[]).length ? `<br><span style="color:#888">제외: ${j.skipped.map(k=>`f${k.frame}(${k.reason})`).join(', ')}</span>` : '');
+        document.getElementById('r3PanoBox').style.display = 'block';
+        st.textContent = '🧵 전관 전개 완료';
+    } catch (e) { st.textContent = '오류: ' + e; }
+    finally { btn.disabled = false; }
+}
 async function r3Run() {
     const path = document.getElementById('r3Video').value;
     if (!path) { document.getElementById('r3Status').textContent = '영상을 선택하세요'; return; }
@@ -21793,6 +21837,7 @@ async function r3Scan() {
         });
         const j = await r.json();
         if (!j.success) { st.textContent = '실패: ' + (j.error || '알 수 없음'); return; }
+        window.r3LastScan = { video: path, points: j.points };  // 전관 전개 스톱 선정용
         r3ScanRes = j;
         st.textContent = `완료 · ${j.scan_sec}s · 최고 관다움 S${j.best.length ? j.best[0].score : '-'}`;
         r3DrawScan();

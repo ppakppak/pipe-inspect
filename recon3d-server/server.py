@@ -682,6 +682,8 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
             defects = [{"error": f"결함 투영 실패: {e}"}]
 
     out = {
+        "ppm": round(ppm, 3),                    # px per mm (파노라마 배치용)
+        "circ_x0_mm": round(float(x0), 1),       # 원주 시작(θ·R mm, 공통 θ기준)
         "defects": defects,
         "defect_total_mm2": {c: round(sum(d["area_mm2"] for d in defects
                                           if d.get("area_mm2") and d.get("cls") == c), 0)
@@ -705,6 +707,170 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         out["cam_ecc_mm"] = round(float(ecc), 1)
         out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
     return out, viz_masks, wall
+
+
+
+
+class PanoReq(BaseModel):
+    video_path: str
+    diameter_mm: int
+    frames: list = []       # 명시 스톱 프레임(비면 균등 n_stops)
+    n_stops: int = 8
+    n_frames: int = 4
+    step: int = 12
+    start_frame: int = 0
+    end_frame: int = 0
+
+
+@app.post('/panorama')
+def panorama(req: PanoReq):
+    try:
+        return _pano_impl(req)
+    finally:
+        release_model()
+
+
+def _pano_impl(req: PanoReq):
+    """여러 스톱을 원통 피팅·역매핑 전개 후 이어붙여 전관 컬러 전개 시트 생성.
+
+    원주(θ)는 공통 기준으로 절대 배치. 축 방향은 오도메트리가 없어
+    프레임 순서 스택(스트립별 축범위 mm) — 연속 지도가 아닌 구간별 metric 시트.
+    스톱 품질 게이트: 관다움 S>=25 + depth 반전 아님.
+    """
+    import tempfile
+    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    from vggt.utils.load_fn import load_and_preprocess_images
+    p = os.path.realpath(req.video_path)
+    if not any(p.startswith(os.path.realpath(r) + os.sep) for r in ALLOWED_ROOTS):
+        return {'success': False, 'error': '허용 경로 밖 파일'}
+    if not os.path.isfile(p):
+        return {'success': False, 'error': f'파일 없음: {p}'}
+    D = int(req.diameter_mm)
+    if D <= 0:
+        return {'success': False, 'error': '관경(diameter_mm) 필요'}
+
+    cap = cv2.VideoCapture(p)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if req.frames:
+        centers = [int(c) for c in req.frames]
+    else:
+        s0 = max(0, int(req.start_frame))
+        e0 = int(req.end_frame) if req.end_frame and int(req.end_frame) > s0 else total - 1
+        n = max(2, min(int(req.n_stops), 20))
+        centers = list(np.linspace(s0 + (e0 - s0) * 0.05,
+                                   s0 + (e0 - s0) * 0.95, n).astype(int))
+    nfr = max(2, min(int(req.n_frames), 6))
+    step = max(1, int(req.step))
+    model = get_model()
+    torch.cuda.empty_cache()
+
+    strips, skipped = [], []
+    totals = {}
+    for c in centers:
+        tmpd = tempfile.mkdtemp(prefix='recon3d_pano_')
+        paths = []
+        half = nfr // 2
+        for i, fi in enumerate(range(c - half * step, c - half * step + nfr * step, step)):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(fi, total - 1)))
+            ret, fr = cap.read()
+            if not ret:
+                continue
+            fp = f"{tmpd}/{i:02d}.jpg"
+            cv2.imwrite(fp, fr)
+            paths.append(fp)
+        if len(paths) < 2:
+            skipped.append({'frame': int(c), 'reason': '프레임 추출 실패'})
+            continue
+        try:
+            images = load_and_preprocess_images(paths).to("cuda")
+            with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                pred = model(images)
+            wp_np = pred['world_points'].squeeze(0).float().cpu().numpy()
+            cf_np = pred['depth_conf'].squeeze(0).float().cpu().numpy()
+            d_np = pred['depth'].squeeze(0).float().cpu().numpy()
+            ex, kin = pose_encoding_to_extri_intri(pred['pose_enc'], images.shape[-2:])
+            ex = ex.squeeze(0).float().cpu().numpy()
+            kin = kin.squeeze(0).float().cpu().numpy()
+            del pred, images
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            skipped.append({'frame': int(c), 'reason': 'OOM'})
+            continue
+        mid = wp_np.shape[0] // 2
+        fwd = ex[mid][:3, :3].T @ np.array([0., 0., 1.])
+        lap, bore = _frame_stats(paths[mid])
+        met = _pipe_metrics(wp_np[mid], cf_np[mid], cam_forward=fwd,
+                            lapvar=lap, bore_frac=bore)
+        pc = _brightness_corr(d_np[mid, :, :, 0], paths[mid])
+        if pc is not None and pc > INV_CORR_THR:
+            skipped.append({'frame': int(c), 'reason': f'depth 반전 의심({pc:+.2f})'})
+            continue
+        if met['pipe_score'] < 25:
+            skipped.append({'frame': int(c), 'reason': f"관다움 미달(S{met['pipe_score']})"})
+            continue
+        cam_c = -ex[mid][:3, :3].T @ ex[mid][:3, 3]
+        try:
+            ret2 = _fit_cylinder_partial(wp_np[mid], cf_np[mid], paths[mid],
+                                         fwd, D, cam_center=cam_c,
+                                         measure_defects=True,
+                                         K=kin[mid], extri_mid=ex[mid])
+        except Exception as e:
+            skipped.append({'frame': int(c), 'reason': f'피팅 예외: {e}'})
+            continue
+        if not ret2:
+            skipped.append({'frame': int(c), 'reason': '피팅 실패(포인트 부족)'})
+            continue
+        out, _, _ = ret2
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(out['unwrap_b64']),
+                                         np.uint8), cv2.IMREAD_COLOR)
+        for dd in out.get('defects', []):
+            if dd.get('area_mm2'):
+                totals[dd['cls']] = totals.get(dd['cls'], 0) + dd['area_mm2']
+        strips.append({'frame': int(c), 'score': met['pipe_score'],
+                       'img': img, 'ppm': out['ppm'], 'x0': out['circ_x0_mm'],
+                       'axial_mm': out['axial_extent_mm'],
+                       'residual_mm': out['residual_mm_rms'],
+                       'defects': out.get('defects', [])})
+        if len(strips) % 3 == 0:
+            torch.cuda.empty_cache()
+    cap.release()
+
+    if not strips:
+        return {'success': False, 'error': '성립 스톱 없음', 'skipped': skipped}
+
+    # ── 공통 원주축 조립 (θ·R ∈ [-πR, πR]) ──
+    PPM = 0.8
+    R_mm = D / 2.0
+    Wp = int(np.pi * D * PPM) + 2
+    HEAD = 26
+    rows = []
+    for st in strips:
+        f = PPM / st['ppm']
+        im = cv2.resize(st['img'], (max(1, int(st['img'].shape[1] * f)),
+                                    max(1, int(st['img'].shape[0] * f))))
+        row = np.zeros((im.shape[0] + HEAD, Wp, 3), np.uint8)
+        offx = int((st['x0'] + np.pi * R_mm) * PPM)
+        offx = max(0, min(offx, Wp - im.shape[1])) if im.shape[1] < Wp else 0
+        row[HEAD:, offx:offx + min(im.shape[1], Wp)] = im[:, :min(im.shape[1], Wp)]
+        _ko2en = {"결절": "NODULE", "박리": "PEEL"}   # cv2 putText는 ASCII만
+        dtxt = " ".join("%s %.0fcm2" % (_ko2en.get(k, "DEFECT"), v / 100.0)
+                        for k, v in
+                        {d['cls']: d['area_mm2'] for d in st['defects']
+                         if d.get('area_mm2')}.items()) or "-"
+        cv2.putText(row, "f%d  S%d  axial %dmm  res %.0fmm  %s" %
+                    (st['frame'], st['score'], st['axial_mm'],
+                     st['residual_mm'], dtxt),
+                    (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 255), 1)
+        cv2.line(row, (0, HEAD - 2), (Wp, HEAD - 2), (70, 70, 70), 1)
+        rows.append(row)
+    pano = np.vstack(rows)
+    # 상단 원주 눈금(0.5m 간격 mm)
+    return {'success': True, 'pano_b64': b64jpg(pano, 87),
+            'n_strips': len(strips), 'skipped': skipped,
+            'defect_total_mm2': {k: round(v, 0) for k, v in totals.items()},
+            'note': '축방향은 프레임 순서 스택(스톱 간 절대거리 미상) — 스트립 내부만 metric. '
+                    '결함 합계는 스톱 간 중복 가능성 있음(간격이 좁을 때).',
+            'strips': [{k: v for k, v in st.items() if k != 'img'} for st in strips]}
 
 
 class ScanReq(BaseModel):

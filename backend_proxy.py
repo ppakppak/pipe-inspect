@@ -6106,6 +6106,20 @@ def recon3d_scan():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/recon3d/panorama', methods=['POST'])
+@require_auth
+def recon3d_panorama():
+    """전관 컬러 전개 시트 — 스톱별 원통피팅·역매핑 전개 이어붙임(스톱당 ~10s)."""
+    try:
+        r = requests.post(f'{RECON3D_URL}/panorama', json=request.json, timeout=1800)
+        return jsonify(r.json()), r.status_code
+    except requests.exceptions.ConnectionError:
+        return jsonify({'success': False,
+                        'error': 'recon3d 서비스(5006) 미가동'}), 503
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/recon3d/run', methods=['POST'])
 @require_auth
 def recon3d_run():

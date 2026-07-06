@@ -21650,6 +21650,8 @@ function r3FillVideos() {
 async function r3VideoInfo() {
     const p = document.getElementById('r3Video').value;
     if (!p) return;
+    const dm = p.match(/(\d{2,4})\s*MM/i);   // 폴더 규약 NNN-권역-800MM-관종
+    if (dm) document.getElementById('r3Dia').value = +dm[1];
     try {
         const j = await (await authFetch('/api/recon3d/video-info?path=' + encodeURIComponent(p))).json();
         if (j.success) {
@@ -21680,6 +21682,7 @@ async function r3Run() {
         });
         const j = await r.json();
         if (!j.success) { st.textContent = '실패: ' + (j.error || '알 수 없음'); return; }
+        if (!(+document.getElementById('r3Dia').value)) st.textContent = 'ℹ️ 관경(mm) 미입력 — 원통 피팅·결함 면적은 생략됨. 관경 입력 후 재실행하세요.';
         st.textContent = '';
         document.getElementById('r3Result').style.display = 'block';
         const v = document.getElementById('r3Verdict');

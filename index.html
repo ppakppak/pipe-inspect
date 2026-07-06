@@ -18017,6 +18017,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <label style="display:block; font-size:12px; color:#aaa; margin-bottom:6px;" title="프레임 간격(베이스라인). 넓을수록 시차↑">간격</label>
                             <input type="number" id="r3Step" value="12" min="1" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
                         </div>
+                        <div>
+                            <label style="font-size:11px; color:#888;">관경 mm (피팅)</label>
+                            <input type="number" id="r3Dia" value="0" min="0" step="50" placeholder="0=안함" title="관 내경(mm). 입력 시 부분원호 원통 피팅+metric 전개 수행" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
                         <label style="font-size:12px; color:#aaa; white-space:nowrap;"><input type="checkbox" id="r3Clahe"> CLAHE</label>
                         <button id="r3RunBtn" onclick="r3Run()" style="padding:8px 16px; background:#4a9eff; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">실행</button>
                     </div>
@@ -18040,6 +18044,11 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                     <div id="r3Metrics" style="font-size:12px; color:#aaa; margin-bottom:12px;"></div>
                     <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px;">
                         <div><div id="r3DepthCap" style="font-size:11px; color:#888; margin-bottom:4px;">원본 | depth (TURBO: 빨강=멀리)</div><img id="r3Depth" style="width:100%; border-radius:4px;"></div>
+                        <div id="r3CylBox" style="display:none; grid-column:1/-1;">
+                            <div style="font-size:11px; color:#888; margin:6px 0 4px;">원통 피팅 · metric 벽면 전개 (빨간 격자=100mm)</div>
+                            <div id="r3CylInfo" style="font-size:12px; color:#9fd; margin-bottom:4px;"></div>
+                            <img id="r3Unwrap" style="width:100%; border-radius:4px; background:#111;">
+                        </div>
                         <div><div style="font-size:11px; color:#888; margin-bottom:4px;">포인트클라우드 단면 (원=성립)</div><img id="r3Cross" style="width:100%; border-radius:4px;"></div>
                     </div>
                 </div>
@@ -21664,6 +21673,7 @@ async function r3Run() {
                 center_frame: +document.getElementById('r3Center').value || 0,
                 n_frames: +document.getElementById('r3N').value || 5,
                 step: +document.getElementById('r3Step').value || 12,
+                diameter_mm: +document.getElementById('r3Dia').value || 0,
                 clahe: document.getElementById('r3Clahe').checked,
             })
         });
@@ -21676,6 +21686,18 @@ async function r3Run() {
         v.style.color = j.pipe_score >= 50 ? '#7bffaa' : (j.pipe_score >= 25 ? '#fc8' : '#f66');
         document.getElementById('r3Metrics').textContent =
             `프레임 ${j.n_frames}개 [${j.frames_used.join(', ')}] · 추론 ${j.infer_sec}s · 원피팅잔차 ${j.cyl_res} · 원주커버 ${Math.round((j.ang_cov||0)*100)}% · 궤적길이 ${j.traj_len} (직선이탈 ${j.traj_dev_pct}%)`;
+        const cb = document.getElementById('r3CylBox'), cf = j.cyl_fit;
+        if (cf && !cf.error) {
+            cb.style.display = 'block';
+            document.getElementById('r3CylInfo').textContent =
+                `잔차 ${cf.residual_mm_rms}mm RMS(인라이어 ${(cf.inlier_frac*100).toFixed(0)}%) · ` +
+                `전개 ${cf.circ_extent_mm}×${cf.axial_extent_mm}mm · 카메라 편심 ${cf.cam_ecc_mm??'-'}mm(${cf.cam_ecc_ratio??'-'}R) · ` +
+                `스케일 ${cf.scale_mm_per_unit}mm/u · 축기울기 ${cf.axis_tilt_from_cam_deg}°`;
+            document.getElementById('r3Unwrap').src = 'data:image/jpeg;base64,' + cf.unwrap_b64;
+        } else {
+            cb.style.display = cf && cf.error ? 'block' : 'none';
+            if (cf && cf.error) { document.getElementById('r3CylInfo').textContent = '⚠️ ' + cf.error; document.getElementById('r3Unwrap').src=''; }
+        }
         document.getElementById('r3DepthCap').textContent = j.depth_inverted
             ? '원본 | VGGT depth(⚠️반전 의심) | photometric 보조 (빨강=멀리)'
             : '원본 | depth (TURBO: 빨강=멀리)';

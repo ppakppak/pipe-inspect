@@ -82,6 +82,7 @@ class RunReq(BaseModel):
     step: int = 12
     clahe: bool = False
     debug_depth: bool = False   # depth/conf/gray 원본 배열(npz) 반환 — 분석용
+    diameter_mm: int = 0        # >0이면 부분원호 원통 피팅+metric 전개 수행
 
 
 @app.get('/health')
@@ -228,6 +229,15 @@ def run(req: RunReq):
                else '불확실 — 링 부분 검출. 구간/베이스라인/CLAHE 재시도' if score >= 25
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     resp_extra = {}
+    if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
+        try:
+            cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
+            cyl = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
+                                        cam_fwd, int(req.diameter_mm),
+                                        cam_center=cam_c)
+            resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
+        except Exception as e:
+            resp_extra['cyl_fit'] = {'error': f'피팅 예외: {e}'}
     if req.debug_depth:
         import io as _io
         buf = _io.BytesIO()
@@ -359,6 +369,147 @@ def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
     return {'cyl_res': round(rel_res, 3), 'ang_cov': round(ang_cov, 2),
             'slab_ratio': round(slab_ratio, 2), 'lapvar': None if lapvar is None else round(lapvar, 1), 'bore_frac': None if bore_frac is None else round(bore_frac, 3),
             'pipe_score': score, 'axis': name}
+
+
+
+
+# ═══ 부분원호 원통 피팅 + metric 전개 (A4 본론) ═══
+def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
+                          cam_center=None):
+    """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
+
+    부분 원호(원주 일부만 노출)에서도 성립. 반환: 피팅 파라미터(mm)·품질지표·
+    벽면 텍스처 전개도(θ×z, mm 스케일).
+    """
+    from scipy.optimize import minimize
+    H, W = conf.shape
+    pts_all = wp.reshape(-1, 3)
+    cf = conf.reshape(-1)
+    sel = cf > np.percentile(cf, 50)
+    idx = np.where(sel)[0]
+    if len(idx) < 2000:
+        return None
+    sub = idx[np.linspace(0, len(idx) - 1, min(20000, len(idx))).astype(int)]
+    P = pts_all[sub]
+    a0 = cam_forward / np.linalg.norm(cam_forward)
+
+    def basis(ax):
+        tmp = np.array([1., 0, 0]) if abs(ax[0]) < 0.9 else np.array([0, 1., 0])
+        u = np.cross(ax, tmp); u /= np.linalg.norm(u)
+        return u, np.cross(ax, u)
+
+    def eval_axis(ax):
+        u, v = basis(ax)
+        x, y = P @ u, P @ v
+        m = np.ones(len(x), bool)
+        cx = cy = R = None
+        for _ in range(3):
+            A = np.stack([x[m], y[m], np.ones(int(m.sum()))], 1)
+            b = -(x[m] ** 2 + y[m] ** 2)
+            try:
+                sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+            except np.linalg.LinAlgError:
+                return None
+            cx, cy = -sol[0] / 2, -sol[1] / 2
+            R2 = cx * cx + cy * cy - sol[2]
+            if R2 <= 0:
+                return None
+            R = float(np.sqrt(R2))
+            r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            m2 = np.abs(r - R) < 0.25 * R
+            if m2.sum() < 500:
+                break
+            if (m2 == m).all():
+                m = m2
+                break
+            m = m2
+        rel = float(np.sqrt(np.mean((r[m] - R) ** 2)) / R)
+        return {"rel": rel, "R": R, "cx": cx, "cy": cy, "u": u, "v": v,
+                "inl_frac": float(m.mean())}
+
+    def ax_of(th):
+        u, v = basis(a0)
+        ax = a0 + th[0] * u + th[1] * v
+        return ax / np.linalg.norm(ax)
+
+    res = minimize(lambda th: (eval_axis(ax_of(th)) or {"rel": 1e3})["rel"],
+                   [0.0, 0.0], method="Nelder-Mead",
+                   options=dict(xatol=1e-3, fatol=1e-4, maxiter=60))
+    ax = ax_of(res.x)
+    fit = eval_axis(ax)
+    if fit is None:
+        return None
+    u, v, R = fit["u"], fit["v"], fit["R"]
+    c0 = fit["cx"] * u + fit["cy"] * v          # 축 위의 한 점
+    scale = (diameter_mm / 2.0) / R              # mm per VGGT unit
+
+    # ── 전체 픽셀 metric 좌표 → 벽면 전개 ──
+    q = pts_all - c0
+    t_ax = q @ ax
+    rv = q - np.outer(t_ax, ax)
+    r_i = np.linalg.norm(rv, axis=1)
+    theta = np.arctan2(rv @ v, rv @ u)
+    rows = np.repeat(np.arange(H), W)
+    osd_ok = (rows > H * 0.12) & (rows < H * 0.90)   # OSD 상하 마스킹
+    wall = sel & osd_ok & (np.abs(r_i - R) < 0.25 * R)
+    if wall.sum() < 1000:
+        return None
+    th_w, t_w = theta[wall], t_ax[wall]
+    x_mm = th_w * (diameter_mm / 2.0)            # 원주 방향 mm
+    y_mm = t_w * scale                           # 축 방향 mm
+    gray = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
+    gray = cv2.resize(gray, (W, H)).reshape(-1)[wall].astype(np.float32)
+
+    x0, x1 = np.percentile(x_mm, 0.5), np.percentile(x_mm, 99.5)
+    y0, y1 = np.percentile(y_mm, 0.5), np.percentile(y_mm, 99.5)
+    span_x, span_y = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
+    ppm = min(2.0, 1500.0 / span_x, 1500.0 / span_y)   # px per mm (캔버스 상한)
+    Wc, Hc = int(span_x * ppm) + 1, int(span_y * ppm) + 1
+    acc = np.zeros((Hc, Wc), np.float32)
+    cnt = np.zeros((Hc, Wc), np.float32)
+    xi = np.clip(((x_mm - x0) * ppm).astype(int), 0, Wc - 1)
+    yi = np.clip(((y_mm - y0) * ppm).astype(int), 0, Hc - 1)
+    np.add.at(acc, (yi, xi), gray)
+    np.add.at(cnt, (yi, xi), 1)
+    img = np.zeros((Hc, Wc), np.uint8)
+    nz = cnt > 0
+    img[nz] = (acc[nz] / cnt[nz]).astype(np.uint8)
+    img = cv2.morphologyEx(img, cv2.MORPH_CLOSE,
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    holes = ((img == 0) & (cv2.dilate((img > 0).astype(np.uint8),
+             np.ones((9, 9), np.uint8)) > 0)).astype(np.uint8)
+    if holes.any():
+        img = cv2.inpaint(img, holes, 3, cv2.INPAINT_TELEA)
+    unwrap = cv2.applyColorMap(img, cv2.COLORMAP_BONE) if False else         cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    # mm 눈금(100mm 격자)
+    for gx in range(int(x0 // 100) * 100, int(x1) + 1, 100):
+        px = int((gx - x0) * ppm)
+        if 0 <= px < Wc:
+            cv2.line(unwrap, (px, 0), (px, Hc - 1), (60, 60, 200), 1)
+    for gy in range(int(y0 // 100) * 100, int(y1) + 1, 100):
+        py = int((gy - y0) * ppm)
+        if 0 <= py < Hc:
+            cv2.line(unwrap, (0, py), (Wc - 1, py), (60, 60, 200), 1)
+
+    out = {
+        "scale_mm_per_unit": round(scale, 2),
+        "radius_est_units": round(R, 5),
+        "residual_mm_rms": round(fit["rel"] * (diameter_mm / 2.0), 1),
+        "residual_rel": round(fit["rel"], 3),
+        "inlier_frac": round(fit["inl_frac"], 2),
+        "arc_coverage_deg": round(float(np.ptp(th_w)) * 180 / np.pi, 1),
+        "axial_extent_mm": round(float(span_y), 0),
+        "circ_extent_mm": round(float(span_x), 0),
+        "axis_tilt_from_cam_deg": round(float(np.degrees(
+            np.arccos(np.clip(abs(ax @ a0), -1, 1)))), 1),
+        "unwrap_b64": b64jpg(unwrap, 88),
+    }
+    if cam_center is not None:
+        d = cam_center - c0
+        ecc = np.linalg.norm(d - (d @ ax) * ax) * scale
+        out["cam_ecc_mm"] = round(float(ecc), 1)
+        out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
+    return out
 
 
 class ScanReq(BaseModel):

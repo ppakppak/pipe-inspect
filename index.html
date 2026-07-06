@@ -21705,7 +21705,7 @@ function r3DrawCloud() {
         window.addEventListener('mouseup', () => { drag = false; cv.style.cursor='grab'; });
         window.addEventListener('mousemove', e => {
             if (!drag || !r3pc) return;
-            r3pc.yaw += (e.clientX-lx)*0.008; r3pc.pitch += (e.clientY-ly)*0.008;
+            r3pc.yaw -= (e.clientX-lx)*0.008; r3pc.pitch += (e.clientY-ly)*0.008;  // grab 방식: 드래그 방향으로 앞면이 따라옴(수평 부호 반전으로 상하/좌우 관례 통일)
             lx = e.clientX; ly = e.clientY; requestAnimationFrame(r3DrawCloud); });
         cv.addEventListener('wheel', e => { if (!r3pc) return; e.preventDefault();
             r3pc.zoom *= e.deltaY < 0 ? 1.15 : 0.87; requestAnimationFrame(r3DrawCloud); }, { passive: false });

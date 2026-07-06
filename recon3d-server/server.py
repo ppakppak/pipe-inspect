@@ -247,6 +247,7 @@ def run(req: RunReq):
                else '불확실 — 링 부분 검출. 구간/베이스라인/CLAHE 재시도' if score >= 25
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     resp_extra = {}
+    viz_masks = []
     if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
         try:
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
@@ -275,6 +276,26 @@ def run(req: RunReq):
                             0.5, DEFECT_COLORS["coating_peel"], 2)
         except Exception as e:
             resp_extra['cyl_fit'] = {'error': f'피팅 예외: {e}'}
+    # ── 회전 뷰어용 서브샘플 클라우드 (int16 양자화 + RGB, 결함 클래스색) ──
+    try:
+        flat_idx = np.where(selm)[0]
+        if len(flat_idx) > 45000:
+            flat_idx = flat_idx[np.linspace(0, len(flat_idx) - 1, 45000).astype(int)]
+        P3 = wp[mid].reshape(-1, 3)[flat_idx].astype(np.float32)
+        colb = orig.reshape(-1, 3)[flat_idx][:, ::-1].copy()   # BGR→RGB
+        for cls_raw, mimg in viz_masks:
+            dmm = mimg.reshape(-1)[flat_idx]
+            bgr = DEFECT_COLORS.get(cls_raw, (0, 255, 255))
+            colb[dmm] = bgr[::-1]
+        offp = P3.mean(0)
+        scp = float(np.abs(P3 - offp).max()) / 32000.0 or 1.0
+        xyz16 = np.clip((P3 - offp) / scp, -32700, 32700).astype(np.int16)
+        resp_extra['cloud'] = {
+            'n': int(len(flat_idx)),
+            'xyz_b64': base64.b64encode(xyz16.tobytes()).decode(),
+            'rgb_b64': base64.b64encode(np.ascontiguousarray(colb).tobytes()).decode()}
+    except Exception:
+        pass
     if req.debug_depth:
         import io as _io
         buf = _io.BytesIO()

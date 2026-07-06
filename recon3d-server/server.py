@@ -271,7 +271,7 @@ def _run_impl(req: RunReq):
                                         cam_fwd, int(req.diameter_mm),
                                         cam_center=cam_c,
                                         measure_defects=req.measure_defects)
-            cyl, viz_masks = ret if ret else (None, [])
+            cyl, viz_masks, wall_flat = ret if ret else (None, [], None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
             left = np.ascontiguousarray(depth_img[:, :W])
@@ -281,7 +281,10 @@ def _run_impl(req: RunReq):
                                           cv2.RETR_EXTERNAL,
                                           cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(left, cts, -1, col, 2)
-                df = mimg.reshape(-1)[selm]
+                dfull = mimg.reshape(-1)
+                if wall_flat is not None:
+                    dfull = dfull & wall_flat   # 측정에 든 점(벽면 인라이어)만 색칠
+                df = dfull[selm]
                 sel2 = ok & df
                 cs[yi[sel2], xi[sel2]] = col
             depth_img[:, :W] = left
@@ -300,7 +303,10 @@ def _run_impl(req: RunReq):
         P3 = wp[mid].reshape(-1, 3)[flat_idx].astype(np.float32)
         colb = orig.reshape(-1, 3)[flat_idx][:, ::-1].copy()   # BGR→RGB
         for cls_raw, mimg in viz_masks:
-            dmm = mimg.reshape(-1)[flat_idx]
+            dfull = mimg.reshape(-1)
+            if wall_flat is not None:
+                dfull = dfull & wall_flat   # 칠해진 점 = 면적 계산에 든 점
+            dmm = dfull[flat_idx]
             bgr = DEFECT_COLORS.get(cls_raw, (0, 255, 255))
             colb[dmm] = bgr[::-1]
         offp = P3.mean(0)
@@ -664,7 +670,7 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         ecc = np.linalg.norm(d - (d @ ax) * ax) * scale
         out["cam_ecc_mm"] = round(float(ecc), 1)
         out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
-    return out, viz_masks
+    return out, viz_masks, wall
 
 
 class ScanReq(BaseModel):

@@ -33,7 +33,16 @@ def get_model():
     if _model is None:
         from vggt.models.vggt import VGGT
         _model = VGGT.from_pretrained("facebook/VGGT-1B").to("cuda").eval()
+    _model.to("cuda")   # 유휴 시 CPU 상주 → 사용 시 복귀(~1s)
     return _model
+
+
+def release_model():
+    """요청 종료 후 가중치를 CPU로 — 동거 GPU 프로세스(5004/8085)에 VRAM 반납."""
+    global _model
+    if _model is not None:
+        _model.to("cpu")
+        torch.cuda.empty_cache()
 
 
 def b64jpg(img, q=85):
@@ -129,6 +138,13 @@ def video_info(path: str):
 
 @app.post('/run')
 def run(req: RunReq):
+    try:
+        return _run_impl(req)
+    finally:
+        release_model()   # 유휴 VRAM 반납
+
+
+def _run_impl(req: RunReq):
     p = os.path.realpath(req.video_path)
     if not any(p.startswith(os.path.realpath(r) + os.sep) for r in ALLOWED_ROOTS):
         return {'success': False, 'error': '허용 경로 밖 파일'}
@@ -556,8 +572,14 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         try:
             frame_full = cv2.imread(frame_path)
             oh, ow = frame_full.shape[:2]
-            res_y = _get_yolo().predict(frame_full, imgsz=960, conf=0.30,
-                                        verbose=False)[0]
+            _ym = _get_yolo()
+            res_y = _ym.predict(frame_full, imgsz=960, conf=0.30,
+                                verbose=False)[0]
+            try:
+                _ym.model.to("cpu")               # 상주 VRAM 최소화
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
             names = res_y.names
             if res_y.masks is not None:
                 theta_full = theta   # (H*W,) 이미 계산됨
@@ -653,6 +675,13 @@ class ScanReq(BaseModel):
 
 @app.post('/scan')
 def scan(req: ScanReq):
+    try:
+        return _scan_impl(req)
+    finally:
+        release_model()   # 유휴 VRAM 반납
+
+
+def _scan_impl(req: ScanReq):
     """영상 전체를 균등 스윕해 conf 프로파일(3D 성립 구간 지도) 생성.
 
     포인트당 n_frames(기본 2)로 가볍게 VGGT를 돌려 depth_conf 평균만 수집.
@@ -679,6 +708,7 @@ def scan(req: ScanReq):
     model = get_model()
     tmpd = f"/tmp/recon3d_scan_{uuid.uuid4().hex[:8]}"
     os.makedirs(tmpd, exist_ok=True)
+    torch.cuda.empty_cache()   # 동거 프로세스(5004/8085)로 VRAM 빠듯 — 스캔 전 회수
     points = []
     t0 = time.time()
     for ci, c in enumerate(centers):
@@ -699,7 +729,7 @@ def scan(req: ScanReq):
         if len(paths) < 2:
             points.append({'frame': int(c), 'conf': None})
             continue
-        try:
+        def _infer_point():
             images = load_and_preprocess_images(paths).to("cuda")
             with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
                 pred = model(images)
@@ -712,15 +742,28 @@ def scan(req: ScanReq):
             _mid = wp_np.shape[0] // 2
             _fwd = _ex[_mid][:3, :3].T @ np.array([0., 0., 1.])
             _lap2, _bore2 = _frame_stats(paths[_mid])
-            met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd, lapvar=_lap2, bore_frac=_bore2)
+            met = _pipe_metrics(wp_np[_mid], cf_np[_mid], cam_forward=_fwd,
+                                lapvar=_lap2, bore_frac=_bore2)
             _dmid = pred['depth'].squeeze(0).float().cpu().numpy()[_mid, :, :, 0]
             _pc = _brightness_corr(_dmid, paths[_mid])
             if _pc is not None and _pc > INV_CORR_THR:
                 met['pipe_score'] = min(met['pipe_score'], 10)
                 met['inv'] = True
             del pred, images
+            return cmean, met
+        try:
+            try:
+                cmean, met = _infer_point()
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()          # VRAM 빠듯(동거 프로세스) — 1회 재시도
+                cmean, met = _infer_point()
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
+            print(f"scan f{c}: OOM (재시도 실패)")
+            points.append({'frame': int(c), 'conf': None, 'score': None})
+            continue
+        except Exception as e:
+            print(f"scan f{c}: {type(e).__name__}: {e}")
             points.append({'frame': int(c), 'conf': None, 'score': None})
             continue
         if ci % 8 == 7:

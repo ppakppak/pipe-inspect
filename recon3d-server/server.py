@@ -190,8 +190,9 @@ def _run_impl(req: RunReq):
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
             pred = model(images)
         infer_s = time.time() - t0
-        extri, _ = pose_encoding_to_extri_intri(pred['pose_enc'], images.shape[-2:])
+        extri, intri = pose_encoding_to_extri_intri(pred['pose_enc'], images.shape[-2:])
         extri = extri.squeeze(0).float().cpu().numpy()
+        intri = intri.squeeze(0).float().cpu().numpy()
         depth = pred['depth'].squeeze(0).float().cpu().numpy()
         conf = pred['depth_conf'].squeeze(0).float().cpu().numpy()
         wp = pred['world_points'].squeeze(0).float().cpu().numpy()
@@ -270,7 +271,8 @@ def _run_impl(req: RunReq):
             ret = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
                                         cam_fwd, int(req.diameter_mm),
                                         cam_center=cam_c,
-                                        measure_defects=req.measure_defects)
+                                        measure_defects=req.measure_defects,
+                                        K=intri[mid], extri_mid=extri[mid])
             cyl, viz_masks, wall_flat = ret if ret else (None, [], None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
@@ -455,7 +457,8 @@ def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
 
 # ═══ 부분원호 원통 피팅 + metric 전개 (A4 본론) ═══
 def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
-                          cam_center=None, measure_defects=True):
+                          cam_center=None, measure_defects=True,
+                          K=None, extri_mid=None):
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
     부분 원호(원주 일부만 노출)에서도 성립. 반환: 피팅 파라미터(mm)·품질지표·
@@ -560,7 +563,38 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
              np.ones((9, 9), np.uint8)) > 0)).astype(np.uint8)
     if holes.any():
         img = cv2.inpaint(img, holes, 3, cv2.INPAINT_TELEA)
-    unwrap = cv2.applyColorMap(img, cv2.COLORMAP_BONE) if False else         cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    unwrap = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    # ── 역매핑 밀집 컬러 텍스처(가능 시): 캔버스 픽셀→원통 3D→카메라 투영→원본 샘플 ──
+    # 순방향 스플랫의 점 성김을 해소. 관측 영역(스플랫 점유 팽창) 밖은 지어내지 않고 검게.
+    if K is not None and extri_mid is not None:
+        try:
+            gxm = x0 + (np.arange(Wc, dtype=np.float32) + 0.5) / ppm     # mm(원주)
+            gym = y0 + (np.arange(Hc, dtype=np.float32) + 0.5) / ppm     # mm(축)
+            thg = gxm / (diameter_mm / 2.0)
+            zg = gym / scale
+            cth, sth = np.cos(thg), np.sin(thg)
+            Pw = (c0[None, None, :]
+                  + (R * cth)[None, :, None] * u[None, None, :]
+                  + (R * sth)[None, :, None] * v[None, None, :]
+                  + zg[:, None, None] * ax[None, None, :])
+            Rm, tm = extri_mid[:3, :3], extri_mid[:3, 3]
+            Pc = Pw @ Rm.T + tm
+            zc = Pc[..., 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                uu = (K[0, 0] * Pc[..., 0] / zc + K[0, 2]).astype(np.float32)
+                vv = (K[1, 1] * Pc[..., 1] / zc + K[1, 2]).astype(np.float32)
+            valid = ((zc > 1e-6) & (uu >= 0) & (uu < W - 1)
+                     & (vv >= H * 0.12) & (vv < H * 0.90))
+            obs = cv2.dilate((cnt > 0).astype(np.uint8),
+                             np.ones((11, 11), np.uint8)).astype(bool)
+            valid &= obs
+            frame_col = cv2.resize(cv2.imread(frame_path), (W, H))
+            dense = cv2.remap(frame_col, uu, vv, cv2.INTER_LINEAR)
+            unwrap = np.where(valid[..., None], dense, 0).astype(np.uint8)
+        except Exception as e:
+            print(f"역매핑 실패(스플랫 유지): {e}")
+
     # mm 눈금(100mm 격자)
     for gx in range(int(x0 // 100) * 100, int(x1) + 1, 100):
         px = int((gx - x0) * ppm)

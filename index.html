@@ -21737,7 +21737,7 @@ async function r3Pano() {
                     step: +document.getElementById('r3Step').value || 12 };
                 const sc = window.r3LastScan;
                 if (sc && sc.video === path) {  // 스캔 성립 후보를 스톱으로 (균등보다 적중률↑)
-                    let cand = sc.points.filter(p => p.score >= 25).sort((a,b)=>a.frame-b.frame);
+                    let cand = sc.points.filter(p => p.score >= 15).sort((a,b)=>a.frame-b.frame);  // 사전게이트 완화 — 최종판정은 서버 피팅 품질 게이트
                     const picked = [];
                     for (const p of cand) if (!picked.length || p.frame - picked[picked.length-1] > 150) picked.push(p.frame);
                     if (picked.length >= 2) { base.frames = picked.slice(0, 12); st.textContent = '🧵 스캔 성립 구간 ' + base.frames.length + '개 스톱으로 전관 전개 생성 중...'; }

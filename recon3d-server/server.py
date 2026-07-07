@@ -716,6 +716,7 @@ class PanoReq(BaseModel):
     diameter_mm: int
     frames: list = []       # 명시 스톱 프레임(비면 균등 n_stops)
     n_stops: int = 8
+    min_score: int = 15     # 사전 관다움 게이트(낮춤) — 최종 판정은 피팅 품질 게이트
     n_frames: int = 4
     step: int = 12
     start_frame: int = 0
@@ -805,7 +806,7 @@ def _pano_impl(req: PanoReq):
         if pc is not None and pc > INV_CORR_THR:
             skipped.append({'frame': int(c), 'reason': f'depth 반전 의심({pc:+.2f})'})
             continue
-        if met['pipe_score'] < 25:
+        if met['pipe_score'] < max(5, int(req.min_score)):
             skipped.append({'frame': int(c), 'reason': f"관다움 미달(S{met['pipe_score']})"})
             continue
         cam_c = -ex[mid][:3, :3].T @ ex[mid][:3, 3]
@@ -821,6 +822,11 @@ def _pano_impl(req: PanoReq):
             skipped.append({'frame': int(c), 'reason': '피팅 실패(포인트 부족)'})
             continue
         out, _, _ = ret2
+        # 최종 품질 게이트: 관다움을 낮춘 대신 피팅 잔차·인라이어로 판정
+        if out['residual_rel'] > 0.22 or out['inlier_frac'] < 0.55:
+            skipped.append({'frame': int(c),
+                            'reason': f"피팅 품질 미달(res{out['residual_rel']}·inl{out['inlier_frac']})"})
+            continue
         img = cv2.imdecode(np.frombuffer(base64.b64decode(out['unwrap_b64']),
                                          np.uint8), cv2.IMREAD_COLOR)
         for dd in out.get('defects', []):

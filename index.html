@@ -18131,6 +18131,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <span id="qsFrameTotal" style="font-size:12px; color:#888;">/ 0</span>
                             <label style="font-size:12px; color:#aaa; white-space:nowrap; margin-left:8px;" title="프레임 로드 시 결함(결절/박리) 자동 검출·폴리곤 표시"><input type="checkbox" id="qsDetectChk" checked> 결함 검출</label>
                             <span id="qsDetectInfo" style="font-size:12px; color:#9fd;"></span>
+                            <button id="qsAdoptBtn" onclick="qsAdoptDetections()" style="display:none; padding:3px 10px; background:#2e7d57; border:0; border-radius:4px; color:white; cursor:pointer; font-size:12px;">→ 분석 폴리곤으로 채택</button>
                             <button id="qsLoadFrameBtn" style="padding:5px 12px; background:#333; border:1px solid #555; border-radius:4px; color:#ddd; cursor:pointer;">프레임 불러오기</button>
                         </div>
                         <div style="position:relative; background:#000; border:1px solid #444; border-radius:4px; overflow:hidden;">
@@ -22340,6 +22341,7 @@ async function qsDetectDefects(b64) {
         info.textContent = j.detections.length
             ? j.detections.map(d => `${d.label === 'corrosion_nodule' ? '결절' : '박리'} ${d.confidence.toFixed(2)}`).join(' · ')
             : '검출 없음';
+        document.getElementById('qsAdoptBtn').style.display = j.detections.length ? 'inline-block' : 'none';
         qsDrawCanvas();
     } catch (e) { info.textContent = '검출 오류: ' + e.message; }
 }
@@ -22493,8 +22495,29 @@ function qsCanvasRightClick(ev) {
     }
 }
 
+function qsAdoptDetections() {
+    // 검출 폴리곤 → 분석 폴리곤 편입 (GT 자리 정렬 유지)
+    const dets = qsState.detections || [];
+    let n = 0;
+    for (const d of dets) {
+        if (!d.polygon || d.polygon.length < 3) continue;
+        qsState.polygons.push(d.polygon.map(p => [p[0], p[1]]));
+        qsState.groundTruth.push({});
+        n++;
+    }
+    qsState.detections = null;   // 이중 표시 방지 — 이후 폴리곤 레이어로만
+    document.getElementById('qsAdoptBtn').style.display = 'none';
+    document.getElementById('qsDetectInfo').textContent = `검출 ${n}개를 분석 폴리곤으로 채택`;
+    if (typeof qsRenderGtTable === 'function') qsRenderGtTable();
+    qsDrawCanvas();
+}
 async function qsAnalyze() {
     if (!qsState.token) { alert('먼저 영상을 업로드하세요'); return; }
+    if (qsState.polygons.length === 0 && (qsState.detections || []).length > 0) {
+        if (confirm(`검출된 결함 폴리곤 ${qsState.detections.length}개를 분석 대상으로 사용할까요?`)) {
+            qsAdoptDetections();
+        }
+    }
     if (qsState.polygons.length === 0) {
         if (!confirm('폴리곤이 없습니다. 자세/VP 만 산출할까요?')) return;
     }

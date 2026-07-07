@@ -18026,6 +18026,7 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <input type="number" id="r3Conf" value="0.30" min="0.05" max="0.9" step="0.05" title="결함 검출 신뢰도 임계. 낮출수록 약한 결함까지 면적 산출(오검 포함 위험↑). 8085 구간분석 기본=0.15" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
                         </div>
                         <label style="font-size:12px; color:#aaa; white-space:nowrap;"><input type="checkbox" id="r3Clahe"> CLAHE</label>
+                        <label style="font-size:12px; color:#aaa; white-space:nowrap;" title="역매핑 전개도 위에서 YOLO를 한 번 더 실행(경사 미탐 탐색, 보고만)"><input type="checkbox" id="r3DetUnwrap"> 전개도 2차검출🧪</label>
                         <button id="r3RunBtn" onclick="r3Run()" style="padding:8px 16px; background:#4a9eff; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">실행</button>
                         <button id="r3PanoBtn" onclick="r3Pano()" title="영상 전체를 균등 스톱으로 원통피팅·전개 후 이어붙임 (관경 필수, 스톱당 ~10초)" style="padding:8px 12px; background:#2e7d57; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">🧵 전관 전개</button>
                     </div>
@@ -21778,6 +21779,7 @@ async function r3Run() {
                 step: +document.getElementById('r3Step').value || 12,
                 diameter_mm: +document.getElementById('r3Dia').value || 0,
                 det_conf: +document.getElementById('r3Conf').value || 0.30,
+                detect_on_unwrap: document.getElementById('r3DetUnwrap').checked,
                 clahe: document.getElementById('r3Clahe').checked,
             })
         });
@@ -21802,8 +21804,11 @@ async function r3Run() {
             if (cf.defects && cf.defects.length) {
                 const tot = Object.entries(cf.defect_total_mm2||{}).map(([c,v])=>`${c} 합계 ${(v/100).toFixed(1)}cm²`).join(' · ');
                 di.innerHTML = '🔴 ' + cf.defects.map(d => d.error ? d.error :
-                    `${d.cls}(${d.conf}) ${d.area_mm2!=null?(d.area_mm2/100).toFixed(1)+'cm²':'측정불가'}${d.wall_frac<0.5?' ⚠️벽면'+(d.wall_frac*100).toFixed(0)+'%':''}`).join(' | ')
-                    + (tot ? `<br>∑ ${tot}` : '');
+                    `${d.cls}(${d.conf}) ${d.area_mm2!=null?(d.area_mm2/100).toFixed(1)+'cm²':'측정불가'}` +
+                    ` <span style="color:#8bc">[${d.frames_seen}/${d.n_frames}f · dr${d.dr_mm>0?'+':''}${d.dr_mm}mm]</span>` +
+                    (d.geom_warn ? ' <span style="color:#f88">⚠️기하모순(결절인데 돌출 아님)</span>' : '')).join(' | ')
+                    + (tot ? `<br>∑ ${tot}` : '')
+                    + (cf.unwrap_extra && cf.unwrap_extra.length ? `<br><span style="color:#a97">🧪 전개도 2차검출(실험): ${cf.unwrap_extra.map(u=>u.error||`${u.cls}(${u.conf})${u.area_mm2_est?' ~'+(u.area_mm2_est/100).toFixed(0)+'cm²':''}`).join(', ')}</span>` : '');
             } else { di.textContent = '결함 검출 없음 (이 프레임)'; }
             document.getElementById('r3Unwrap').src = 'data:image/jpeg;base64,' + cf.unwrap_b64;
         } else {

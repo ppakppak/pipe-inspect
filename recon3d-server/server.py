@@ -109,7 +109,10 @@ class RunReq(BaseModel):
     debug_depth: bool = False   # depth/conf/gray 원본 배열(npz) 반환 — 분석용
     diameter_mm: int = 0        # >0이면 부분원호 원통 피팅+metric 전개 수행
     measure_defects: bool = True  # 피팅 시 YOLO 결함 마스크를 표면 투영해 실면적(mm²) 산출
-    det_conf: float = 0.30      # 결함 검출 conf 임계(8085 기본은 0.15 — 여긴 보수적 기본)
+    det_conf: float = 0.30      # 박리 채택 임계(1차 검출은 내부 0.10 느슨)
+    det_conf_nodule: float = 0.20  # 결절 채택 임계(성능 비대칭 반영해 낮춤)
+    min_hits: int = 2           # 다중 프레임 지지 최소 수(2-of-N)
+    detect_on_unwrap: bool = False  # (실험) 전개도 2차 검출
 
 
 @app.get('/health')
@@ -269,12 +272,15 @@ def _run_impl(req: RunReq):
     if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
         try:
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
-            ret = _fit_cylinder_partial(wp[mid], conf[mid], paths[mid],
+            ret = _fit_cylinder_partial(wp, conf, paths, mid,
                                         cam_fwd, int(req.diameter_mm),
                                         cam_center=cam_c,
                                         measure_defects=req.measure_defects,
                                         K=intri[mid], extri_mid=extri[mid],
-                                        det_conf=req.det_conf)
+                                        det_conf=req.det_conf,
+                                        det_conf_nodule=req.det_conf_nodule,
+                                        min_hits=req.min_hits,
+                                        detect_on_unwrap=req.detect_on_unwrap)
             cyl, viz_masks, wall_flat = ret if ret else (None, [], None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
@@ -458,9 +464,12 @@ def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
 
 
 # ═══ 부분원호 원통 피팅 + metric 전개 (A4 본론) ═══
-def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
+def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm,
                           cam_center=None, measure_defects=True,
-                          K=None, extri_mid=None, det_conf=0.30):
+                          K=None, extri_mid=None, det_conf=0.30,
+                          det_conf_nodule=0.20, min_hits=2,
+                          detect_on_unwrap=False):
+    wp, conf, frame_path = wp_all[mid], conf_all[mid], paths[mid]
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
     부분 원호(원주 일부만 노출)에서도 성립. 반환: 피팅 파라미터(mm)·품질지표·
@@ -607,84 +616,145 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
         if 0 <= py < Hc:
             cv2.line(unwrap, (0, py), (Wc - 1, py), (60, 60, 200), 1)
 
-    # ── 결함 마스크 투영 → 실면적(mm²) ──
+    # ── 결함 검출: 느슨한 검출(전 프레임)→원통좌표 융합→2-of-N→클래스임계→기하서명 ──
     defects = []
-    viz_masks = []   # [(cls_raw, (H,W) bool)] — 원본/단면 오버레이용
+    viz_masks = []      # mid 프레임 원출력 (원본/클라우드 오버레이용)
+    unwrap_extra = []   # (실험) 전개도 2차 검출 후보
     if measure_defects:
         try:
-            frame_full = cv2.imread(frame_path)
-            oh, ow = frame_full.shape[:2]
             _ym = _get_yolo()
             try:
-                _ym.model.to("cuda")   # 오프로딩 복귀 — predictor는 초기화 후 모델 이동을 안 함
+                _ym.model.to("cuda")
             except Exception:
                 pass
-            res_y = _ym.predict(frame_full, imgsz=960,
-                                conf=max(0.05, min(0.9, float(det_conf))),
-                                verbose=False, device=0)[0]
-            try:
-                _ym.model.to("cpu")               # 상주 VRAM 최소화
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-            names = res_y.names
-            if res_y.masks is not None:
-                theta_full = theta   # (H*W,) 이미 계산됨
-                t_full = t_ax
-                for k in range(len(res_y.boxes)):
-                    cls = names[int(res_y.boxes.cls[k])]
-                    dconf = float(res_y.boxes.conf[k])
-                    poly_list = res_y.masks.xy[k]
-                    if poly_list is None or len(poly_list) < 3:
+            LOOSE = 0.10                       # 1차: 느슨하게 다 잡음(미탐 방지)
+            ACCEPT = {"corrosion_nodule": max(0.05, float(det_conf_nodule)),
+                      "coating_peel": max(0.05, float(det_conf))}
+            S = len(paths)
+            hitmaps, confmaps = {}, {}
+            drsum, drcnt = {}, {}
+            for k in range(S):
+                fr = cv2.imread(paths[k])
+                if fr is None:
+                    continue
+                oh, ow = fr.shape[:2]
+                res_y = _ym.predict(fr, imgsz=960, conf=LOOSE,
+                                    verbose=False, device=0)[0]
+                if res_y.masks is None:
+                    continue
+                wpk = wp_all[k].reshape(-1, 3)
+                qk = wpk - c0
+                tk = qk @ ax
+                rvk = qk - np.outer(tk, ax)
+                rk = np.linalg.norm(rvk, axis=1)
+                thk = np.arctan2(rvk @ v, rvk @ u)
+                wallk = np.abs(rk - R) < 0.25 * R
+                names = res_y.names
+                frame_occ = {}   # cls -> 이 프레임의 합집합(프레임당 hit 1회)
+                for i2 in range(len(res_y.boxes)):
+                    cls = names[int(res_y.boxes.cls[i2])]
+                    dconf = float(res_y.boxes.conf[i2])
+                    poly = res_y.masks.xy[i2]
+                    if poly is None or len(poly) < 3:
                         continue
                     mimg = np.zeros((H, W), np.uint8)
-                    pl = np.asarray(poly_list, np.float32)
+                    pl = np.asarray(poly, np.float32)
                     pl[:, 0] *= W / ow
                     pl[:, 1] *= H / oh
                     cv2.fillPoly(mimg, [pl.astype(np.int32)], 1)
-                    viz_masks.append((cls, mimg.astype(bool)))
-                    inst = mimg.reshape(-1).astype(bool)
-                    on_wall = inst & wall
-                    wall_frac = float(on_wall.sum() / max(inst.sum(), 1))
-                    if on_wall.sum() < 30:
-                        defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
-                                        "conf": round(dconf, 2),
-                                        "area_mm2": None,
-                                        "wall_frac": round(wall_frac, 2),
-                                        "note": "벽면 인라이어 부족(측정불가)"})
+                    if k == mid:
+                        viz_masks.append((cls, mimg.astype(bool)))
+                    sel_i = mimg.reshape(-1).astype(bool) & wallk
+                    if sel_i.sum() < 20:
                         continue
-                    dx = np.clip(((theta_full[on_wall] * (diameter_mm / 2.0)
-                                   - x0) * ppm).astype(int), 0, Wc - 1)
-                    dy = np.clip(((t_full[on_wall] * scale - y0) * ppm)
-                                 .astype(int), 0, Hc - 1)
+                    dxk = np.clip(((thk[sel_i] * (diameter_mm / 2.0) - x0)
+                                   * ppm).astype(int), 0, Wc - 1)
+                    dyk = np.clip(((tk[sel_i] * scale - y0)
+                                   * ppm).astype(int), 0, Hc - 1)
                     occ = np.zeros((Hc, Wc), np.uint8)
-                    occ[dy, dx] = 1
+                    occ[dyk, dxk] = 1
                     occ = cv2.morphologyEx(occ, cv2.MORPH_CLOSE,
                                            cv2.getStructuringElement(
                                                cv2.MORPH_ELLIPSE, (7, 7)))
-                    area_mm2 = float(occ.sum()) / (ppm * ppm)
+                    fo = frame_occ.setdefault(cls, np.zeros((Hc, Wc), np.uint8))
+                    np.maximum(fo, occ, out=fo)
+                    cmx = confmaps.setdefault(cls, np.zeros((Hc, Wc), np.float32))
+                    np.maximum(cmx, occ.astype(np.float32) * dconf, out=cmx)
+                    dsm = drsum.setdefault(cls, np.zeros((Hc, Wc), np.float32))
+                    dcm = drcnt.setdefault(cls, np.zeros((Hc, Wc), np.float32))
+                    np.add.at(dsm, (dyk, dxk), (rk[sel_i] - R) * scale)
+                    np.add.at(dcm, (dyk, dxk), 1)
+                for cls_f, fo in frame_occ.items():
+                    hm = hitmaps.setdefault(cls_f, np.zeros((Hc, Wc), np.uint16))
+                    hm += fo
+            try:
+                _ym.model.to("cpu")
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            # 영역화: min_hits 프레임 이상 지지(프레임 적으면 완화) + 클래스 임계
+            eff_min = max(1, min(int(min_hits), S))
+            for cls, hm in hitmaps.items():
+                strong = (hm >= eff_min).astype(np.uint8)
+                nlab, labs = cv2.connectedComponents(strong)
+                for Lb in range(1, nlab):
+                    regm = labs == Lb
+                    if int(regm.sum()) < 25:
+                        continue
+                    maxc = float(confmaps[cls][regm].max())
+                    if maxc < ACCEPT.get(cls, float(det_conf)):
+                        continue
+                    area_mm2 = float(regm.sum()) / (ppm * ppm)
+                    seen = int(hm[regm].max())
+                    dcsum = float(drcnt[cls][regm].sum())
+                    dr_mean = float(drsum[cls][regm].sum() / max(dcsum, 1.0))
+                    # 기하 서명: 결절=돌출(dr<0) 기대 — 강한 모순만 경고(노이즈 여유 5mm)
+                    geom_warn = bool(cls == "corrosion_nodule" and dr_mean > 5.0)
                     col = DEFECT_COLORS.get(cls, (0, 255, 255))
-                    cts, _ = cv2.findContours(occ, cv2.RETR_EXTERNAL,
+                    cts, _ = cv2.findContours(regm.astype(np.uint8),
+                                              cv2.RETR_EXTERNAL,
                                               cv2.CHAIN_APPROX_SIMPLE)
                     ov = unwrap.copy()
                     cv2.drawContours(ov, cts, -1, col, -1)
                     unwrap[:] = cv2.addWeighted(ov, 0.30, unwrap, 0.70, 0)
                     cv2.drawContours(unwrap, cts, -1, col, 2)
-                    ys, xs = np.where(occ > 0)
-                    label = "%s %.0fcm2" % (DEFECT_LABEL_EN.get(cls, cls),
-                                            area_mm2 / 100.0)
-                    cv2.putText(unwrap, label,
-                                (max(int(xs.min()), 2),
-                                 max(int(ys.min()) - 6, 14)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+                    ys2, xs2 = np.where(regm)
+                    cv2.putText(unwrap, "%s %.0fcm2 x%d" % (
+                        DEFECT_LABEL_EN.get(cls, cls), area_mm2 / 100.0, seen),
+                        (max(int(xs2.min()), 2), max(int(ys2.min()) - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
                     defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
-                                    "conf": round(dconf, 2),
+                                    "conf": round(maxc, 2),
                                     "area_mm2": round(area_mm2, 0),
-                                    "wall_frac": round(wall_frac, 2)})
+                                    "frames_seen": seen, "n_frames": S,
+                                    "dr_mm": round(dr_mean, 1),
+                                    "geom_warn": geom_warn})
+            # (실험) 전개도 공간 2차 검출 — 경사 미탐 탐색, 보고만
+            if detect_on_unwrap:
+                try:
+                    _ym.model.to("cuda")
+                    ru = _ym.predict(unwrap, imgsz=960, conf=LOOSE,
+                                     verbose=False, device=0)[0]
+                    _ym.model.to("cpu")
+                    torch.cuda.empty_cache()
+                    if ru.masks is not None:
+                        for i3 in range(len(ru.boxes)):
+                            cls = ru.names[int(ru.boxes.cls[i3])]
+                            unwrap_extra.append({
+                                "cls": DEFECT_NAMES_KO.get(cls, cls),
+                                "conf": round(float(ru.boxes.conf[i3]), 2),
+                                "area_mm2_est": round(float(cv2.contourArea(
+                                    np.asarray(ru.masks.xy[i3], np.float32)))
+                                    / (ppm * ppm), 0)
+                                if ru.masks.xy[i3] is not None
+                                and len(ru.masks.xy[i3]) >= 3 else None})
+                except Exception as e:
+                    unwrap_extra = [{"error": str(e)}]
         except Exception as e:
             defects = [{"error": f"결함 투영 실패: {e}"}]
 
     out = {
+        "unwrap_extra": unwrap_extra,
         "ppm": round(ppm, 3),                    # px per mm (파노라마 배치용)
         "circ_x0_mm": round(float(x0), 1),       # 원주 시작(θ·R mm, 공통 θ기준)
         "defects": defects,
@@ -720,7 +790,9 @@ class PanoReq(BaseModel):
     frames: list = []       # 명시 스톱 프레임(비면 균등 n_stops)
     n_stops: int = 8
     min_score: int = 15     # 사전 관다움 게이트(낮춤) — 최종 판정은 피팅 품질 게이트
-    det_conf: float = 0.30  # 결함 검출 conf 임계
+    det_conf: float = 0.30  # 박리 채택 임계
+    det_conf_nodule: float = 0.20
+    min_hits: int = 2
     n_frames: int = 4
     step: int = 12
     start_frame: int = 0
@@ -815,11 +887,13 @@ def _pano_impl(req: PanoReq):
             continue
         cam_c = -ex[mid][:3, :3].T @ ex[mid][:3, 3]
         try:
-            ret2 = _fit_cylinder_partial(wp_np[mid], cf_np[mid], paths[mid],
+            ret2 = _fit_cylinder_partial(wp_np, cf_np, paths, mid,
                                          fwd, D, cam_center=cam_c,
                                          measure_defects=True,
                                          K=kin[mid], extri_mid=ex[mid],
-                                         det_conf=req.det_conf)
+                                         det_conf=req.det_conf,
+                                         det_conf_nodule=req.det_conf_nodule,
+                                         min_hits=req.min_hits)
         except Exception as e:
             skipped.append({'frame': int(c), 'reason': f'피팅 예외: {e}'})
             continue

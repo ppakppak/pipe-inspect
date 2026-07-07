@@ -635,6 +635,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             hitmaps, confmaps = {}, {}
             drsum, drcnt = {}, {}
             jac_contribs = {}
+            surveyed_mid = None
             for k in range(S):
                 fr = cv2.imread(paths[k])
                 if fr is None:
@@ -710,6 +711,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                 for cls_f, fo in frame_occ.items():
                     hm = hitmaps.setdefault(cls_f, np.zeros((Hc, Wc), np.uint16))
                     hm += fo
+                if dA_k is not None and k == mid:
+                    surveyed_mid = float(dA_k[wallk].sum())   # 실관측 벽면적(자코비안)
                 if dA_k is not None:
                     for cls_f, fp in frame_pix.items():
                         if not fp.any():
@@ -798,7 +801,12 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         except Exception as e:
             defects = [{"error": f"결함 투영 실패: {e}"}]
 
+    _tot_def = sum(d.get("area_mm2") or 0 for d in defects if isinstance(d, dict))
     out = {
+        "surveyed_area_mm2": (round(surveyed_mid, 0)
+                              if measure_defects and surveyed_mid else None),
+        "defect_ratio_visible_pct": (round(_tot_def / surveyed_mid * 100, 2)
+                                     if measure_defects and surveyed_mid else None),
         "dr_bias_mm": round(dr_med, 1) if measure_defects else None,
         "unwrap_extra": unwrap_extra,
         "ppm": round(ppm, 3),                    # px per mm (파노라마 배치용)

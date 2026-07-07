@@ -21802,7 +21802,8 @@ async function r3Run() {
             document.getElementById('r3CylInfo').textContent =
                 `잔차 ${cf.residual_mm_rms}mm RMS(인라이어 ${(cf.inlier_frac*100).toFixed(0)}%) · ` +
                 `전개 ${cf.circ_extent_mm}×${cf.axial_extent_mm}mm · 카메라 편심 ${cf.cam_ecc_mm??'-'}mm(${cf.cam_ecc_ratio??'-'}R) · ` +
-                `스케일 ${cf.scale_mm_per_unit}mm/u · 축기울기 ${cf.axis_tilt_from_cam_deg}°`;
+                `스케일 ${cf.scale_mm_per_unit}mm/u · 축기울기 ${cf.axis_tilt_from_cam_deg}°` +
+                (cf.surveyed_area_mm2 ? ` · 조사면적(실관측) ${(cf.surveyed_area_mm2/100).toFixed(0)}cm² · 가시결함비 ${cf.defect_ratio_visible_pct}%` : '');
             const di = document.getElementById('r3DefInfo');
             if (cf.defects && cf.defects.length) {
                 const tot = Object.entries(cf.defect_total_mm2||{}).map(([c,v])=>`${c} 합계 ${(v/100).toFixed(1)}cm²`).join(' · ');

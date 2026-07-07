@@ -277,6 +277,7 @@ def _run_impl(req: RunReq):
                                         cam_center=cam_c,
                                         measure_defects=req.measure_defects,
                                         K=intri[mid], extri_mid=extri[mid],
+                                        extri_all=extri,
                                         det_conf=req.det_conf,
                                         det_conf_nodule=req.det_conf_nodule,
                                         min_hits=req.min_hits,
@@ -468,7 +469,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                           cam_center=None, measure_defects=True,
                           K=None, extri_mid=None, det_conf=0.30,
                           det_conf_nodule=0.20, min_hits=2,
-                          detect_on_unwrap=False):
+                          detect_on_unwrap=False, extri_all=None):
     wp, conf, frame_path = wp_all[mid], conf_all[mid], paths[mid]
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
@@ -633,6 +634,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             S = len(paths)
             hitmaps, confmaps = {}, {}
             drsum, drcnt = {}, {}
+            jac_contribs = {}
             for k in range(S):
                 fr = cv2.imread(paths[k])
                 if fr is None:
@@ -649,8 +651,26 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                 rk = np.linalg.norm(rvk, axis=1)
                 thk = np.arctan2(rvk @ v, rvk @ u)
                 wallk = np.abs(rk - R) < 0.25 * R
+                # 픽셀별 실표면적(자코비안): dA = t²/(fx·fy·n³·cosθi)
+                #   비닝-점유법은 원거리/사면(픽셀밀도<빈밀도)서 과소 — GT 검증서 확인
+                dA_k = None
+                if K is not None and extri_all is not None:
+                    if "_n3grid" not in locals():
+                        uu2, vv2 = np.meshgrid(np.arange(W, dtype=np.float32),
+                                               np.arange(H, dtype=np.float32))
+                        ddx = (uu2 - K[0, 2]) / K[0, 0]
+                        ddy = (vv2 - K[1, 2]) / K[1, 1]
+                        _n3grid = (np.sqrt(ddx**2 + ddy**2 + 1.0) ** 3).reshape(-1)
+                    cam_k = -extri_all[k][:3, :3].T @ extri_all[k][:3, 3]
+                    ray = wpk - cam_k
+                    tdist = np.linalg.norm(ray, axis=1).clip(1e-9, None)
+                    radial = rvk / rk[:, None].clip(1e-9, None)
+                    cosi_k = np.abs((ray / tdist[:, None] * -radial).sum(1)).clip(0.05, 1)
+                    dA_k = (tdist ** 2) / (float(K[0, 0]) * float(K[1, 1])
+                                           * _n3grid * cosi_k) * (scale ** 2)
                 names = res_y.names
                 frame_occ = {}   # cls -> 이 프레임의 합집합(프레임당 hit 1회)
+                frame_pix = {}   # cls -> 자코비안용 픽셀 합집합(인스턴스 중복 방지)
                 for i2 in range(len(res_y.boxes)):
                     cls = names[int(res_y.boxes.cls[i2])]
                     dconf = float(res_y.boxes.conf[i2])
@@ -684,9 +704,22 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     dcm = drcnt.setdefault(cls, np.zeros((Hc, Wc), np.float32))
                     np.add.at(dsm, (dyk, dxk), (rk[sel_i] - R) * scale)
                     np.add.at(dcm, (dyk, dxk), 1)
+                    if dA_k is not None:
+                        fp = frame_pix.setdefault(cls, np.zeros(H * W, bool))
+                        fp |= sel_i   # 겹치는 인스턴스 중복 적산 방지(픽셀 합집합)
                 for cls_f, fo in frame_occ.items():
                     hm = hitmaps.setdefault(cls_f, np.zeros((Hc, Wc), np.uint16))
                     hm += fo
+                if dA_k is not None:
+                    for cls_f, fp in frame_pix.items():
+                        if not fp.any():
+                            continue
+                        dxk2 = np.clip(((thk[fp] * (diameter_mm / 2.0) - x0)
+                                        * ppm).astype(int), 0, Wc - 1)
+                        dyk2 = np.clip(((tk[fp] * scale - y0)
+                                        * ppm).astype(int), 0, Hc - 1)
+                        jac_contribs.setdefault(cls_f, []).append(
+                            (k, dyk2, dxk2, dA_k[fp]))
             try:
                 _ym.model.to("cpu")
                 torch.cuda.empty_cache()
@@ -706,7 +739,16 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     maxc = float(confmaps[cls][regm].max())
                     if maxc < ACCEPT.get(cls, float(det_conf)):
                         continue
-                    area_mm2 = float(regm.sum()) / (ppm * ppm)
+                    area_bin = float(regm.sum()) / (ppm * ppm)
+                    area_mm2 = area_bin
+                    if jac_contribs.get(cls):
+                        per_frame = {}
+                        for (kf, dyk2, dxk2, dAv) in jac_contribs[cls]:
+                            inm = regm[dyk2, dxk2]
+                            if inm.any():
+                                per_frame[kf] = per_frame.get(kf, 0.0) + float(dAv[inm].sum())
+                        if per_frame:
+                            area_mm2 = max(per_frame.values())   # 가장 완전히 본 프레임
                     seen = int(hm[regm].max())
                     dcsum = float(drcnt[cls][regm].sum())
                     dr_mean = float(drsum[cls][regm].sum() / max(dcsum, 1.0)) - dr_med
@@ -728,6 +770,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
                                     "conf": round(maxc, 2),
                                     "area_mm2": round(area_mm2, 0),
+                                    "area_bin_mm2": round(area_bin, 0),
                                     "frames_seen": seen, "n_frames": S,
                                     "dr_mm": round(dr_mean, 1),
                                     "geom_warn": geom_warn})
@@ -894,6 +937,7 @@ def _pano_impl(req: PanoReq):
                                          fwd, D, cam_center=cam_c,
                                          measure_defects=True,
                                          K=kin[mid], extri_mid=ex[mid],
+                                         extri_all=ex,
                                          det_conf=req.det_conf,
                                          det_conf_nodule=req.det_conf_nodule,
                                          min_hits=req.min_hits)

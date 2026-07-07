@@ -22501,7 +22501,9 @@ function qsAdoptDetections() {
     let n = 0;
     for (const d of dets) {
         if (!d.polygon || d.polygon.length < 3) continue;
-        qsState.polygons.push(d.polygon.map(p => [p[0], p[1]]));
+        const flat = [];
+        d.polygon.forEach(p => flat.push(p[0], p[1]));   // 수동 폴리곤과 동일한 평탄 포맷
+        qsState.polygons.push(flat);
         qsState.groundTruth.push({});
         n++;
     }

@@ -18129,6 +18129,8 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <input type="range" id="qsFrameSlider" min="0" max="0" value="0" style="flex:1; min-width:200px;">
                             <input type="number" id="qsFrameNumber" value="0" min="0" style="width:90px; padding:5px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
                             <span id="qsFrameTotal" style="font-size:12px; color:#888;">/ 0</span>
+                            <label style="font-size:12px; color:#aaa; white-space:nowrap; margin-left:8px;" title="프레임 로드 시 결함(결절/박리) 자동 검출·폴리곤 표시"><input type="checkbox" id="qsDetectChk" checked> 결함 검출</label>
+                            <span id="qsDetectInfo" style="font-size:12px; color:#9fd;"></span>
                             <button id="qsLoadFrameBtn" style="padding:5px 12px; background:#333; border:1px solid #555; border-radius:4px; color:#ddd; cursor:pointer;">프레임 불러오기</button>
                         </div>
                         <div style="position:relative; background:#000; border:1px solid #444; border-radius:4px; overflow:hidden;">
@@ -22315,11 +22317,32 @@ async function qsLoadFrame(opts) {
             qsDrawCanvas();
         };
         img.src = 'data:image/jpeg;base64,' + j.frame_base64;
+        // 결함 자동 검출 (체크 시) — 폴리곤 오버레이
+        qsState.detections = null;
+        if (document.getElementById('qsDetectChk').checked) qsDetectDefects(j.frame_base64);
+        else document.getElementById('qsDetectInfo').textContent = '';
     } catch (e) {
         alert('프레임 로딩 오류: ' + e.message);
     }
 }
 
+async function qsDetectDefects(b64) {
+    const info = document.getElementById('qsDetectInfo');
+    try {
+        info.textContent = '결함 검출 중...';
+        const r = await authFetch('/api/survey/infer', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_base64: b64, conf: 0.25, imgsz: 960 })
+        });
+        const j = await r.json();
+        if (!j.success) { info.textContent = '검출 실패: ' + (j.error || ''); return; }
+        qsState.detections = j.detections;
+        info.textContent = j.detections.length
+            ? j.detections.map(d => `${d.label === 'corrosion_nodule' ? '결절' : '박리'} ${d.confidence.toFixed(2)}`).join(' · ')
+            : '검출 없음';
+        qsDrawCanvas();
+    } catch (e) { info.textContent = '검출 오류: ' + e.message; }
+}
 function qsDrawCanvas() {
     const canvas = document.getElementById('qsCanvas');
     const img = qsState.frameImage;
@@ -22331,6 +22354,22 @@ function qsDrawCanvas() {
     canvas.height = img.naturalHeight * scale;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    // 결함 폴리곤 (결절=빨강, 박리=초록)
+    if (qsState.detections) for (const d of qsState.detections) {
+        const poly = d.polygon;
+        if (!poly || poly.length < 3) continue;
+        const col = d.label === 'corrosion_nodule' ? '#ff4444' : '#33cc55';
+        ctx.beginPath();
+        poly.forEach((p, i) => { const x = p[0] * scale, y = p[1] * scale;
+            i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        ctx.closePath();
+        ctx.fillStyle = col + '38'; ctx.fill();
+        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = col; ctx.font = 'bold 12px sans-serif';
+        ctx.fillText(`${d.label === 'corrosion_nodule' ? '결절' : '박리'} ${d.confidence.toFixed(2)}`,
+                     poly[0][0] * scale + 4, poly[0][1] * scale - 4);
+    }
 
     // VP 점
     if (qsState.vp && qsState.vp.vp_x != null) {

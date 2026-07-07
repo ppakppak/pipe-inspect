@@ -2733,15 +2733,14 @@ def survey_yolo_infer():
                 return jsonify({'success': False, 'error': 'Failed to decode image'}), 400
 
             height, width = frame.shape[:2]
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
+            # ultralytics는 numpy 입력을 BGR로 간주 — RGB 변환은 채널 스왑 버그(클래스 뒤바뀜)
             # 추론 파라미터 (미지정 시 기본값)
             conf = float(data.get('conf', 0.25))
             iou = float(data.get('iou', 0.7))
             imgsz = int(data.get('imgsz', 640))
 
             # YOLO 추론
-            yolo_results = yolo_model(frame_rgb, conf=conf, iou=iou, imgsz=imgsz,
+            yolo_results = yolo_model(frame, conf=conf, iou=iou, imgsz=imgsz,
                                       verbose=False, stream=True)
             result = next(yolo_results)
 

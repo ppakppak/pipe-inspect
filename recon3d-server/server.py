@@ -50,6 +50,11 @@ def b64jpg(img, q=85):
     return base64.b64encode(buf).decode()
 
 
+def _b64png_mask(m):
+    ok, buf = cv2.imencode('.png', (m.astype(np.uint8)) * 255)
+    return base64.b64encode(buf).decode()
+
+
 def _brightness_corr(depth_mid, frame_path):
     """밝기↔depth 상관(OSD 상하 12/10% 제외) — 반전 감지 시그니처.
 
@@ -607,6 +612,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         except Exception as e:
             print(f"역매핑 실패(스플랫 유지): {e}")
 
+    unwrap_clean = cv2.cvtColor(unwrap, cv2.COLOR_BGR2GRAY)  # 정합용(격자·오버레이 없음)
     # mm 눈금(100mm 격자)
     for gx in range(int(x0 // 100) * 100, int(x1) + 1, 100):
         px = int((gx - x0) * ppm)
@@ -621,6 +627,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
     defects = []
     viz_masks = []      # mid 프레임 원출력 (원본/클라우드 오버레이용)
     unwrap_extra = []   # (실험) 전개도 2차 검출 후보
+    def_canvas = np.zeros((Hc, Wc), bool)
     if measure_defects:
         try:
             _ym = _get_yolo()
@@ -636,6 +643,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             drsum, drcnt = {}, {}
             jac_contribs = {}
             surveyed_mid = None
+            def_canvas = np.zeros((Hc, Wc), bool)
             for k in range(S):
                 fr = cv2.imread(paths[k])
                 if fr is None:
@@ -765,6 +773,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     cv2.drawContours(ov, cts, -1, col, -1)
                     unwrap[:] = cv2.addWeighted(ov, 0.30, unwrap, 0.70, 0)
                     cv2.drawContours(unwrap, cts, -1, col, 2)
+                    def_canvas |= regm
                     ys2, xs2 = np.where(regm)
                     cv2.putText(unwrap, "%s %.0fcm2 x%d" % (
                         DEFECT_LABEL_EN.get(cls, cls), area_mm2 / 100.0, seen),
@@ -803,6 +812,10 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
 
     _tot_def = sum(d.get("area_mm2") or 0 for d in defects if isinstance(d, dict))
     out = {
+        "unwrap_clean_b64": b64jpg(cv2.cvtColor(unwrap_clean, cv2.COLOR_GRAY2BGR), 80),
+        "wall_bins_b64": _b64png_mask(unwrap_clean > 5),  # 관측영역=역매핑 유효 텍스처(밀집)
+        "defect_bins_b64": _b64png_mask(def_canvas),
+        "axial_y0_mm": round(float(y0), 1),
         "surveyed_area_mm2": (round(surveyed_mid, 0)
                               if measure_defects and surveyed_mid else None),
         "defect_ratio_visible_pct": (round(_tot_def / surveyed_mid * 100, 2)
@@ -966,11 +979,20 @@ def _pano_impl(req: PanoReq):
         for dd in out.get('defects', []):
             if dd.get('area_mm2'):
                 totals[dd['cls']] = totals.get(dd['cls'], 0) + dd['area_mm2']
+        def _dec_mask(b64s):
+            return cv2.imdecode(np.frombuffer(base64.b64decode(b64s), np.uint8),
+                                cv2.IMREAD_GRAYSCALE) > 127
+        clean = cv2.imdecode(np.frombuffer(
+            base64.b64decode(out['unwrap_clean_b64']), np.uint8),
+            cv2.IMREAD_GRAYSCALE)
         strips.append({'frame': int(c), 'score': met['pipe_score'],
                        'img': img, 'ppm': out['ppm'], 'x0': out['circ_x0_mm'],
                        'axial_mm': out['axial_extent_mm'],
                        'residual_mm': out['residual_mm_rms'],
-                       'defects': out.get('defects', [])})
+                       'defects': out.get('defects', []),
+                       'clean': clean,
+                       'wallb': _dec_mask(out['wall_bins_b64']),
+                       'defb': _dec_mask(out['defect_bins_b64'])})
         if len(strips) % 3 == 0:
             torch.cuda.empty_cache()
     cap.release()
@@ -978,39 +1000,116 @@ def _pano_impl(req: PanoReq):
     if not strips:
         return {'success': False, 'error': '성립 스톱 없음', 'skipped': skipped}
 
-    # ── 공통 원주축 조립 (θ·R ∈ [-πR, πR]) ──
+    # ── 정합 모자이크 조립: 텍스처 NCC로 스톱 간 축 오프셋 추정 → union 중복제거 ──
     PPM = 0.8
     R_mm = D / 2.0
     Wp = int(np.pi * D * PPM) + 2
-    HEAD = 26
-    rows = []
+
+    # 공통 스케일·전역 폭으로 각 스트립 준비
+    prep = []
     for st in strips:
         f = PPM / st['ppm']
-        im = cv2.resize(st['img'], (max(1, int(st['img'].shape[1] * f)),
-                                    max(1, int(st['img'].shape[0] * f))))
-        row = np.zeros((im.shape[0] + HEAD, Wp, 3), np.uint8)
+        def _rs(a, interp=cv2.INTER_AREA):
+            src = (a.astype(np.uint8) * 255) if a.dtype == bool else a
+            return cv2.resize(src, (max(1, int(a.shape[1] * f)),
+                                    max(1, int(a.shape[0] * f))),
+                              interpolation=interp)
+        img_s = _rs(st['img'])
+        cln_s = _rs(st['clean'])
+        wal_s = _rs(st['wallb']) > 127
+        dfb_s = _rs(st['defb']) > 127
         offx = int((st['x0'] + np.pi * R_mm) * PPM)
-        offx = max(0, min(offx, Wp - im.shape[1])) if im.shape[1] < Wp else 0
-        row[HEAD:, offx:offx + min(im.shape[1], Wp)] = im[:, :min(im.shape[1], Wp)]
-        _ko2en = {"결절": "NODULE", "박리": "PEEL"}   # cv2 putText는 ASCII만
-        dtxt = " ".join("%s %.0fcm2" % (_ko2en.get(k, "DEFECT"), v / 100.0)
-                        for k, v in
-                        {d['cls']: d['area_mm2'] for d in st['defects']
-                         if d.get('area_mm2')}.items()) or "-"
-        cv2.putText(row, "f%d  S%d  axial %dmm  res %.0fmm  %s" %
-                    (st['frame'], st['score'], st['axial_mm'],
-                     st['residual_mm'], dtxt),
-                    (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 255), 1)
-        cv2.line(row, (0, HEAD - 2), (Wp, HEAD - 2), (70, 70, 70), 1)
-        rows.append(row)
-    pano = np.vstack(rows)
-    # 상단 원주 눈금(0.5m 간격 mm)
-    return {'success': True, 'pano_b64': b64jpg(pano, 87),
+        h, w = cln_s.shape[:2]
+        def _blit(a, ch=None):
+            out_a = np.zeros((h, Wp) + (() if a.ndim == 2 else (3,)), a.dtype)
+            ox = max(0, min(offx, Wp - w)) if w < Wp else 0
+            out_a[:, ox:ox + min(w, Wp)] = a[:, :min(w, Wp)]
+            return out_a
+        prep.append({'st': st, 'img': _blit(img_s), 'cln': _blit(cln_s),
+                     'wal': _blit(wal_s), 'dfb': _blit(dfb_s), 'h': h})
+
+    # 순차 정합(NCC): 직전 스트립 대비 축 오프셋 탐색
+    registration = []
+    y_pos = [0]
+    for i in range(1, len(prep)):
+        A, B = prep[i - 1], prep[i]
+        yA, hA, hB = y_pos[-1], A['h'], B['h']
+        best_o, best_ncc = None, 0.0
+        lo = yA + max(int(0.15 * hA), 8)
+        hi = yA + hA + int(150 * PPM)         # 최대 150mm 갭까지 탐색
+        for o in range(lo, hi + 1, 2):
+            r0, r1 = max(yA, o), min(yA + hA, o + hB)
+            if r1 - r0 < int(30 * PPM):
+                continue
+            Aov = A['cln'][r0 - yA:r1 - yA].astype(np.float32)
+            Bov = B['cln'][r0 - o:r1 - o].astype(np.float32)
+            v = (Aov > 10) & (Bov > 10)
+            if v.sum() < 1500:
+                continue
+            a_v, b_v = Aov[v], Bov[v]
+            a_v -= a_v.mean(); b_v -= b_v.mean()
+            den = np.sqrt((a_v * a_v).sum() * (b_v * b_v).sum())
+            if den < 1e-6:
+                continue
+            ncc = float((a_v * b_v).sum() / den)
+            if ncc > best_ncc:
+                best_ncc, best_o = ncc, o
+        if best_o is not None and best_ncc >= 0.35:
+            y_pos.append(best_o)
+            registration.append({'pair': f"f{A['st']['frame']}→f{B['st']['frame']}",
+                                 'registered': True, 'ncc': round(best_ncc, 2),
+                                 'offset_mm': round((best_o - yA) / PPM, 0)})
+        else:
+            y_pos.append(yA + hA + int(12))
+            registration.append({'pair': f"f{A['st']['frame']}→f{B['st']['frame']}",
+                                 'registered': False,
+                                 'ncc': round(best_ncc, 2) if best_o else None})
+
+    # 전역 캔버스 합성(union)
+    Hg = max(y_pos[i] + prep[i]['h'] for i in range(len(prep))) + 30
+    vis = np.zeros((Hg, Wp, 3), np.uint8)
+    wall_u = np.zeros((Hg, Wp), bool)
+    def_u = np.zeros((Hg, Wp), bool)
+    wall_naive = 0
+    def_naive = 0
+    for i, P in enumerate(prep):
+        y = y_pos[i]; h = P['h']
+        vis[y:y + h] = np.maximum(vis[y:y + h], P['img'])
+        wall_u[y:y + h] |= P['wal']
+        def_u[y:y + h] |= P['dfb']
+        wall_naive += int(P['wal'].sum())
+        def_naive += int(P['dfb'].sum())
+        st = P['st']
+        _ko2en = {"결절": "NODULE", "박리": "PEEL"}
+        dtxt = " ".join("%s %.0fcm2" % (_ko2en.get(d['cls'], 'DEF'), d['area_mm2'] / 100)
+                        for d in st['defects'] if d.get('area_mm2')) or "-"
+        reg = "" if i == 0 else (" REG ncc%.2f" % registration[i - 1]['ncc']
+                                 if registration[i - 1]['registered'] else " UNREG")
+        cv2.putText(vis, "f%d S%d %s%s" % (st['frame'], st['score'], dtxt, reg),
+                    (8, max(y + 16, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (150, 220, 255), 1)
+        if i > 0 and not registration[i - 1]['registered']:
+            cv2.line(vis, (0, y - 6), (Wp, y - 6), (60, 60, 200), 1)
+
+    wall_union = int(wall_u.sum())
+    def_union = int(def_u.sum())
+    dup_pct = round((1 - wall_union / wall_naive) * 100, 1) if wall_naive else 0.0
+    ded_factor = (def_union / def_naive) if def_naive else 1.0
+    totals_dedup = {k: round(v * ded_factor, 0) for k, v in totals.items()}
+    n_reg = sum(1 for r in registration if r['registered'])
+
+    return {'success': True, 'pano_b64': b64jpg(vis, 87),
             'n_strips': len(strips), 'skipped': skipped,
+            'registration': registration, 'n_registered': n_reg,
+            'surveyed_union_cm2': round(wall_union / (PPM * PPM) / 100, 0),
+            'surveyed_naive_cm2': round(wall_naive / (PPM * PPM) / 100, 0),
+            'dup_overlap_pct': dup_pct,
             'defect_total_mm2': {k: round(v, 0) for k, v in totals.items()},
-            'note': '축방향은 프레임 순서 스택(스톱 간 절대거리 미상) — 스트립 내부만 metric. '
-                    '결함 합계는 스톱 간 중복 가능성 있음(간격이 좁을 때).',
-            'strips': [{k: v for k, v in st.items() if k != 'img'} for st in strips]}
+            'defect_total_dedup_mm2': totals_dedup,
+            'note': '정합(REG)=텍스처 NCC 기반 축 오프셋 추정·union 중복제거. '
+                    'UNREG 구간은 스택(중복 미상). 결함 중복제거는 bin-union 비율 근사.',
+            'strips': [{k: v for k, v in st.items()
+                        if k not in ('img', 'clean', 'wallb', 'defb')} for st in strips]}
 
 
 class ScanReq(BaseModel):

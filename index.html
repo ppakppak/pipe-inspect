@@ -18021,6 +18021,10 @@ ${(project.classes || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n') || '  (�
                             <label style="font-size:11px; color:#888;">관경 mm (피팅)</label>
                             <input type="number" id="r3Dia" value="0" min="0" step="50" placeholder="0=안함" title="관 내경(mm). 입력 시 부분원호 원통 피팅+metric 전개 수행" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
                         </div>
+                        <div>
+                            <label style="font-size:11px; color:#888;">검출 conf</label>
+                            <input type="number" id="r3Conf" value="0.30" min="0.05" max="0.9" step="0.05" title="결함 검출 신뢰도 임계. 낮출수록 약한 결함까지 면적 산출(오검 포함 위험↑). 8085 구간분석 기본=0.15" style="width:100%; padding:6px; background:#111; border:1px solid #444; border-radius:4px; color:#ddd;">
+                        </div>
                         <label style="font-size:12px; color:#aaa; white-space:nowrap;"><input type="checkbox" id="r3Clahe"> CLAHE</label>
                         <button id="r3RunBtn" onclick="r3Run()" style="padding:8px 16px; background:#4a9eff; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">실행</button>
                         <button id="r3PanoBtn" onclick="r3Pano()" title="영상 전체를 균등 스톱으로 원통피팅·전개 후 이어붙임 (관경 필수, 스톱당 ~10초)" style="padding:8px 12px; background:#2e7d57; border:0; border-radius:4px; color:white; cursor:pointer; font-weight:bold;">🧵 전관 전개</button>
@@ -21734,7 +21738,8 @@ async function r3Pano() {
             body: JSON.stringify((() => {
                 const base = { video_path: path, diameter_mm: dia,
                     n_stops: 8, n_frames: +document.getElementById('r3N').value || 4,
-                    step: +document.getElementById('r3Step').value || 12 };
+                    step: +document.getElementById('r3Step').value || 12,
+                    det_conf: +document.getElementById('r3Conf').value || 0.30 };
                 const sc = window.r3LastScan;
                 if (sc && sc.video === path) {  // 스캔 성립 후보를 스톱으로 (균등보다 적중률↑)
                     let cand = sc.points.filter(p => p.score >= 15).sort((a,b)=>a.frame-b.frame);  // 사전게이트 완화 — 최종판정은 서버 피팅 품질 게이트
@@ -21772,6 +21777,7 @@ async function r3Run() {
                 n_frames: +document.getElementById('r3N').value || 5,
                 step: +document.getElementById('r3Step').value || 12,
                 diameter_mm: +document.getElementById('r3Dia').value || 0,
+                det_conf: +document.getElementById('r3Conf').value || 0.30,
                 clahe: document.getElementById('r3Clahe').checked,
             })
         });

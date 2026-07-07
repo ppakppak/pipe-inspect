@@ -109,6 +109,7 @@ class RunReq(BaseModel):
     debug_depth: bool = False   # depth/conf/gray 원본 배열(npz) 반환 — 분석용
     diameter_mm: int = 0        # >0이면 부분원호 원통 피팅+metric 전개 수행
     measure_defects: bool = True  # 피팅 시 YOLO 결함 마스크를 표면 투영해 실면적(mm²) 산출
+    det_conf: float = 0.30      # 결함 검출 conf 임계(8085 기본은 0.15 — 여긴 보수적 기본)
 
 
 @app.get('/health')
@@ -272,7 +273,8 @@ def _run_impl(req: RunReq):
                                         cam_fwd, int(req.diameter_mm),
                                         cam_center=cam_c,
                                         measure_defects=req.measure_defects,
-                                        K=intri[mid], extri_mid=extri[mid])
+                                        K=intri[mid], extri_mid=extri[mid],
+                                        det_conf=req.det_conf)
             cyl, viz_masks, wall_flat = ret if ret else (None, [], None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
@@ -458,7 +460,7 @@ def _pipe_metrics(wp, conf, cam_forward=None, lapvar=None, bore_frac=None):
 # ═══ 부분원호 원통 피팅 + metric 전개 (A4 본론) ═══
 def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
                           cam_center=None, measure_defects=True,
-                          K=None, extri_mid=None):
+                          K=None, extri_mid=None, det_conf=0.30):
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
     부분 원호(원주 일부만 노출)에서도 성립. 반환: 피팅 파라미터(mm)·품질지표·
@@ -617,7 +619,8 @@ def _fit_cylinder_partial(wp, conf, frame_path, cam_forward, diameter_mm,
                 _ym.model.to("cuda")   # 오프로딩 복귀 — predictor는 초기화 후 모델 이동을 안 함
             except Exception:
                 pass
-            res_y = _ym.predict(frame_full, imgsz=960, conf=0.30,
+            res_y = _ym.predict(frame_full, imgsz=960,
+                                conf=max(0.05, min(0.9, float(det_conf))),
                                 verbose=False, device=0)[0]
             try:
                 _ym.model.to("cpu")               # 상주 VRAM 최소화
@@ -717,6 +720,7 @@ class PanoReq(BaseModel):
     frames: list = []       # 명시 스톱 프레임(비면 균등 n_stops)
     n_stops: int = 8
     min_score: int = 15     # 사전 관다움 게이트(낮춤) — 최종 판정은 피팅 품질 게이트
+    det_conf: float = 0.30  # 결함 검출 conf 임계
     n_frames: int = 4
     step: int = 12
     start_frame: int = 0
@@ -814,7 +818,8 @@ def _pano_impl(req: PanoReq):
             ret2 = _fit_cylinder_partial(wp_np[mid], cf_np[mid], paths[mid],
                                          fwd, D, cam_center=cam_c,
                                          measure_defects=True,
-                                         K=kin[mid], extri_mid=ex[mid])
+                                         K=kin[mid], extri_mid=ex[mid],
+                                         det_conf=req.det_conf)
         except Exception as e:
             skipped.append({'frame': int(c), 'reason': f'피팅 예외: {e}'})
             continue

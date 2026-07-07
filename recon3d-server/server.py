@@ -692,6 +692,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                 torch.cuda.empty_cache()
             except Exception:
                 pass
+            # 프레임 벽면 dr 중앙값 = 기준면 바이어스(부분원호+대편심서 R 과소추정 경향 보정)
+            dr_med = float(np.median((r_i[wall] - R)) * scale) if wall.any() else 0.0
             # 영역화: min_hits 프레임 이상 지지(프레임 적으면 완화) + 클래스 임계
             eff_min = max(1, min(int(min_hits), S))
             for cls, hm in hitmaps.items():
@@ -707,8 +709,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     area_mm2 = float(regm.sum()) / (ppm * ppm)
                     seen = int(hm[regm].max())
                     dcsum = float(drcnt[cls][regm].sum())
-                    dr_mean = float(drsum[cls][regm].sum() / max(dcsum, 1.0))
-                    # 기하 서명: 결절=돌출(dr<0) 기대 — 강한 모순만 경고(노이즈 여유 5mm)
+                    dr_mean = float(drsum[cls][regm].sum() / max(dcsum, 1.0)) - dr_med
+                    # 기하 서명(프레임 기준면 대비 상대): 결절=돌출(dr<0) 기대 — 강한 모순만 경고
                     geom_warn = bool(cls == "corrosion_nodule" and dr_mean > 5.0)
                     col = DEFECT_COLORS.get(cls, (0, 255, 255))
                     cts, _ = cv2.findContours(regm.astype(np.uint8),
@@ -754,6 +756,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             defects = [{"error": f"결함 투영 실패: {e}"}]
 
     out = {
+        "dr_bias_mm": round(dr_med, 1) if measure_defects else None,
         "unwrap_extra": unwrap_extra,
         "ppm": round(ppm, 3),                    # px per mm (파노라마 배치용)
         "circ_x0_mm": round(float(x0), 1),       # 원주 시작(θ·R mm, 공통 θ기준)

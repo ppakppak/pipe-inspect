@@ -21980,6 +21980,7 @@ function qsBindEvents() {
     };
     document.getElementById('qsRemoveLastPolyBtn').onclick = () => {
         qsState.polygons.pop();
+        if (qsState.polygonLabels) qsState.polygonLabels.pop();
         qsState.groundTruth.pop();
         qsDrawCanvas();
         qsRenderGtTable();
@@ -22442,6 +22443,7 @@ function qsCanvasDblClick(ev) {
     qsState.currentPoints.forEach(p => flat.push(p[0], p[1]));
     qsState.polygons.push(flat);
     qsState.groundTruth.push({});  // GT 자리 추가
+    (qsState.polygonLabels = qsState.polygonLabels || []).push(null);
     qsState.currentPoints = [];
     qsDrawCanvas();
     qsRenderGtTable();
@@ -22505,6 +22507,7 @@ function qsAdoptDetections() {
         d.polygon.forEach(p => flat.push(p[0], p[1]));   // 수동 폴리곤과 동일한 평탄 포맷
         qsState.polygons.push(flat);
         qsState.groundTruth.push({});
+        (qsState.polygonLabels = qsState.polygonLabels || []).push(d.label || null);
         n++;
     }
     qsState.detections = null;   // 이중 표시 방지 — 이후 폴리곤 레이어로만
@@ -22548,7 +22551,9 @@ async function qsAnalyze() {
             frame_number: qsState.currentFrame,
             pipe_diameter_mm: pipeDiameter,
             section_length_mm: sectionLength,
-            polygons: qsState.polygons,
+            polygons: qsState.polygons.map((fl, i) =>
+                (qsState.polygonLabels && qsState.polygonLabels[i])
+                    ? { polygon: fl, label: qsState.polygonLabels[i] } : fl),
             use_depth: useDepth,
             unwrap_method: unwrapMethod,
             max_depth_mm: maxDepth,

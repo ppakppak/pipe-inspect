@@ -21813,6 +21813,7 @@ async function r3Run() {
                     ` <span style="color:#8bc">[${d.frames_seen}/${d.n_frames}f · dr${d.dr_mm>0?'+':''}${d.dr_mm}mm]</span>` +
                     (d.geom_warn ? ' <span style="color:#f88">⚠️기하모순(결절인데 돌출 아님)</span>' : '')).join(' | ')
                     + (tot ? `<br>∑ ${tot}` : '')
+                    + (cf.geo_candidates && cf.geo_candidates.length ? `<br><span style="color:#fa3">🟠 기하 돌출 후보 ${cf.geo_candidates.length}개(AI 미탐 ${cf.geo_candidates.filter(g=>!g.ai_detected).length}): ${cf.geo_candidates.map(g=>g.error||`깊이${g.depth_max_mm}mm·${(g.area_mm2/100).toFixed(0)}cm²${g.ai_detected?'':'·NEW'}`).join(' | ')}</span>` : '')
                     + (cf.unwrap_extra && cf.unwrap_extra.length ? `<br><span style="color:#a97">🧪 전개도 2차검출(실험): ${cf.unwrap_extra.map(u=>u.error||`${u.cls}(${u.conf})${u.area_mm2_est?' ~'+(u.area_mm2_est/100).toFixed(0)+'cm²':''}`).join(', ')}</span>` : '');
             } else { di.textContent = '결함 검출 없음 (이 프레임)'; }
             document.getElementById('r3Unwrap').src = 'data:image/jpeg;base64,' + cf.unwrap_b64;

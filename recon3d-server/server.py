@@ -118,6 +118,7 @@ class RunReq(BaseModel):
     det_conf_nodule: float = 0.20  # 결절 채택 임계(성능 비대칭 반영해 낮춤)
     min_hits: int = 2           # 다중 프레임 지지 최소 수(2-of-N)
     detect_on_unwrap: bool = False  # (실험) 전개도 2차 검출
+    geo_tau_mm: float = 10.0    # 기하 돌출 후보 임계(평활 후 중심측 함몰 mm)
 
 
 @app.get('/health')
@@ -287,7 +288,8 @@ def _run_impl(req: RunReq):
                                         det_conf=req.det_conf,
                                         det_conf_nodule=req.det_conf_nodule,
                                         min_hits=req.min_hits,
-                                        detect_on_unwrap=req.detect_on_unwrap)
+                                        detect_on_unwrap=req.detect_on_unwrap,
+                                        geo_tau_mm=req.geo_tau_mm)
             cyl, viz_masks, wall_flat, _detaper = ret if ret else (None, [], None, None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
@@ -484,7 +486,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                           cam_center=None, measure_defects=True,
                           K=None, extri_mid=None, det_conf=0.30,
                           det_conf_nodule=0.20, min_hits=2,
-                          detect_on_unwrap=False, extri_all=None):
+                          detect_on_unwrap=False, extri_all=None,
+                          geo_tau_mm=10.0):
     wp, conf, frame_path = wp_all[mid], conf_all[mid], paths[mid]
     """VGGT 포인트클라우드에 원통 피팅(축 2DOF 최적화+트리밍) → 관경 앵커로 metric화.
 
@@ -851,8 +854,57 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         except Exception as e:
             defects = [{"error": f"결함 투영 실패: {e}"}]
 
+    # ── 기하 돌출 후보: 원통 가정 대비 중심측 함몰(응집 영역) = AI 미탐 결절 후보 ──
+    geo_candidates = []
+    if measure_defects:
+        try:
+            drs_c = np.zeros((Hc, Wc), np.float32)
+            drc_c = np.zeros((Hc, Wc), np.float32)
+            gx2 = np.clip(((theta[wall] * (diameter_mm / 2.0) - x0) * ppm)
+                          .astype(int), 0, Wc - 1)
+            gy2 = np.clip(((t_ax[wall] * scale - y0) * ppm).astype(int), 0, Hc - 1)
+            np.add.at(drs_c, (gy2, gx2), (r_i[wall] - R) * scale)
+            np.add.at(drc_c, (gy2, gx2), 1)
+            has = drc_c > 0
+            drmap = np.zeros_like(drs_c)
+            drmap[has] = drs_c[has] / drc_c[has]
+            # 평활(~15mm): 결절=공간 응집 vs 노이즈=고주파 — 유효영역 정규화 가우시안
+            sig = max(2.0, 15.0 * ppm / 2.0)
+            num = cv2.GaussianBlur(drmap * has, (0, 0), sig)
+            den = cv2.GaussianBlur(has.astype(np.float32), (0, 0), sig)
+            # 점-스플랫 캔버스는 성김(채움 ~수%) — 커널 내 표본 존재 기준으로 완화
+            drs_m = np.where(den > 0.03, num / np.maximum(den, 1e-6), 0)
+            supp = den > 0.03            # 평활 지지영역(밀집) — has(성긴 점)와 교집합하면 OPEN서 전멸
+            protr = ((drs_m < -float(geo_tau_mm)) & supp).astype(np.uint8)
+            protr = cv2.morphologyEx(protr, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+            nl2, labs2, stats2, _c2 = cv2.connectedComponentsWithStats(protr)
+            for i4 in range(1, nl2):
+                area_g = stats2[i4, cv2.CC_STAT_AREA] / (ppm * ppm)
+                if area_g < 300 or area_g > 0.2 * Hc * Wc / (ppm * ppm):
+                    continue   # 너무 작은 노이즈/너무 큰 전역 왜곡 배제
+                regg = labs2 == i4
+                depth_max = float(-(drs_m[regg].min()))
+                ai_hit = bool((regg & def_canvas).sum() > 0.2 * regg.sum())
+                col4 = (0, 165, 255)   # 주황 = 기하 후보
+                cts4, _ = cv2.findContours(regg.astype(np.uint8),
+                                           cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(unwrap, cts4, -1, col4, 2)
+                ys4, xs4 = np.where(regg)
+                cv2.putText(unwrap, "GEO %.0fmm%s" % (depth_max,
+                            "" if ai_hit else " NEW"),
+                            (max(int(xs4.min()), 2), min(int(ys4.max()) + 16, Hc - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col4, 2)
+                geo_candidates.append({
+                    "area_mm2": round(area_g, 0),
+                    "depth_mean_mm": round(float(-drs_m[regg].mean()), 1),
+                    "depth_max_mm": round(depth_max, 1),
+                    "ai_detected": ai_hit})
+        except Exception as e:
+            geo_candidates = [{"error": str(e)}]
+
     _tot_def = sum(d.get("area_mm2") or 0 for d in defects if isinstance(d, dict))
     out = {
+        "geo_candidates": geo_candidates,
         "taper_mm_per_m": round(taper_k * 1000, 1),   # 반경변화 mm per 축방향 m (무차원 기울기×1000)
         "detaper_applied": bool(detaper is not None),
         "residual_post_detaper_mm": (round(resid_post * (diameter_mm / 2.0), 1)

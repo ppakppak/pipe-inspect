@@ -945,9 +945,60 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         except Exception as e:
             geo_candidates = [{"error": str(e)}]
 
+    # ── 음영 요철 후보(초기 결절): 조명정규화→밴드패스(1.5~6mm)→국소에너지 z>3 ──
+    #   실험 근거: 결절영역 에너지=배경의 2.0~3.3배(f3000/f3994). 조인트=선형이라 배제.
+    rough_candidates = []
+    if measure_defects:
+        try:
+            _img_r = unwrap_clean.astype(np.float32)
+            _val_r = _img_r > 5
+            _val_r = cv2.erode(_val_r.astype(np.uint8),
+                               np.ones((int(10 * ppm) | 1,) * 2, np.uint8)) > 0  # 경계 10mm 제외
+            s25 = 25 * ppm
+            _num = cv2.GaussianBlur(_img_r * _val_r, (0, 0), s25)
+            _den = cv2.GaussianBlur(_val_r.astype(np.float32), (0, 0), s25)
+            _base = np.where(_den > 0.05, _num / np.maximum(_den, 1e-6), 1)
+            _refl = np.where(_val_r, _img_r / np.maximum(_base, 1e-3), 1.0)
+            _bp = (cv2.GaussianBlur(_refl, (0, 0), 1.5 * ppm)
+                   - cv2.GaussianBlur(_refl, (0, 0), 6 * ppm))
+            _en = cv2.GaussianBlur(_bp * _bp, (0, 0), 8 * ppm)
+            _env = _en[_val_r]
+            _mad = float(np.median(np.abs(_env - np.median(_env)))) + 1e-12
+            _z = (_en - float(np.median(_env))) / (1.4826 * _mad)
+            _hot = ((_z > 3.0) & _val_r).astype(np.uint8)
+            _hot = cv2.morphologyEx(_hot, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            nl5, labs5, stats5, _c5 = cv2.connectedComponentsWithStats(_hot)
+            for i5 in range(1, nl5):
+                area_r = stats5[i5, cv2.CC_STAT_AREA] / (ppm * ppm)
+                if area_r < 500:
+                    continue
+                regr = (labs5 == i5).astype(np.uint8)
+                cts5, _ = cv2.findContours(regr, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+                (_, (rw, rh), _) = cv2.minAreaRect(np.vstack([c.reshape(-1, 2)
+                                                              for c in cts5]))
+                if min(rw, rh) < 1:
+                    continue
+                if max(rw, rh) / max(min(rw, rh), 1) > 4.0:
+                    continue   # 선형 구조(조인트·이음부) 배제
+                regb = regr.astype(bool)
+                ai_hit = bool((regb & def_canvas).sum() > 0.2 * regb.sum())
+                zmax = float(_z[regb].max())
+                cv2.drawContours(unwrap, cts5, -1, (0, 255, 255), 2)   # 노랑=요철 후보
+                ys5, xs5 = np.where(regb)
+                cv2.putText(unwrap, "ROUGH z%.0f%s" % (zmax, "" if ai_hit else " NEW"),
+                            (max(int(xs5.min()), 2), max(int(ys5.min()) - 6, 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                rough_candidates.append({"area_mm2": round(area_r, 0),
+                                         "z_max": round(zmax, 1),
+                                         "ai_detected": ai_hit})
+        except Exception as e:
+            rough_candidates = [{"error": str(e)}]
+
     _tot_def = sum(d.get("area_mm2") or 0 for d in defects if isinstance(d, dict))
     out = {
         "geo_candidates": geo_candidates,
+        "rough_candidates": rough_candidates,
         "taper_mm_per_m": round(taper_k * 1000, 1),   # 반경변화 mm per 축방향 m (무차원 기울기×1000)
         "detaper_applied": bool(detaper is not None),
         "residual_post_detaper_mm": (round(resid_post * (diameter_mm / 2.0), 1)

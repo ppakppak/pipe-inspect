@@ -340,14 +340,13 @@ def _run_impl(req: RunReq):
                          .astype(int), 0, g["Wc"] - 1)
             by = np.clip(((tt * g["scale"] - g["y0"]) * g["ppm"])
                          .astype(int), 0, g["Hc"] - 1)
+            # 색칠 = mid 프레임 원시 폴리곤의 기계적 픽셀 매핑(사용자 결정: 원본과 WYSIWYG)
+            #   융합/밴드는 색칠 여부에 관여하지 않고, 톤(측정 포함 여부)만 표시
             cls_pix = np.zeros(len(wpm), np.uint8)   # 0=없음 1=결절 2=박리
-            for ci, (cname, canv) in enumerate(g["def_canvas_cls"].items()):
-                hit = canv[by, bx]
-                cls_pix[hit] = 1 if cname == "corrosion_nodule" else 2
+            for cname, vm in viz_masks:
+                cls_pix[vm.reshape(-1)] = 1 if cname == "corrosion_nodule" else 2
             dr_abs = np.abs(rr - g["R"])
-            band_pix = np.where(dr_abs < 0.25 * g["R"], 0,
-                                np.where(dr_abs < 0.45 * g["R"], 1, 2)).astype(np.uint8)
-            cls_pix[band_pix == 2] = 0   # 0.45R 밖은 기하 신뢰 없음 — 색칠 제외
+            band_pix = (dr_abs >= 0.25 * g["R"]).astype(np.uint8)  # 0=측정밴드내 1=밖(어두운 톤)
         # 샘플링: conf 상위 + 결함 픽셀 강제 포함
         flat_idx = np.where(selm)[0]
         if len(flat_idx) > 38000:

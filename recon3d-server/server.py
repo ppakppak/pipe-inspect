@@ -274,6 +274,7 @@ def _run_impl(req: RunReq):
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     resp_extra = {}
     viz_masks = []
+    _detaper = None
     if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
         try:
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
@@ -287,7 +288,7 @@ def _run_impl(req: RunReq):
                                         det_conf_nodule=req.det_conf_nodule,
                                         min_hits=req.min_hits,
                                         detect_on_unwrap=req.detect_on_unwrap)
-            cyl, viz_masks, wall_flat = ret if ret else (None, [], None)
+            cyl, viz_masks, wall_flat, _detaper = ret if ret else (None, [], None, None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
             left = np.ascontiguousarray(depth_img[:, :W])
@@ -317,6 +318,15 @@ def _run_impl(req: RunReq):
         if len(flat_idx) > 45000:
             flat_idx = flat_idx[np.linspace(0, len(flat_idx) - 1, 45000).astype(int)]
         P3 = wp[mid].reshape(-1, 3)[flat_idx].astype(np.float32)
+        if _detaper is not None:
+            _q = P3 - _detaper["c0"].astype(np.float32)
+            _t = _q @ _detaper["ax"].astype(np.float32)
+            _rv = _q - np.outer(_t, _detaper["ax"].astype(np.float32))
+            _corr = (_detaper["R"] / np.clip(_detaper["r0"] + _detaper["k"] * _t,
+                                             0.3 * _detaper["R"], 3.0 * _detaper["R"]))
+            P3 = (_detaper["c0"].astype(np.float32)
+                  + np.outer(_t, _detaper["ax"]).astype(np.float32)
+                  + _rv * _corr[:, None].astype(np.float32))
         colb = orig.reshape(-1, 3)[flat_idx][:, ::-1].copy()   # BGR→RGB
         for cls_raw, mimg in viz_masks:
             dfull = mimg.reshape(-1)
@@ -548,7 +558,33 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
     t_ax = q @ ax
     rv = q - np.outer(t_ax, ax)
     r_i = np.linalg.norm(rv, axis=1)
+
+    # ── 테이퍼(원뿔) 역보정: VGGT 원거리 깊이압축 → 안쪽으로 갈수록 반경 축소 경향 ──
+    #   관=원통 사전지식으로 r(t)=R0+k·t 회귀 후 반경 정규화. 뷰어·인라이어·dr에 일관 적용.
+    taper_k = 0.0
+    detaper = None
+    _wall0 = sel & (np.abs(r_i - R) < 0.25 * R)
+    if _wall0.sum() > 3000:
+        tw, rw = t_ax[_wall0], r_i[_wall0]
+        A_t = np.stack([tw, np.ones_like(tw)], 1)
+        try:
+            (k_fit, r0_fit), *_ = np.linalg.lstsq(A_t, rw, rcond=None)
+            # 유의미한 테이퍼(축범위 대비 반경변화 3% 초과)만 보정
+            t_span = float(np.percentile(tw, 97) - np.percentile(tw, 3))
+            if t_span > 1e-6 and abs(k_fit) * t_span > 0.03 * R:
+                r_model = (r0_fit + k_fit * t_ax).clip(0.3 * R, 3.0 * R)
+                corr = R / r_model
+                r_i = r_i * corr
+                rv = rv * corr[:, None]
+                taper_k = float(k_fit)
+                detaper = {"ax": ax, "c0": c0, "k": float(k_fit),
+                           "r0": float(r0_fit), "R": float(R)}
+        except np.linalg.LinAlgError:
+            pass
     theta = np.arctan2(rv @ v, rv @ u)
+    _wall_post = sel & (np.abs(r_i - R) < 0.25 * R)
+    resid_post = (float(np.sqrt(np.mean((r_i[_wall_post] - R) ** 2)) / R)
+                  if _wall_post.sum() > 100 else None)
     rows = np.repeat(np.arange(H), W)
     osd_ok = (rows > H * 0.12) & (rows < H * 0.90)   # OSD 상하 마스킹
     wall = sel & osd_ok & (np.abs(r_i - R) < 0.25 * R)
@@ -658,6 +694,11 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                 tk = qk @ ax
                 rvk = qk - np.outer(tk, ax)
                 rk = np.linalg.norm(rvk, axis=1)
+                if detaper is not None:
+                    corr_k = (detaper["R"] / (detaper["r0"] + detaper["k"] * tk)
+                              .clip(0.3 * R, 3.0 * R))
+                    rk = rk * corr_k
+                    rvk = rvk * corr_k[:, None]
                 thk = np.arctan2(rvk @ v, rvk @ u)
                 wallk = np.abs(rk - R) < 0.25 * R
                 # 픽셀별 실표면적(자코비안): dA = t²/(fx·fy·n³·cosθi)
@@ -812,6 +853,10 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
 
     _tot_def = sum(d.get("area_mm2") or 0 for d in defects if isinstance(d, dict))
     out = {
+        "taper_mm_per_m": round(taper_k * 1000, 1),   # 반경변화 mm per 축방향 m (무차원 기울기×1000)
+        "detaper_applied": bool(detaper is not None),
+        "residual_post_detaper_mm": (round(resid_post * (diameter_mm / 2.0), 1)
+                                     if resid_post is not None else None),
         "unwrap_clean_b64": b64jpg(cv2.cvtColor(unwrap_clean, cv2.COLOR_GRAY2BGR), 80),
         "wall_bins_b64": _b64png_mask(unwrap_clean > 5),  # 관측영역=역매핑 유효 텍스처(밀집)
         "defect_bins_b64": _b64png_mask(def_canvas),
@@ -846,7 +891,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         ecc = np.linalg.norm(d - (d @ ax) * ax) * scale
         out["cam_ecc_mm"] = round(float(ecc), 1)
         out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
-    return out, viz_masks, wall
+    return out, viz_masks, wall, detaper
 
 
 
@@ -968,7 +1013,7 @@ def _pano_impl(req: PanoReq):
         if not ret2:
             skipped.append({'frame': int(c), 'reason': '피팅 실패(포인트 부족)'})
             continue
-        out, _, _ = ret2
+        out, _, _, _ = ret2
         # 최종 품질 게이트: 관다움을 낮춘 대신 피팅 잔차·인라이어로 판정
         if out['residual_rel'] > 0.22 or out['inlier_frac'] < 0.55:
             skipped.append({'frame': int(c),

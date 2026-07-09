@@ -275,7 +275,7 @@ def _run_impl(req: RunReq):
                else '실패 — 관벽 미노출(탁수·부유물·벽 클로즈업·블러 가능성)')
     resp_extra = {}
     viz_masks = []
-    _detaper = None
+    _geom = None
     if req.diameter_mm and req.diameter_mm > 0 and not depth_inverted:
         try:
             cam_c = -extri[mid][:3, :3].T @ extri[mid][:3, 3]
@@ -290,7 +290,7 @@ def _run_impl(req: RunReq):
                                         min_hits=req.min_hits,
                                         detect_on_unwrap=req.detect_on_unwrap,
                                         geo_tau_mm=req.geo_tau_mm)
-            cyl, viz_masks, wall_flat, _detaper = ret if ret else (None, [], None, None)
+            cyl, viz_masks, wall_flat, _geom = ret if ret else (None, [], None, None)
             resp_extra['cyl_fit'] = cyl if cyl else {'error': '피팅 실패(포인트 부족)'}
             # 결함 위치를 원본 패널·단면 산점도에도 표시
             left = np.ascontiguousarray(depth_img[:, :W])
@@ -314,29 +314,66 @@ def _run_impl(req: RunReq):
                             0.5, DEFECT_COLORS["coating_peel"], 2)
         except Exception as e:
             resp_extra['cyl_fit'] = {'error': f'피팅 예외: {e}'}
-    # ── 회전 뷰어용 서브샘플 클라우드 (int16 양자화 + RGB, 결함 클래스색) ──
+    # ── 회전 뷰어용 서브샘플 클라우드 (융합영역 기반 색칠·결함픽셀 강제포함) ──
     try:
+        wpm = wp[mid].reshape(-1, 3).astype(np.float32)
+        cls_pix = None          # 픽셀별 결함 클래스(융합 채택영역 역참조)
+        band_pix = None         # 0=밴드내(측정포함) 1=밴드밖(표시전용)
+        if _geom is not None:
+            g = _geom
+            qq = wpm - g["c0"].astype(np.float32)
+            tt = qq @ g["ax"].astype(np.float32)
+            rvv = qq - np.outer(tt, g["ax"].astype(np.float32))
+            rr = np.linalg.norm(rvv, axis=1)
+            if g["detaper"] is not None:
+                dp = g["detaper"]
+                _corr = dp["R"] / np.clip(dp["r0"] + dp["k"] * tt,
+                                          0.3 * dp["R"], 3.0 * dp["R"])
+                rr = rr * _corr
+                rvv = rvv * _corr[:, None]
+                wpm = (g["c0"].astype(np.float32)
+                       + np.outer(tt, g["ax"]).astype(np.float32)
+                       + rvv.astype(np.float32))
+            th_p = np.arctan2(rvv @ g["v"].astype(np.float32),
+                              rvv @ g["u"].astype(np.float32))
+            bx = np.clip(((th_p * (g["D"] / 2.0) - g["x0"]) * g["ppm"])
+                         .astype(int), 0, g["Wc"] - 1)
+            by = np.clip(((tt * g["scale"] - g["y0"]) * g["ppm"])
+                         .astype(int), 0, g["Hc"] - 1)
+            cls_pix = np.zeros(len(wpm), np.uint8)   # 0=없음 1=결절 2=박리
+            for ci, (cname, canv) in enumerate(g["def_canvas_cls"].items()):
+                hit = canv[by, bx]
+                cls_pix[hit] = 1 if cname == "corrosion_nodule" else 2
+            dr_abs = np.abs(rr - g["R"])
+            band_pix = np.where(dr_abs < 0.25 * g["R"], 0,
+                                np.where(dr_abs < 0.45 * g["R"], 1, 2)).astype(np.uint8)
+            cls_pix[band_pix == 2] = 0   # 0.45R 밖은 기하 신뢰 없음 — 색칠 제외
+        # 샘플링: conf 상위 + 결함 픽셀 강제 포함
         flat_idx = np.where(selm)[0]
-        if len(flat_idx) > 45000:
-            flat_idx = flat_idx[np.linspace(0, len(flat_idx) - 1, 45000).astype(int)]
-        P3 = wp[mid].reshape(-1, 3)[flat_idx].astype(np.float32)
-        if _detaper is not None:
-            _q = P3 - _detaper["c0"].astype(np.float32)
-            _t = _q @ _detaper["ax"].astype(np.float32)
-            _rv = _q - np.outer(_t, _detaper["ax"].astype(np.float32))
-            _corr = (_detaper["R"] / np.clip(_detaper["r0"] + _detaper["k"] * _t,
-                                             0.3 * _detaper["R"], 3.0 * _detaper["R"]))
-            P3 = (_detaper["c0"].astype(np.float32)
-                  + np.outer(_t, _detaper["ax"]).astype(np.float32)
-                  + _rv * _corr[:, None].astype(np.float32))
+        if len(flat_idx) > 38000:
+            flat_idx = flat_idx[np.linspace(0, len(flat_idx) - 1, 38000).astype(int)]
+        if cls_pix is not None:
+            dfi = np.where(cls_pix > 0)[0]
+            if len(dfi) > 12000:
+                dfi = dfi[np.linspace(0, len(dfi) - 1, 12000).astype(int)]
+            flat_idx = np.unique(np.concatenate([flat_idx, dfi]))
+        P3 = wpm[flat_idx]
         colb = orig.reshape(-1, 3)[flat_idx][:, ::-1].copy()   # BGR→RGB
-        for cls_raw, mimg in viz_masks:
-            dfull = mimg.reshape(-1)
-            if wall_flat is not None:
-                dfull = dfull & wall_flat   # 칠해진 점 = 면적 계산에 든 점
-            dmm = dfull[flat_idx]
-            bgr = DEFECT_COLORS.get(cls_raw, (0, 255, 255))
-            colb[dmm] = bgr[::-1]
+        if cls_pix is not None:
+            cp = cls_pix[flat_idx]
+            bp = band_pix[flat_idx]
+            full = {1: (255, 40, 40), 2: (40, 220, 60)}    # RGB 밴드내
+            dim = {1: (140, 30, 30), 2: (30, 120, 40)}     # 밴드밖(측정 제외) 어두운 톤
+            for cval in (1, 2):
+                colb[(cp == cval) & (bp == 0)] = full[cval]
+                colb[(cp == cval) & (bp == 1)] = dim[cval]
+        else:
+            for cls_raw, mimg in viz_masks:
+                dfull = mimg.reshape(-1)
+                if wall_flat is not None:
+                    dfull = dfull & wall_flat
+                bgr = DEFECT_COLORS.get(cls_raw, (0, 255, 255))
+                colb[dfull[flat_idx]] = bgr[::-1]
         offp = P3.mean(0)
         scp = float(np.abs(P3 - offp).max()) / 32000.0 or 1.0
         xyz16 = np.clip((P3 - offp) / scp, -32700, 32700).astype(np.int16)
@@ -667,6 +704,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
     viz_masks = []      # mid 프레임 원출력 (원본/클라우드 오버레이용)
     unwrap_extra = []   # (실험) 전개도 2차 검출 후보
     def_canvas = np.zeros((Hc, Wc), bool)
+    def_canvas_cls = {}
     if measure_defects:
         try:
             _ym = _get_yolo()
@@ -683,6 +721,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             jac_contribs = {}
             surveyed_mid = None
             def_canvas = np.zeros((Hc, Wc), bool)
+            def_canvas_cls = {}
             for k in range(S):
                 fr = cv2.imread(paths[k])
                 if fr is None:
@@ -818,6 +857,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     unwrap[:] = cv2.addWeighted(ov, 0.30, unwrap, 0.70, 0)
                     cv2.drawContours(unwrap, cts, -1, col, 2)
                     def_canvas |= regm
+                    dc = def_canvas_cls.setdefault(cls, np.zeros((Hc, Wc), bool))
+                    dc |= regm
                     ys2, xs2 = np.where(regm)
                     cv2.putText(unwrap, "%s %.0fcm2 x%d" % (
                         DEFECT_LABEL_EN.get(cls, cls), area_mm2 / 100.0, seen),
@@ -943,7 +984,11 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         ecc = np.linalg.norm(d - (d @ ax) * ax) * scale
         out["cam_ecc_mm"] = round(float(ecc), 1)
         out["cam_ecc_ratio"] = round(float(ecc / (diameter_mm / 2.0)), 2)
-    return out, viz_masks, wall, detaper
+    geom = {"ax": ax, "c0": c0, "u": u, "v": v, "R": R, "scale": scale,
+            "x0": x0, "y0": y0, "ppm": ppm, "D": diameter_mm,
+            "Hc": Hc, "Wc": Wc, "detaper": detaper,
+            "def_canvas_cls": def_canvas_cls}
+    return out, viz_masks, wall, geom
 
 
 

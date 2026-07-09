@@ -659,6 +659,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
 
     # ── 역매핑 밀집 컬러 텍스처(가능 시): 캔버스 픽셀→원통 3D→카메라 투영→원본 샘플 ──
     # 순방향 스플랫의 점 성김을 해소. 관측 영역(스플랫 점유 팽창) 밖은 지어내지 않고 검게.
+    multi_unwraps = {}
     if K is not None and extri_mid is not None:
         try:
             gxm = x0 + (np.arange(Wc, dtype=np.float32) + 0.5) / ppm     # mm(원주)
@@ -684,6 +685,24 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             frame_col = cv2.resize(cv2.imread(frame_path), (W, H))
             dense = cv2.remap(frame_col, uu, vv, cv2.INTER_LINEAR)
             unwrap = np.where(valid[..., None], dense, 0).astype(np.uint8)
+            # 다중 프레임 전개(요철=음영 가변 vs 무늬=고정 판별용): 첫/끝 프레임을 같은 캔버스에
+            if extri_all is not None:
+                for kk in (0, len(paths) - 1):
+                    try:
+                        Rk, tk2 = extri_all[kk][:3, :3], extri_all[kk][:3, 3]
+                        Pck = Pw @ Rk.T + tk2
+                        zck = Pck[..., 2]
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            uuk = (K[0, 0] * Pck[..., 0] / zck + K[0, 2]).astype(np.float32)
+                            vvk = (K[1, 1] * Pck[..., 1] / zck + K[1, 2]).astype(np.float32)
+                        vk = ((zck > 1e-6) & (uuk >= 0) & (uuk < W - 1)
+                              & (vvk >= H * 0.12) & (vvk < H * 0.90) & obs)
+                        fk = cv2.resize(cv2.imread(paths[kk], cv2.IMREAD_GRAYSCALE),
+                                        (W, H))
+                        dk = cv2.remap(fk, uuk, vvk, cv2.INTER_LINEAR)
+                        multi_unwraps[kk] = np.where(vk, dk, 0).astype(np.uint8)
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"역매핑 실패(스플랫 유지): {e}")
 
@@ -966,6 +985,27 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
             _mad = float(np.median(np.abs(_env - np.median(_env)))) + 1e-12
             _z = (_en - float(np.median(_env))) / (1.4826 * _mad)
             _hot = ((_z > 3.0) & _val_r).astype(np.uint8)
+            # 2단 판별(무늬 배제): 카메라 이동 간 음영 "변화" — 무늬=고정(상쇄)/요철=가변
+            _zv = None
+            if len(multi_unwraps) >= 2:
+                ks = sorted(multi_unwraps)
+                A = multi_unwraps[ks[0]].astype(np.float32)
+                B = multi_unwraps[ks[-1]].astype(np.float32)
+                vA, vB = A > 5, B > 5
+                bothv = vA & vB
+
+                def _nrm(im, vm):
+                    n2 = cv2.GaussianBlur(im * vm, (0, 0), s25)
+                    d2 = cv2.GaussianBlur(vm.astype(np.float32), (0, 0), s25)
+                    b2 = np.where(d2 > 0.05, n2 / np.maximum(d2, 1e-6), 1)
+                    return np.where(vm, im / np.maximum(b2, 1e-3), 0)
+                Dv = np.where(bothv, np.abs(_nrm(A, vA) - _nrm(B, vB)), 0)
+                Ev = cv2.GaussianBlur(Dv * Dv, (0, 0), 8 * ppm)
+                _evv = Ev[bothv]
+                if _evv.size > 1000:
+                    _mv = float(np.median(np.abs(_evv - np.median(_evv)))) + 1e-12
+                    _zv = (Ev - float(np.median(_evv))) / (1.4826 * _mv)
+                    _hot = (_hot.astype(bool) & bothv & (_zv > 2.0)).astype(np.uint8)
             _hot = cv2.morphologyEx(_hot, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
             nl5, labs5, stats5, _c5 = cv2.connectedComponentsWithStats(_hot)
             for i5 in range(1, nl5):
@@ -991,6 +1031,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 rough_candidates.append({"area_mm2": round(area_r, 0),
                                          "z_max": round(zmax, 1),
+                                         "shade_var_z": (round(float(_zv[regb].max()), 1)
+                                                         if _zv is not None else None),
                                          "ai_detected": ai_hit})
         except Exception as e:
             rough_candidates = [{"error": str(e)}]
@@ -1004,6 +1046,8 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
         "residual_post_detaper_mm": (round(resid_post * (diameter_mm / 2.0), 1)
                                      if resid_post is not None else None),
         "unwrap_clean_b64": b64jpg(cv2.cvtColor(unwrap_clean, cv2.COLOR_GRAY2BGR), 80),
+        "multi_unwrap_b64": {str(kk): b64jpg(cv2.cvtColor(im, cv2.COLOR_GRAY2BGR), 80)
+                             for kk, im in (multi_unwraps or {}).items()},
         "wall_bins_b64": _b64png_mask(unwrap_clean > 5),  # 관측영역=역매핑 유효 텍스처(밀집)
         "defect_bins_b64": _b64png_mask(def_canvas),
         "axial_y0_mm": round(float(y0), 1),

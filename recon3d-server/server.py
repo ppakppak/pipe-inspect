@@ -743,6 +743,9 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     rvk = rvk * corr_k[:, None]
                 thk = np.arctan2(rvk @ v, rvk @ u)
                 wallk = np.abs(rk - R) < 0.25 * R
+                # 결함 픽셀 확장 밴드: 돌출/함몰은 결함의 본질 — 0.25R로 자르면
+                # 깊은 결절이 측정·표시에서 통째로 탈락(진단: mid 6/19 인스턴스 전멸)
+                wallk_def = np.abs(rk - R) < 0.45 * R
                 # 픽셀별 실표면적(자코비안): dA = t²/(fx·fy·n³·cosθi)
                 #   비닝-점유법은 원거리/사면(픽셀밀도<빈밀도)서 과소 — GT 검증서 확인
                 dA_k = None
@@ -776,7 +779,7 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                     cv2.fillPoly(mimg, [pl.astype(np.int32)], 1)
                     if k == mid:
                         viz_masks.append((cls, mimg.astype(bool)))
-                    sel_i = mimg.reshape(-1).astype(bool) & wallk
+                    sel_i = mimg.reshape(-1).astype(bool) & wallk_def
                     if sel_i.sum() < 20:
                         continue
                     dxk = np.clip(((thk[sel_i] * (diameter_mm / 2.0) - x0)

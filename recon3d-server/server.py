@@ -885,13 +885,25 @@ def _fit_cylinder_partial(wp_all, conf_all, paths, mid, cam_forward, diameter_mm
                         DEFECT_LABEL_EN.get(cls, cls), area_mm2 / 100.0, seen),
                         (max(int(xs2.min()), 2), max(int(ys2.min()) - 6, 14)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2)
+                    # 개체 기하: θ는 피팅 기준축 절대각(스톱 간 비교 가능),
+                    # z_rel/bbox는 전개 캔버스 상단 기준 mm — 파노라마 개체 매칭용
+                    _Rh = diameter_mm / 2.0
                     defects.append({"cls": DEFECT_NAMES_KO.get(cls, cls),
                                     "conf": round(maxc, 2),
                                     "area_mm2": round(area_mm2, 0),
                                     "area_bin_mm2": round(area_bin, 0),
                                     "frames_seen": seen, "n_frames": S,
                                     "dr_mm": round(dr_mean, 1),
-                                    "geom_warn": geom_warn})
+                                    "geom_warn": geom_warn,
+                                    "theta_deg": round(
+                                        (x0 + float(xs2.mean()) / ppm) / _Rh
+                                        * 180.0 / np.pi, 1),
+                                    "z_rel_mm": round(float(ys2.mean()) / ppm, 1),
+                                    "bbox_rel_mm": [
+                                        round(float(xs2.min()) / ppm, 1),
+                                        round(float(ys2.min()) / ppm, 1),
+                                        round(float(xs2.max()) / ppm, 1),
+                                        round(float(ys2.max()) / ppm, 1)]})
             # (실험) 전개도 공간 2차 검출 — 경사 미탐 탐색, 보고만
             if detect_on_unwrap:
                 try:
@@ -1267,12 +1279,63 @@ def _pano_impl(req: PanoReq):
         prep.append({'st': st, 'img': _blit(img_s), 'cln': _blit(cln_s),
                      'wal': _blit(wal_s), 'dfb': _blit(dfb_s), 'h': h})
 
-    # 순차 정합(NCC): 직전 스트립 대비 축 오프셋 탐색
+    # 순차 정합: 결함 개체 매칭(θ절대 랜드마크) + 텍스처 NCC 상호검증.
+    #   결함쌍 = θ게이트·면적비·기하서명 통과 후 축 오프셋 제안 → 중앙값 합의.
+    #   NCC와 합치(±25mm)면 상호검증 REG, 불일치는 합의 쌍 수로 우선순위 결정,
+    #   NCC 실패 구간도 결함 합의가 있으면 정합 회수.
+    TH_GATE = 20.0        # 개체 매칭 원주각 게이트(도) — 스톱 간 피팅 θ오차 실측 ~15°
+    AREA_RATIO = 3.0      # 개체 매칭 면적비 상한
+    AGREE_MM = 25.0       # 오프셋 합의/상호검증 허용오차
+
+    def _insts(st, need_full=False):
+        # need_full: 축방향 캔버스 가장자리에 잘린 개체 제외 —
+        #   잘린 개체의 z중심은 편향돼 오프셋 랜드마크로 부적합(병합엔 사용 가능)
+        o = []
+        for d in st['defects']:
+            if not (isinstance(d, dict) and d.get('area_mm2')
+                    and d.get('theta_deg') is not None):
+                continue
+            if need_full:
+                bb = d.get('bbox_rel_mm')
+                if not bb or bb[1] <= 1.0 or bb[3] >= st['axial_mm'] - 1.0:
+                    continue
+            o.append(d)
+        return o
+
     registration = []
     y_pos = [0]
     for i in range(1, len(prep)):
         A, B = prep[i - 1], prep[i]
         yA, hA, hB = y_pos[-1], A['h'], B['h']
+        # ── 결함 개체 매칭: 후보쌍 → 오프셋 제안 → 중앙값 합의 ──
+        cand_o = []
+        for a in _insts(A['st'], need_full=True):
+            for b in _insts(B['st'], need_full=True):
+                if a['cls'] != b['cls']:
+                    continue
+                dth = abs((a['theta_deg'] - b['theta_deg'] + 180.0)
+                          % 360.0 - 180.0)
+                if dth > TH_GATE:
+                    continue
+                ar = max(a['area_mm2'], b['area_mm2']) \
+                    / max(min(a['area_mm2'], b['area_mm2']), 1.0)
+                if ar > AREA_RATIO:
+                    continue
+                da, db = a.get('dr_mm'), b.get('dr_mm')
+                if (a['cls'] == '결절' and da is not None and db is not None
+                        and abs(da) > 2 and abs(db) > 2 and da * db < 0):
+                    continue   # 돌출/함몰 모순
+                cand_o.append(yA + a['z_rel_mm'] * PPM - b['z_rel_mm'] * PPM)
+        def_o, n_cons = None, 0
+        if cand_o:
+            o_med = float(np.median(cand_o))
+            cons = [o for o in cand_o if abs(o - o_med) <= AGREE_MM * PPM]
+            if cons:
+                oc = int(round(float(np.median(cons))))
+                # 물리 범위(역행 금지·최대 150mm 갭) 밖이면 기각
+                if yA <= oc <= yA + hA + int(150 * PPM):
+                    def_o, n_cons = oc, len(cons)
+        # ── 텍스처 NCC 탐색(현행 유지) ──
         best_o, best_ncc = None, 0.0
         lo = yA + max(int(0.15 * hA), 8)
         hi = yA + hA + int(150 * PPM)         # 최대 150mm 갭까지 탐색
@@ -1293,16 +1356,36 @@ def _pano_impl(req: PanoReq):
             ncc = float((a_v * b_v).sum() / den)
             if ncc > best_ncc:
                 best_ncc, best_o = ncc, o
-        if best_o is not None and best_ncc >= 0.35:
+        ncc_ok = best_o is not None and best_ncc >= 0.35
+        # ── 결정 테이블: 상호검증 > 다수 합의 결함매칭 > NCC > 결함매칭 단독 ──
+        ent = {'pair': f"f{A['st']['frame']}→f{B['st']['frame']}",
+               'ncc': round(best_ncc, 2) if best_o else None,
+               'n_defect_pairs': n_cons}
+        if ncc_ok and def_o is not None:
+            dmm = abs(best_o - def_o) / PPM
+            if dmm <= AGREE_MM:
+                y_pos.append(best_o)
+                ent.update(registered=True, method='ncc+defect', agree=True)
+            elif n_cons >= 2:
+                y_pos.append(def_o)
+                ent.update(registered=True, method='defect',
+                           conflict_mm=round(dmm, 0))
+            else:
+                y_pos.append(best_o)
+                ent.update(registered=True, method='ncc',
+                           conflict_mm=round(dmm, 0))
+        elif ncc_ok:
             y_pos.append(best_o)
-            registration.append({'pair': f"f{A['st']['frame']}→f{B['st']['frame']}",
-                                 'registered': True, 'ncc': round(best_ncc, 2),
-                                 'offset_mm': round((best_o - yA) / PPM, 0)})
+            ent.update(registered=True, method='ncc')
+        elif def_o is not None:
+            y_pos.append(def_o)
+            ent.update(registered=True, method='defect')
         else:
             y_pos.append(yA + hA + int(12))
-            registration.append({'pair': f"f{A['st']['frame']}→f{B['st']['frame']}",
-                                 'registered': False,
-                                 'ncc': round(best_ncc, 2) if best_o else None})
+            ent.update(registered=False, method=None)
+        if ent.get('registered'):
+            ent['offset_mm'] = round((y_pos[-1] - yA) / PPM, 0)
+        registration.append(ent)
 
     # 전역 캔버스 합성(union)
     Hg = max(y_pos[i] + prep[i]['h'] for i in range(len(prep))) + 30
@@ -1322,8 +1405,17 @@ def _pano_impl(req: PanoReq):
         _ko2en = {"결절": "NODULE", "박리": "PEEL"}
         dtxt = " ".join("%s %.0fcm2" % (_ko2en.get(d['cls'], 'DEF'), d['area_mm2'] / 100)
                         for d in st['defects'] if d.get('area_mm2')) or "-"
-        reg = "" if i == 0 else (" REG ncc%.2f" % registration[i - 1]['ncc']
-                                 if registration[i - 1]['registered'] else " UNREG")
+        reg = ""
+        if i > 0:
+            r_ = registration[i - 1]
+            if r_['registered']:
+                reg = " REG:" + (r_['method'] or "")
+                if r_.get('ncc') is not None:
+                    reg += " ncc%.2f" % r_['ncc']
+                if r_.get('conflict_mm') is not None:
+                    reg += " !d%.0fmm" % r_['conflict_mm']
+            else:
+                reg = " UNREG"
         cv2.putText(vis, "f%d S%d %s%s" % (st['frame'], st['score'], dtxt, reg),
                     (8, max(y + 16, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (150, 220, 255), 1)
@@ -1337,6 +1429,80 @@ def _pano_impl(req: PanoReq):
     totals_dedup = {k: round(v * ded_factor, 0) for k, v in totals.items()}
     n_reg = sum(1 for r in registration if r['registered'])
 
+    # ── 결함 개체 전역화·병합: REG 연속구간(segment) 안에서만 같은 개체로 인정 ──
+    seg_of = [0]
+    for i in range(1, len(prep)):
+        seg_of.append(seg_of[-1]
+                      + (0 if registration[i - 1]['registered'] else 1))
+    inst_g = []
+    for i, P in enumerate(prep):
+        st = P['st']
+        for d in st['defects']:
+            if not (isinstance(d, dict) and d.get('area_mm2')
+                    and d.get('theta_deg') is not None):
+                continue
+            bb = d.get('bbox_rel_mm') or [0, 0, 0, 0]
+            inst_g.append({'strip': i, 'frame': st['frame'],
+                           'segment': seg_of[i], 'cls': d['cls'],
+                           'theta_deg': d['theta_deg'],
+                           'y_mm': y_pos[i] / PPM + d['z_rel_mm'],
+                           'y0_mm': y_pos[i] / PPM + bb[1],
+                           'y1_mm': y_pos[i] / PPM + bb[3],
+                           'area_mm2': d['area_mm2'], 'conf': d['conf'],
+                           'dr_mm': d.get('dr_mm'),
+                           'geom_warn': d.get('geom_warn', False)})
+    parent = list(range(len(inst_g)))
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for ii in range(len(inst_g)):
+        for jj in range(ii + 1, len(inst_g)):
+            a, b = inst_g[ii], inst_g[jj]
+            if (a['strip'] == b['strip'] or a['segment'] != b['segment']
+                    or a['cls'] != b['cls']):
+                continue
+            dth = abs((a['theta_deg'] - b['theta_deg'] + 180.0) % 360.0 - 180.0)
+            if dth > TH_GATE:
+                continue
+            ov = min(a['y1_mm'], b['y1_mm']) - max(a['y0_mm'], b['y0_mm'])
+            if ov > -30.0:      # 축방향 겹침(30mm 근접까지 허용)
+                ra, rb = _find(ii), _find(jj)
+                if ra != rb:
+                    parent[rb] = ra
+    groups = {}
+    for ii in range(len(inst_g)):
+        groups.setdefault(_find(ii), []).append(inst_g[ii])
+    defect_instances = []
+    for _, mem in sorted(groups.items(),
+                         key=lambda kv: min(m['y_mm'] for m in kv[1])):
+        best = max(mem, key=lambda m: m['area_mm2'])
+        defect_instances.append({
+            'id': len(defect_instances) + 1, 'cls': best['cls'],
+            'theta_deg': best['theta_deg'],
+            'y_mm': round(float(np.mean([m['y_mm'] for m in mem])), 0),
+            'segment': mem[0]['segment'],
+            'area_mm2': best['area_mm2'],   # 가장 완전히 본 스톱(기존 원칙과 동일)
+            'conf': round(max(m['conf'] for m in mem), 2),
+            'dr_mm': best.get('dr_mm'),
+            'geom_warn': any(m['geom_warn'] for m in mem),
+            'stops': sorted({m['frame'] for m in mem}),
+            'merged_from': len(mem)})
+    counts, totals_inst = {}, {}
+    for d0 in defect_instances:
+        counts[d0['cls']] = counts.get(d0['cls'], 0) + 1
+        totals_inst[d0['cls']] = totals_inst.get(d0['cls'], 0.0) + d0['area_mm2']
+    # 시트에 개체 ID 마킹
+    for d0 in defect_instances:
+        gx = int(((d0['theta_deg'] * np.pi / 180.0) + np.pi) * R_mm * PPM) % Wp
+        gy = int(d0['y_mm'] * PPM)
+        cv2.putText(vis, "#%d" % d0['id'],
+                    (min(max(gx, 2), Wp - 34), min(max(gy, 14), Hg - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
     return {'success': True, 'pano_b64': b64jpg(vis, 87),
             'n_strips': len(strips), 'skipped': skipped,
             'registration': registration, 'n_registered': n_reg,
@@ -1345,10 +1511,18 @@ def _pano_impl(req: PanoReq):
             'dup_overlap_pct': dup_pct,
             'defect_total_mm2': {k: round(v, 0) for k, v in totals.items()},
             'defect_total_dedup_mm2': totals_dedup,
-            'note': '정합(REG)=텍스처 NCC 기반 축 오프셋 추정·union 중복제거. '
-                    'UNREG 구간은 스택(중복 미상). 결함 중복제거는 bin-union 비율 근사.',
+            'defect_instances': defect_instances,
+            'defect_counts': counts,
+            'defect_total_inst_mm2': {k: round(v, 0)
+                                      for k, v in totals_inst.items()},
+            'note': '정합(REG)=결함 개체 매칭+텍스처 NCC 상호검증(method: '
+                    'ncc+defect=합치, defect=결함매칭 우선, ncc=텍스처만). '
+                    'UNREG 구간은 스택(중복 미상)·개체 병합 없음. '
+                    'defect_total_inst_mm2=개체 병합 합계(REG구간 정밀), '
+                    'defect_total_dedup_mm2=bin-union 비율 근사(참고용).',
             'strips': [{k: v for k, v in st.items()
-                        if k not in ('img', 'clean', 'wallb', 'defb')} for st in strips]}
+                        if k not in ('img', 'clean', 'wallb', 'defb')}
+                       for st in strips]}
 
 
 class ScanReq(BaseModel):
